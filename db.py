@@ -78,6 +78,15 @@ def get_profile(phone: str) -> dict:
     return json.loads(row["profile"]) if row else {}
 
 
+def get_all_phones() -> list[str]:
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT DISTINCT phone FROM messages")
+    phones = [r["phone"] for r in cur.fetchall()]
+    conn.close()
+    return phones
+
+
 def upsert_profile(phone: str, updates: dict):
     profile = get_profile(phone)
     profile.update(updates)
