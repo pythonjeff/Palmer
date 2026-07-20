@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+twilio
+anthropic
+python-dotenv
+python-multipart
+ddgs

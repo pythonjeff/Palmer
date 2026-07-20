@@ -1,0 +1,5 @@
+.env
+palmer.db
+venv/
+__pycache__/
+*.pyc
