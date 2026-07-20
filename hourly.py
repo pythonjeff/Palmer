@@ -56,31 +56,32 @@ If yes, 1 casual sentence. If nothing notable, reply exactly: NO_ALERT""")
 
 
 def _check_sports(profile: dict) -> str | None:
-    teams = profile.get("sports_teams") or profile.get("favorite_teams") or profile.get("teams")
+    teams = profile.get("sports_teams") or profile.get("favorite_teams") or profile.get("teams") or profile.get("sports")
     if not teams:
         return None
-    query = f"{teams if isinstance(teams, str) else ', '.join(teams)} score news today"
-    results = _search(query)
-    answer = _ask_haiku(f"""Any sports news worth a text right now? Flag if: game just ended with a final score, major trade/signing, or breaking news. Skip anything older than a few hours.
+    team_str = teams if isinstance(teams, str) else ', '.join(teams)
+    results = _search(f"{team_str} game result score recap today")
+    answer = _ask_haiku(f"""Did any of these teams play recently? Give a quick recap of the result or latest news.
 
-{results}
+Teams: {team_str}
+Search results: {results}
 
-If yes, 1-2 casual sentences with the key info. If nothing fresh, reply exactly: NO_ALERT""")
+If there's a game result or notable news, write 1-2 casual sentences. If nothing, reply exactly: NO_ALERT""")
     return None if answer == "NO_ALERT" else answer
 
 
 def _check_deals(profile: dict) -> str | None:
-    brands = profile.get("brands") or profile.get("tracked_brands") or profile.get("shopping_interests")
+    brands = profile.get("brands") or profile.get("tracked_brands") or profile.get("shopping_interests") or profile.get("fashion_taste")
     if not brands:
         return None
-    query = f"{brands if isinstance(brands, str) else ' '.join(str(b) for b in brands[:3])} sale deal"
-    results = _shop(query)
-    answer = _ask_haiku(f"""Any genuinely good deals on these worth texting about?
+    brand_str = brands if isinstance(brands, str) else ' '.join(str(b) for b in brands[:3])
+    results = _shop(f"{brand_str} sale")
+    answer = _ask_haiku(f"""Are any of these brands on sale right now?
 
-Tracking: {brands}
-Results: {results}
+Tracking: {brand_str}
+Shopping results: {results}
 
-If there's a specific notable deal, 1-2 casual sentences with the key detail and where to find it. If nothing worth it, reply exactly: NO_ALERT""")
+If there's a real discount or sale, share the item, price, and where to get it in 1-2 casual sentences. If nothing worth it, reply exactly: NO_ALERT""")
     return None if answer == "NO_ALERT" else answer
 
 
