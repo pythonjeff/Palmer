@@ -5,6 +5,8 @@ from agent import client, _search
 from db import get_all_phones, get_profile, get_due_reminders, mark_reminder_sent
 
 
+import re
+
 def _ask_haiku(prompt: str) -> str:
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
@@ -14,18 +16,33 @@ def _ask_haiku(prompt: str) -> str:
     return response.content[0].text.strip()
 
 
+def _no_alert(answer: str) -> bool:
+    return "NO_ALERT" in answer.upper()
+
+
 def _shop(query: str) -> str:
     try:
         with DDGS() as ddgs:
             results = list(ddgs.shopping(query, max_results=5))
         if not results:
-            return "No results found."
+            return ""
         return "\n\n".join(
             f"{r.get('title', '')}\n${r.get('price', 'N/A')} at {r.get('source', 'unknown')}"
             for r in results
         )
-    except Exception as e:
-        return f"Shopping search failed: {e}"
+    except Exception:
+        return ""
+
+
+def _clean_field(raw) -> str:
+    """Extract clean names from descriptive profile fields like 'Cardinals fan (St. Louis)'."""
+    if isinstance(raw, list):
+        return ', '.join(str(r) for r in raw)
+    s = str(raw)
+    match = re.search(r'\(([^)]+)\)', s)
+    if match:
+        return match.group(1)
+    return re.split(r'\s+fan|\s+area|\s+,', s)[0].strip()
 
 
 def _check_weather(profile: dict) -> str | None:
@@ -33,6 +50,7 @@ def _check_weather(profile: dict) -> str | None:
     city = profile.get("city") or profile.get("location")
     if not city:
         return None
+    city = _clean_field(city)
     try:
         resp = requests.get(f"https://wttr.in/{city.replace(' ', '+')}?format=j1", timeout=10)
         data = resp.json()
@@ -45,44 +63,58 @@ def _check_weather(profile: dict) -> str | None:
             for h in hourly[:6]
         )
         summary = f"Current: {current_desc}, {current_temp}°F\n\nNext 6 hours:\n{upcoming}"
-        answer = _ask_haiku(f"""Based on this real weather forecast for {city}, is there a notable change worth a heads-up? Rain starting, storm, big temp swing, etc.
+        answer = _ask_haiku(f"""Weather forecast for {city}:
 
 {summary}
 
-If yes, 1 casual sentence. If nothing notable, reply exactly: NO_ALERT""")
-        return None if answer == "NO_ALERT" else answer
+Is there a notable change coming in the next few hours worth a heads-up? (rain starting, storm, big temp swing)
+
+Reply ONLY with one of:
+- One casual sentence describing the change
+- Exactly: NO_ALERT""")
+        return None if _no_alert(answer) else answer
     except Exception:
         return None
 
 
 def _check_sports(profile: dict) -> str | None:
-    teams = profile.get("sports_teams") or profile.get("favorite_teams") or profile.get("teams") or profile.get("sports")
-    if not teams:
+    raw = profile.get("sports_teams") or profile.get("favorite_teams") or profile.get("teams") or profile.get("sports")
+    if not raw:
         return None
-    team_str = teams if isinstance(teams, str) else ', '.join(teams)
-    results = _search(f"{team_str} game result score recap today")
-    answer = _ask_haiku(f"""Did any of these teams play recently? Give a quick recap of the result or latest news.
+    team = _clean_field(raw)
+    results = _search(f"St. Louis {team} game score result today")
+    if not results:
+        return None
+    answer = _ask_haiku(f"""Sports search results for {team}:
 
-Teams: {team_str}
-Search results: {results}
+{results}
 
-If there's a game result or notable news, write 1-2 casual sentences. If nothing, reply exactly: NO_ALERT""")
-    return None if answer == "NO_ALERT" else answer
+Did they play today or recently? Give the score/result if there is one.
+
+Reply ONLY with one of:
+- 1-2 casual sentences with the result
+- Exactly: NO_ALERT""")
+    return None if _no_alert(answer) else answer
 
 
 def _check_deals(profile: dict) -> str | None:
-    brands = profile.get("brands") or profile.get("tracked_brands") or profile.get("shopping_interests") or profile.get("fashion_taste")
-    if not brands:
+    raw = profile.get("brands") or profile.get("tracked_brands") or profile.get("shopping_interests") or profile.get("fashion_taste")
+    if not raw:
         return None
-    brand_str = brands if isinstance(brands, str) else ' '.join(str(b) for b in brands[:3])
-    results = _shop(f"{brand_str} sale")
-    answer = _ask_haiku(f"""Are any of these brands on sale right now?
+    brands = _clean_field(raw)
+    results = _shop(f"{brands} sale discount")
+    if not results:
+        return None
+    answer = _ask_haiku(f"""Shopping search results for {brands}:
 
-Tracking: {brand_str}
-Shopping results: {results}
+{results}
 
-If there's a real discount or sale, share the item, price, and where to get it in 1-2 casual sentences. If nothing worth it, reply exactly: NO_ALERT""")
-    return None if answer == "NO_ALERT" else answer
+Is there a specific, real sale or deal worth flagging?
+
+Reply ONLY with one of:
+- 1-2 casual sentences: item, price/discount, where to get it
+- Exactly: NO_ALERT""")
+    return None if _no_alert(answer) else answer
 
 
 def _send(twilio, from_number: str, phone: str, alerts: list[str]):
