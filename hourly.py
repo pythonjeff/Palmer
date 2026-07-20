@@ -29,16 +29,30 @@ def _shop(query: str) -> str:
 
 
 def _check_weather(profile: dict) -> str | None:
+    import requests
     city = profile.get("city") or profile.get("location")
     if not city:
         return None
-    results = _search(f"hourly weather forecast {city} next few hours")
-    answer = _ask_haiku(f"""Is there a notable weather change in {city} worth texting someone about in the next few hours? Rain starting, storm, big temp drop, etc.
+    try:
+        resp = requests.get(f"https://wttr.in/{city.replace(' ', '+')}?format=j1", timeout=10)
+        data = resp.json()
+        current = data["current_condition"][0]
+        hourly = data["weather"][0]["hourly"]
+        current_desc = current["weatherDesc"][0]["value"]
+        current_temp = current["temp_F"]
+        upcoming = "\n".join(
+            f"{h['time'].zfill(4)[:2]}:00 — {h['weatherDesc'][0]['value']}, {h['tempF']}°F, {h['chanceofrain']}% rain"
+            for h in hourly[:6]
+        )
+        summary = f"Current: {current_desc}, {current_temp}°F\n\nNext 6 hours:\n{upcoming}"
+        answer = _ask_haiku(f"""Based on this real weather forecast for {city}, is there a notable change worth a heads-up? Rain starting, storm, big temp swing, etc.
 
-{results}
+{summary}
 
 If yes, 1 casual sentence. If nothing notable, reply exactly: NO_ALERT""")
-    return None if answer == "NO_ALERT" else answer
+        return None if answer == "NO_ALERT" else answer
+    except Exception:
+        return None
 
 
 def _check_sports(profile: dict) -> str | None:
@@ -47,11 +61,11 @@ def _check_sports(profile: dict) -> str | None:
         return None
     query = f"{teams if isinstance(teams, str) else ', '.join(teams)} score news today"
     results = _search(query)
-    answer = _ask_haiku(f"""Any sports news worth texting a fan about right now? Only flag if it's fresh — game just ended, major trade, breaking news. Not old scores.
+    answer = _ask_haiku(f"""Any sports news worth a text right now? Flag if: game just ended with a final score, major trade/signing, or breaking news. Skip anything older than a few hours.
 
 {results}
 
-If yes, 1-2 casual sentences. If nothing new, reply exactly: NO_ALERT""")
+If yes, 1-2 casual sentences with the key info. If nothing fresh, reply exactly: NO_ALERT""")
     return None if answer == "NO_ALERT" else answer
 
 
