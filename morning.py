@@ -26,14 +26,24 @@ Return a JSON array of 1-3 search queries based on what they said they want each
 
 def generate_morning(phone: str) -> str:
     profile = get_profile(phone)
-    system = _build_system(phone)
 
     if not profile.get("morning_onboarded"):
-        prompt = "Write a morning text to this person — first one you've ever sent them unprompted. Good morning, Palmer's voice. Then ask what they'd like to know each morning — weather, traffic, sports scores, news, whatever they care about. Keep it natural, not like a form. 2-3 sentences. Just the message."
-    else:
-        queries = _get_search_queries(profile)
-        results = "\n\n".join(f"{q}:\n{_search(q)}" for q in queries) if queries else ""
-        prompt = f"Write a morning text for this person. Here's what you found:\n\n{results}\n\nWeave it in naturally, short and useful, Palmer's voice. Just the message."
+        return (
+            "Good morning! I'm Palmer — I'll be texting you every morning with whatever you actually care about. "
+            "What should I bring you?\n\n"
+            "a) Weather\n"
+            "b) Local sports scores\n"
+            "c) Local news\n"
+            "d) National news\n"
+            "e) Horoscope\n"
+            "f) All of the above\n"
+            "g) Other — just tell me\n\n"
+            "Chat me back and I'll be on it."
+        )
+    system = _build_system(phone)
+    queries = _get_search_queries(profile)
+    results = "\n\n".join(f"{q}:\n{_search(q)}" for q in queries) if queries else ""
+    prompt = f"Write a morning text for this person. Here's what you found:\n\n{results}\n\nWeave it in naturally, short and useful, Palmer's voice. Just the message."
 
     response = client.messages.create(
         model="claude-sonnet-4-6",
