@@ -38,6 +38,7 @@ def generate_morning(phone: str) -> str:
             "e) Horoscope\n"
             "f) All of the above\n"
             "g) Other — just tell me\n\n"
+            "Also — any brands or products you want me to watch for deals? Drop those too.\n\n"
             "Chat me back and I'll be on it."
         )
     system = _build_system(phone)

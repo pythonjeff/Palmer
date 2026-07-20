@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 import anthropic
 from ddgs import DDGS
-from db import init_db, get_history, save_message, get_profile, upsert_profile
+from db import init_db, get_history, save_message, get_profile, upsert_profile, save_reminder
 
 init_db()
 
@@ -154,5 +154,30 @@ def get_reply(phone_number: str, message: str) -> str:
     save_message(phone_number, "user", message)
     save_message(phone_number, "assistant", reply)
     _update_profile(phone_number, message, reply)
+    _extract_reminder(phone_number, message)
 
     return reply
+
+
+def _extract_reminder(phone: str, message: str):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=150,
+            messages=[{"role": "user", "content": f"""Does this message contain a reminder request? Current time: {now}
+
+Message: {message}
+
+If yes, return JSON: {{"text": "what to remind", "due_at": "ISO 8601 UTC datetime"}}
+If no reminder, return exactly: NO_REMINDER"""}],
+        )
+        text = response.content[0].text.strip()
+        if text == "NO_REMINDER":
+            return
+        start, end = text.find("{"), text.rfind("}") + 1
+        if start != -1 and end > start:
+            data = json.loads(text[start:end])
+            save_reminder(phone, data["text"], data["due_at"])
+    except Exception:
+        pass

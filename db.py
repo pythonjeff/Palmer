@@ -1,5 +1,6 @@
 import os
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 _DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -40,6 +41,16 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             phone TEXT PRIMARY KEY,
             profile TEXT NOT NULL DEFAULT '{{}}'
+        )
+    """)
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS reminders (
+            id {ID_COL},
+            phone TEXT NOT NULL,
+            text TEXT NOT NULL,
+            due_at TEXT NOT NULL,
+            sent INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
@@ -97,5 +108,37 @@ def upsert_profile(phone: str, updates: dict):
         f"ON CONFLICT(phone) DO UPDATE SET profile = EXCLUDED.profile",
         (phone, json.dumps(profile)),
     )
+    conn.commit()
+    conn.close()
+
+
+def save_reminder(phone: str, text: str, due_at: str):
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"INSERT INTO reminders (phone, text, due_at) VALUES ({PH}, {PH}, {PH})",
+        (phone, text, due_at),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_due_reminders(phone: str) -> list[dict]:
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT id, text FROM reminders WHERE phone = {PH} AND due_at <= {PH} AND sent = 0",
+        (phone, now),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [{"id": r["id"], "text": r["text"]} for r in rows]
+
+
+def mark_reminder_sent(reminder_id: int):
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE reminders SET sent = 1 WHERE id = {PH}", (reminder_id,))
     conn.commit()
     conn.close()
