@@ -5,3 +5,4 @@ anthropic
 python-dotenv
 python-multipart
 ddgs
+psycopg2-binary
