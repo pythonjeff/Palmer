@@ -129,6 +129,7 @@ def _build_system(phone: str) -> str:
 
 
 def get_reply(phone_number: str, message: str) -> str:
+    """Generate a reply without saving anything — call commit_reply after confirmed delivery."""
     messages = get_history(phone_number, limit=15)
     messages.append({"role": "user", "content": message})
 
@@ -151,12 +152,15 @@ def get_reply(phone_number: str, message: str) -> str:
             for b in response.content if b.type == "tool_use"
         ]})
 
+    return reply
+
+
+def commit_reply(phone_number: str, message: str, reply: str):
+    """Persist a delivered exchange to history and update profile/reminders."""
     save_message(phone_number, "user", message)
     save_message(phone_number, "assistant", reply)
     _update_profile(phone_number, message, reply)
     _extract_reminder(phone_number, message)
-
-    return reply
 
 
 def _extract_reminder(phone: str, message: str):

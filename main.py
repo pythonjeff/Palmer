@@ -1,10 +1,12 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, Form, Response
+import os
+from fastapi import FastAPI, Form, Response, BackgroundTasks
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.messaging_response import MessagingResponse
-from agent import get_reply
+from twilio.rest import Client as TwilioClient
+from agent import get_reply, commit_reply
 from morning import generate_morning
 from hourly import _check_weather, _check_sports, _check_deals
 from db import get_profile, upsert_profile, get_due_reminders
@@ -12,8 +14,25 @@ from db import get_profile, upsert_profile, get_due_reminders
 app = FastAPI()
 
 
+def _send_outbound(to: str, body: str):
+    twilio = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
+    twilio.messages.create(body=body, from_=os.environ["TWILIO_PHONE_NUMBER"], to=to)
+
+
+def _handle_sms(from_number: str, body: str, is_preference_reply: bool):
+    reply = get_reply(phone_number=from_number, message=body)
+    _send_outbound(from_number, reply)
+    commit_reply(from_number, body, reply)
+
+    if is_preference_reply:
+        upsert_profile(from_number, {"morning_prefs_received": True})
+        briefing = generate_morning(from_number)
+        _send_outbound(from_number, briefing)
+
+
 @app.post("/sms")
 async def sms_webhook(
+    background_tasks: BackgroundTasks,
     From: str = Form(...),
     Body: str = Form(...),
 ):
@@ -23,16 +42,9 @@ async def sms_webhook(
         and not profile_before.get("morning_prefs_received")
     )
 
-    reply = get_reply(phone_number=From, message=Body.strip())
-    twiml = MessagingResponse()
-    twiml.message(reply)
+    background_tasks.add_task(_handle_sms, From, Body.strip(), is_preference_reply)
 
-    if is_preference_reply:
-        upsert_profile(From, {"morning_prefs_received": True})
-        briefing = generate_morning(From)
-        twiml.message(briefing)
-
-    return Response(content=str(twiml), media_type="application/xml")
+    return Response(content=str(MessagingResponse()), media_type="application/xml")
 
 
 @app.get("/preview")
