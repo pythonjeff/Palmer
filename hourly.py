@@ -82,8 +82,20 @@ def _send(twilio, from_number: str, phone: str, alerts: list[str]):
         print(f"Send failed for {phone}: {e}")
 
 
+INTRO_QUESTIONS = [
+    "Yo, where are you based?",
+    "Quick one — what city are you in?",
+    "Hey, where are you located? Trying to get a better read on you.",
+]
+
+def _profile_has_enough(profile: dict) -> bool:
+    return any(profile.get(k) for k in ["city", "location", "sports_teams", "favorite_teams", "brands", "tracked_brands"])
+
+
 def run_hourly_checks():
+    import random
     from twilio.rest import Client
+    from db import upsert_profile
     twilio = Client(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
     from_number = os.environ["TWILIO_PHONE_NUMBER"]
 
@@ -94,6 +106,14 @@ def run_hourly_checks():
         for reminder in get_due_reminders(phone):
             alerts.append(f"Reminder: {reminder['text']}")
             mark_reminder_sent(reminder["id"])
+
+        if not _profile_has_enough(profile):
+            if not profile.get("hourly_intro_sent"):
+                upsert_profile(phone, {"hourly_intro_sent": True})
+                _send(twilio, from_number, phone, [random.choice(INTRO_QUESTIONS)])
+            elif alerts:
+                _send(twilio, from_number, phone, alerts)
+            continue
 
         if profile.get("morning_prefs_received"):
             for checker in [_check_weather, _check_sports, _check_deals]:
