@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 import anthropic
 from ddgs import DDGS
 from db import init_db, get_history, save_message, get_profile, upsert_profile, save_reminder
@@ -59,6 +59,11 @@ NEVER
 BEFORE YOU SEND
 Reread the last few messages. Don't repeat yourself. Don't ask something they already answered. Then the test: would a person send this text? If it reads like an app trying to be liked, delete it and say something true instead.
 
+REMINDERS
+When the user asks to be reminded about something, call set_reminder immediately — don't ask for clarification unless the time is genuinely ambiguous. Infer the due time from their city/timezone if known (it's in their profile). Confirm casually with the actual time: "done, I'll hit you at 3" not "I have successfully created a reminder." If they say "remind me in 30 minutes" and you know it's 2pm Central, tell them 2:30.
+
+Current time: {now_utc} UTC.
+
 Today is {date}.
 
 {profile_block}"""
@@ -74,7 +79,19 @@ TOOLS = [
             },
             "required": ["query"],
         },
-    }
+    },
+    {
+        "name": "set_reminder",
+        "description": "Save a reminder for the user to be sent at a future time. Call this whenever the user asks to be reminded about something.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "What to remind the user about"},
+                "due_at": {"type": "string", "description": "ISO 8601 UTC datetime when to send the reminder (e.g. 2026-07-21T20:00:00Z)"},
+            },
+            "required": ["text", "due_at"],
+        },
+    },
 ]
 
 
@@ -125,7 +142,12 @@ def _update_profile(phone: str, user_msg: str, reply: str):
 def _build_system(phone: str) -> str:
     profile = get_profile(phone)
     profile_block = "What you know about them:\n" + json.dumps(profile, indent=2) if profile else "You don't know much about this person yet. Learn as you go."
-    return SYSTEM_PROMPT.format(date=datetime.now().strftime("%A, %B %d, %Y"), profile_block=profile_block)
+    now = datetime.now(timezone.utc)
+    return SYSTEM_PROMPT.format(
+        date=now.strftime("%A, %B %d, %Y"),
+        now_utc=now.strftime("%H:%M"),
+        profile_block=profile_block,
+    )
 
 
 def get_reply(phone_number: str, message: str) -> str:
@@ -146,42 +168,26 @@ def get_reply(phone_number: str, message: str) -> str:
             reply = next(b.text for b in response.content if hasattr(b, "text"))
             break
 
+        tool_results = []
+        for b in response.content:
+            if b.type != "tool_use":
+                continue
+            if b.name == "web_search":
+                result = _search(b.input["query"])
+            elif b.name == "set_reminder":
+                save_reminder(phone_number, b.input["text"], b.input["due_at"])
+                result = f"Reminder saved for {b.input['due_at']}."
+            else:
+                result = "Unknown tool."
+            tool_results.append({"type": "tool_result", "tool_use_id": b.id, "content": result})
         messages.append({"role": "assistant", "content": response.content})
-        messages.append({"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": b.id, "content": _search(b.input["query"])}
-            for b in response.content if b.type == "tool_use"
-        ]})
+        messages.append({"role": "user", "content": tool_results})
 
     return reply
 
 
 def commit_reply(phone_number: str, message: str, reply: str):
-    """Persist a delivered exchange to history and update profile/reminders."""
+    """Persist a delivered exchange to history and update profile."""
     save_message(phone_number, "user", message)
     save_message(phone_number, "assistant", reply)
     _update_profile(phone_number, message, reply)
-    _extract_reminder(phone_number, message)
-
-
-def _extract_reminder(phone: str, message: str):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
-    try:
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=150,
-            messages=[{"role": "user", "content": f"""Does this message contain a reminder request? Current time: {now}
-
-Message: {message}
-
-If yes, return JSON: {{"text": "what to remind", "due_at": "ISO 8601 UTC datetime"}}
-If no reminder, return exactly: NO_REMINDER"""}],
-        )
-        text = response.content[0].text.strip()
-        if text == "NO_REMINDER":
-            return
-        start, end = text.find("{"), text.rfind("}") + 1
-        if start != -1 and end > start:
-            data = json.loads(text[start:end])
-            save_reminder(phone, data["text"], data["due_at"])
-    except Exception:
-        pass

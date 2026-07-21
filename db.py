@@ -136,6 +136,19 @@ def get_due_reminders(phone: str) -> list[dict]:
     return [{"id": r["id"], "text": r["text"]} for r in rows]
 
 
+def get_all_due_reminders() -> list[dict]:
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT id, phone, text FROM reminders WHERE due_at <= {PH} AND sent = 0",
+        (now,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [{"id": r["id"], "phone": r["phone"], "text": r["text"]} for r in rows]
+
+
 def mark_reminder_sent(reminder_id: int):
     conn = _conn()
     cur = conn.cursor()
