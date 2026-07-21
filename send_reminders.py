@@ -3,11 +3,11 @@ load_dotenv()
 
 import os
 from twilio.rest import Client as TwilioClient
-from db import get_all_due_reminders, mark_reminder_sent
+from db import claim_due_reminders
 
 
 def send_due_reminders():
-    reminders = get_all_due_reminders()
+    reminders = claim_due_reminders()
     if not reminders:
         return
 
@@ -21,7 +21,6 @@ def send_due_reminders():
                 from_=from_number,
                 to=r["phone"],
             )
-            mark_reminder_sent(r["id"])
             print(f"Sent reminder {r['id']} to {r['phone']}: {r['text']}")
         except Exception as e:
             print(f"Failed reminder {r['id']} to {r['phone']}: {e}")

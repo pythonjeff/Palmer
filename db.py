@@ -136,22 +136,33 @@ def get_due_reminders(phone: str) -> list[dict]:
     return [{"id": r["id"], "text": r["text"]} for r in rows]
 
 
-def get_all_due_reminders() -> list[dict]:
+def claim_due_reminders() -> list[dict]:
+    """Atomically mark due reminders as sent and return them. Prevents double-sends."""
     now = datetime.now(timezone.utc).isoformat()
     conn = _conn()
     cur = conn.cursor()
-    cur.execute(
-        f"SELECT id, phone, text FROM reminders WHERE due_at <= {PH} AND sent = 0",
-        (now,),
-    )
-    rows = cur.fetchall()
-    conn.close()
-    return [{"id": r["id"], "phone": r["phone"], "text": r["text"]} for r in rows]
-
-
-def mark_reminder_sent(reminder_id: int):
-    conn = _conn()
-    cur = conn.cursor()
-    cur.execute(f"UPDATE reminders SET sent = 1 WHERE id = {PH}", (reminder_id,))
+    if _DATABASE_URL:
+        cur.execute(
+            """
+            UPDATE reminders SET sent = 1
+            WHERE id IN (
+                SELECT id FROM reminders WHERE due_at <= %s AND sent = 0
+                FOR UPDATE SKIP LOCKED
+            )
+            RETURNING id, phone, text
+            """,
+            (now,),
+        )
+        rows = cur.fetchall()
+    else:
+        cur.execute(
+            "SELECT id, phone, text FROM reminders WHERE due_at <= ? AND sent = 0",
+            (now,),
+        )
+        rows = cur.fetchall()
+        if rows:
+            ids = [r["id"] for r in rows]
+            cur.execute(f"UPDATE reminders SET sent = 1 WHERE id IN ({','.join(['?'] * len(ids))})", ids)
     conn.commit()
     conn.close()
+    return [{"id": r["id"], "phone": r["phone"], "text": r["text"]} for r in rows]
