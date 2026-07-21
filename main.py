@@ -6,12 +6,18 @@ from fastapi import FastAPI, Form, Response, BackgroundTasks
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
+from apscheduler.schedulers.background import BackgroundScheduler
 from agent import get_reply, commit_reply
 from morning import generate_morning
 from hourly import _check_weather, _check_sports, _check_deals
 from db import get_profile, upsert_profile, get_due_reminders
+from send_reminders import send_due_reminders
 
 app = FastAPI()
+
+_scheduler = BackgroundScheduler()
+_scheduler.add_job(send_due_reminders, "interval", minutes=1)
+_scheduler.start()
 
 
 def _send_outbound(to: str, body: str):
