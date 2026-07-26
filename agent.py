@@ -1,8 +1,11 @@
 import json
 import os
+import base64
+import random
 import concurrent.futures
 from datetime import datetime, timezone
 import anthropic
+import requests as _requests
 from tavily import TavilyClient
 from db import init_db, get_history, save_message, get_profile, upsert_profile, save_reminder, cancel_reminders
 
@@ -115,6 +118,17 @@ TOOLS = [
         },
     },
     {
+        "name": "send_gif",
+        "description": "Search for and send a GIF as a reaction or punchline. Use sparingly — a well-timed GIF is funny, a frequent one is noise. Good for celebrations, reactions, absurdity. Search terms like 'eye roll', 'slow clap', 'mind blown', 'this is fine' work well.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Tenor search term, e.g. 'michael scott no', 'celebrate', 'eye roll'"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "update_morning_briefing",
         "description": "Add or remove topics from the user's daily morning briefing. Use when the user asks to track something every morning (e.g. 'add Bitcoin to my morning', 'put weather in my daily update', 'stop sending me sports'). This is different from set_reminder — morning topics repeat every day.",
         "input_schema": {
@@ -156,6 +170,45 @@ def _search(query: str) -> str:
         return "Search timed out."
     except Exception as e:
         return f"Search failed: {e}"
+
+
+_SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+
+def _fetch_media(url: str) -> tuple[str, str] | None:
+    """Fetch media from a Twilio URL. Returns (base64_data, content_type) or None."""
+    try:
+        resp = _requests.get(
+            url,
+            auth=(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"]),
+            timeout=10,
+        )
+        content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+        if content_type not in _SUPPORTED_IMAGE_TYPES:
+            return None
+        return base64.standard_b64encode(resp.content).decode(), content_type
+    except Exception:
+        return None
+
+
+def _get_gif(query: str) -> str | None:
+    """Search Tenor for a GIF matching the query. Returns a URL or None."""
+    api_key = os.environ.get("TENOR_API_KEY")
+    if not api_key:
+        return None
+    try:
+        resp = _requests.get(
+            "https://tenor.googleapis.com/v2/search",
+            params={"q": query, "key": api_key, "limit": 5, "media_filter": "mediumgif,gif"},
+            timeout=8,
+        )
+        results = resp.json().get("results", [])
+        if not results:
+            return None
+        pick = random.choice(results)
+        formats = pick.get("media_formats", {})
+        return (formats.get("mediumgif") or formats.get("gif") or {}).get("url")
+    except Exception:
+        return None
 
 
 EXTRACT_PROMPT = """After this text exchange, what's worth remembering about this person?
@@ -202,10 +255,25 @@ def _build_system(phone: str) -> str:
     )
 
 
-def get_reply(phone_number: str, message: str) -> str:
-    """Generate a reply without saving anything — call commit_reply after confirmed delivery."""
+def get_reply(phone_number: str, message: str, media_url: str = None) -> tuple[str, str | None]:
+    """Generate a reply. Returns (text, gif_url) — gif_url is None if no GIF was queued."""
     messages = get_history(phone_number, limit=15)
-    messages.append({"role": "user", "content": message})
+
+    # Build user content — include image if MMS photo was attached
+    if media_url:
+        media = _fetch_media(media_url)
+        if media:
+            data, content_type = media
+            user_content = [{"type": "image", "source": {"type": "base64", "media_type": content_type, "data": data}}]
+            if message:
+                user_content.append({"type": "text", "text": message})
+        else:
+            user_content = message or "(sent a photo)"
+    else:
+        user_content = message
+    messages.append({"role": "user", "content": user_content})
+
+    gif_url = None
 
     for _ in range(6):  # cap tool call iterations
         response = client.messages.create(
@@ -217,7 +285,8 @@ def get_reply(phone_number: str, message: str) -> str:
         )
 
         if response.stop_reason == "end_turn":
-            return next(b.text for b in response.content if hasattr(b, "text"))
+            text = next(b.text for b in response.content if hasattr(b, "text"))
+            return text, gif_url
 
         tool_results = []
         for b in response.content:
@@ -225,6 +294,9 @@ def get_reply(phone_number: str, message: str) -> str:
                 continue
             if b.name == "web_search":
                 result = _search(b.input["query"])
+            elif b.name == "send_gif":
+                gif_url = _get_gif(b.input["query"])
+                result = f"GIF queued: {gif_url}" if gif_url else "No GIF found for that query."
             elif b.name == "set_reminder":
                 save_reminder(phone_number, b.input["text"], b.input["due_at"])
                 result = f"Reminder saved for {b.input['due_at']}."

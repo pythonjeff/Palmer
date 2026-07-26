@@ -39,7 +39,11 @@ def _send_outbound(to: str, body: str):
     _twilio.messages.create(body=body, from_=os.environ["TWILIO_PHONE_NUMBER"], to=to)
 
 
-def _handle_sms(from_number: str, body: str, is_new_user: bool, is_preference_reply: bool):
+def _send_gif_outbound(to: str, media_url: str):
+    _twilio.messages.create(from_=os.environ["TWILIO_PHONE_NUMBER"], to=to, media_url=[media_url])
+
+
+def _handle_sms(from_number: str, body: str, media_url: str | None, is_new_user: bool, is_preference_reply: bool):
     token = object()
     with _in_flight_lock:
         _in_flight[from_number].add(token)
@@ -47,7 +51,7 @@ def _handle_sms(from_number: str, body: str, is_new_user: bool, is_preference_re
     try:
         with _phone_locks[from_number]:  # serialize per phone so history never interleaves
             try:
-                reply = get_reply(phone_number=from_number, message=body)
+                reply, gif_url = get_reply(phone_number=from_number, message=body, media_url=media_url)
             except Exception as e:
                 print(f"get_reply failed for {from_number}: {e}")
                 _send_outbound(from_number, "something went sideways on my end, try again")
@@ -61,7 +65,9 @@ def _handle_sms(from_number: str, body: str, is_new_user: bool, is_preference_re
                 reply = f"> {snippet}\n{reply}"
 
             _send_outbound(from_number, reply)
-            commit_reply(from_number, body, reply)
+            if gif_url:
+                _send_gif_outbound(from_number, gif_url)
+            commit_reply(from_number, body or "[photo]", reply)
     finally:
         with _in_flight_lock:
             _in_flight[from_number].discard(token)
@@ -80,7 +86,9 @@ async def sms_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
     From: str = Form(...),
-    Body: str = Form(...),
+    Body: str = Form(default=""),
+    NumMedia: int = Form(default=0),
+    MediaUrl0: str = Form(default=None),
 ):
     validator = RequestValidator(os.environ["TWILIO_AUTH_TOKEN"])
     form_data = await request.form()
@@ -89,6 +97,9 @@ async def sms_webhook(
         url = url.replace("http://", "https://", 1)
     if not validator.validate(url, dict(form_data), request.headers.get("X-Twilio-Signature", "")):
         raise HTTPException(status_code=403)
+
+    body = Body.strip()
+    media_url = MediaUrl0 if NumMedia > 0 else None
 
     profile_before = get_profile(From)
     # New user: never received intro AND never went through old onboarding flow
@@ -99,7 +110,7 @@ async def sms_webhook(
         and not profile_before.get("morning_prefs_received")
     )
 
-    background_tasks.add_task(_handle_sms, From, Body.strip(), is_new_user, is_preference_reply)
+    background_tasks.add_task(_handle_sms, From, body, media_url, is_new_user, is_preference_reply)
 
     return Response(content=str(MessagingResponse()), media_type="application/xml")
 
