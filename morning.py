@@ -68,11 +68,11 @@ def generate_morning(phone: str) -> str:
     system = _build_system(phone)
     queries = _get_search_queries(profile)
     results = "\n\n".join(f"{q}:\n{_search(q)}" for q in queries) if queries else ""
-    prompt = f"Write a morning text for this person. Here's what you found:\n\n{results}\n\nWeave it in naturally, short and useful, Palmer's voice. Just the message."
+    prompt = f"Write a morning text for this person. Here's what you found:\n\n{results}\n\nWeave it in naturally, Palmer's voice. One or two sentences per topic max — the whole thing should fit in a single text. No bullet points. Just the message."
 
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=200,
+        max_tokens=500,
         system=system,
         messages=[{"role": "user", "content": prompt}],
     )
