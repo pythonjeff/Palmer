@@ -1,10 +1,33 @@
 import hashlib
 import json
 import os
+import concurrent.futures
 from datetime import datetime, timezone, date as date_type
 
-from agent import client, _search, _build_system
+from agent import client, _tavily, _build_system
 from db import get_all_phones, get_profile, upsert_profile
+
+
+def _search_recent(query: str) -> str:
+    """Search for news from the past 24 hours only."""
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(
+                _tavily.search, query,
+                topic="news", days=1, max_results=5,
+            )
+            response = future.result(timeout=15)
+        results = response.get("results", [])
+        if not results:
+            return "No results found."
+        return "\n\n".join(
+            f"{r['title']}\nPublished: {r.get('published_date', 'unknown')}\n{r['content']}"
+            for r in results
+        )
+    except concurrent.futures.TimeoutError:
+        return "Search timed out."
+    except Exception as e:
+        return f"Search failed: {e}"
 
 
 def _daily_alert_hour(phone: str) -> int:
@@ -51,23 +74,28 @@ def _check_significance(results: str, profile: dict) -> tuple[int, str]:
     """Score news significance 1-10 for this user. Returns (score, summary)."""
     topics = profile.get("morning_topics") or []
     interest_str = ", ".join(topics) if topics else "general news"
+    today = date_type.today().isoformat()
 
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=200,
-            messages=[{"role": "user", "content": f"""Is there breaking or major news here that someone interested in [{interest_str}] would want to know about RIGHT NOW, unprompted?
+            messages=[{"role": "user", "content": f"""Today is {today}. Is there BREAKING news here — published TODAY — that someone interested in [{interest_str}] would want to know about RIGHT NOW, unprompted?
 
 Search results:
 {results[:2500]}
 
-Score 1-10:
-- 9-10: Massive breaking news (blockbuster trade, major emergency, record broken, huge upset)
-- 8: Significant and timely (notable signing, major market move, major local incident)
-- 5-7: Interesting but not urgent — do NOT send
-- 1-4: Routine or nothing relevant — do NOT send
+RECENCY IS REQUIRED. A score of 8+ is only valid if the news broke TODAY (within the past few hours).
+If the published date is missing or not from today, cap the score at 4 regardless of how significant the story is.
+Old news that happened days or weeks ago must score 1-4 even if it's major.
 
-Reply with JSON only: {{"score": N, "summary": "one sentence of what happened"}}
+Score 1-10:
+- 9-10: Massive breaking news from TODAY (blockbuster trade, major emergency, record broken, huge upset)
+- 8: Significant and timely, published TODAY (notable signing, major market move, major local incident)
+- 5-7: Interesting but not from today, or not urgent — do NOT send
+- 1-4: Old news, routine, or nothing relevant — do NOT send
+
+Reply with JSON only: {{"score": N, "summary": "one sentence of what happened and when"}}
 If score < 8 set summary to ""."""}],
         )
         text = response.content[0].text.strip()
@@ -116,7 +144,7 @@ def run_alert_checks():
             continue
 
         try:
-            results = "\n\n".join(f"{q}:\n{_search(q)}" for q in queries)
+            results = "\n\n".join(f"{q}:\n{_search_recent(q)}" for q in queries)
             score, summary = _check_significance(results, profile)
 
             if score >= 8 and summary:
