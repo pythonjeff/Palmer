@@ -9,8 +9,7 @@ from twilio.rest import Client as TwilioClient
 from apscheduler.schedulers.background import BackgroundScheduler
 from agent import get_reply, commit_reply
 from morning import generate_morning
-from hourly import _check_weather, _check_sports, _check_deals
-from db import get_profile, upsert_profile, get_due_reminders
+from db import get_profile, upsert_profile, save_message
 from send_reminders import send_due_reminders
 
 app = FastAPI()
@@ -34,6 +33,7 @@ def _handle_sms(from_number: str, body: str, is_preference_reply: bool):
         upsert_profile(from_number, {"morning_prefs_received": True})
         briefing = generate_morning(from_number)
         _send_outbound(from_number, briefing)
+        save_message(from_number, "assistant", briefing)
 
 
 @app.post("/sms")
@@ -61,16 +61,9 @@ async def preview_morning(phone: str):
 
 @app.get("/preview/hourly")
 async def preview_hourly(phone: str):
+    from hourly import _check_weather, _check_sports, _check_deals
     profile = get_profile(phone)
     lines = []
-
-    reminders = get_due_reminders(phone)
-    if reminders:
-        for r in reminders:
-            lines.append(f"[REMINDER] {r['text']}")
-    else:
-        lines.append("[REMINDER] None due")
-
     for checker in [_check_weather, _check_sports, _check_deals]:
         try:
             result = checker(profile)
@@ -78,5 +71,4 @@ async def preview_hourly(phone: str):
             lines.append(f"[{label}] {result or 'NO_ALERT'}")
         except Exception as e:
             lines.append(f"[{checker.__name__}] ERROR: {e}")
-
     return PlainTextResponse("\n\n".join(lines))

@@ -2,7 +2,7 @@ import os
 import json
 from ddgs import DDGS
 from agent import client, _search
-from db import get_all_phones, get_profile, get_due_reminders, mark_reminder_sent
+from db import get_all_phones, get_profile
 
 
 import re
@@ -149,10 +149,6 @@ def run_hourly_checks():
     for phone in get_all_phones():
         profile = get_profile(phone)
         alerts = []
-
-        for reminder in get_due_reminders(phone):
-            alerts.append(f"Reminder: {reminder['text']}")
-            mark_reminder_sent(reminder["id"])
 
         if not _profile_has_enough(profile):
             if not profile.get("hourly_intro_sent"):
