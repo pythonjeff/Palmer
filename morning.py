@@ -79,6 +79,14 @@ def generate_morning(phone: str) -> str:
     return response.content[0].text.strip()
 
 
+def _split_message(text: str, max_chars: int = 900) -> list[str]:
+    """Split at paragraph breaks if the message exceeds max_chars."""
+    if len(text) <= max_chars:
+        return [text]
+    parts = [p.strip() for p in text.split("\n\n") if p.strip()]
+    return parts if len(parts) > 1 else [text]
+
+
 def send_morning_messages():
     from twilio.rest import Client
     twilio = Client(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
@@ -90,7 +98,9 @@ def send_morning_messages():
             continue  # not onboarded yet — intro flow handles this
         try:
             message = generate_morning(phone)
-            twilio.messages.create(body=message, from_=from_number, to=phone)
-            print(f"Sent to {phone}: {message}")
+            parts = _split_message(message)
+            for part in parts:
+                twilio.messages.create(body=part, from_=from_number, to=phone)
+            print(f"Sent to {phone} ({len(parts)} part(s)): {message}")
         except Exception as e:
             print(f"Failed for {phone}: {e}")
