@@ -37,7 +37,12 @@ def _handle_sms(from_number: str, body: str, is_preference_reply: bool):
 
     try:
         with _phone_locks[from_number]:  # serialize per phone so history never interleaves
-            reply = get_reply(phone_number=from_number, message=body)
+            try:
+                reply = get_reply(phone_number=from_number, message=body)
+            except Exception as e:
+                print(f"get_reply failed for {from_number}: {e}")
+                _send_outbound(from_number, "something went sideways on my end, try again")
+                return
 
             with _in_flight_lock:
                 add_quote = len(_in_flight[from_number]) > 1
