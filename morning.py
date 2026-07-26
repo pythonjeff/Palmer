@@ -4,6 +4,33 @@ from agent import client, _search, _build_system
 from db import get_profile, upsert_profile, get_all_phones
 
 
+def extract_morning_prefs(phone: str, pref_text: str):
+    """Extract morning topics from a user's preference reply and save to profile."""
+    try:
+        profile = get_profile(phone)
+        city = profile.get("city") or profile.get("location") or ""
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            messages=[{"role": "user", "content": f"""Someone just replied to "What do you want in your morning update?"
+
+Their reply: "{pref_text}"
+Their city (if known): "{city}"
+
+Extract what morning topics to track. Make them specific and searchable — include city name where relevant. Examples: "Chicago weather", "Bitcoin price", "Cardinals game score", "national news headlines".
+
+Return a JSON array of strings. Just the array, nothing else."""}],
+        )
+        text = response.content[0].text.strip()
+        start, end = text.find("["), text.rfind("]") + 1
+        if start != -1 and end > start:
+            topics = json.loads(text[start:end])
+            if topics:
+                upsert_profile(phone, {"morning_topics": topics})
+    except Exception:
+        pass
+
+
 def _get_search_queries(profile: dict) -> list[str]:
     topics = profile.get("morning_topics")
     if topics:
@@ -38,21 +65,6 @@ Return a JSON array of 1-3 search queries based on what they said they want each
 
 def generate_morning(phone: str) -> str:
     profile = get_profile(phone)
-
-    if not profile.get("morning_onboarded"):
-        return (
-            "Good morning! I'm Palmer — I'll be texting you every morning with whatever you actually care about. "
-            "What should I bring you?\n\n"
-            "a) Weather\n"
-            "b) Local sports scores\n"
-            "c) Local news\n"
-            "d) National news\n"
-            "e) Horoscope\n"
-            "f) All of the above\n"
-            "g) Other — just tell me\n\n"
-            "Also — any brands or products you want me to watch for deals? Drop those too.\n\n"
-            "Chat me back and I'll be on it."
-        )
     system = _build_system(phone)
     queries = _get_search_queries(profile)
     results = "\n\n".join(f"{q}:\n{_search(q)}" for q in queries) if queries else ""
@@ -73,11 +85,12 @@ def send_morning_messages():
     from_number = os.environ["TWILIO_PHONE_NUMBER"]
 
     for phone in get_all_phones():
+        profile = get_profile(phone)
+        if not profile.get("morning_onboarded"):
+            continue  # not onboarded yet — intro flow handles this
         try:
             message = generate_morning(phone)
             twilio.messages.create(body=message, from_=from_number, to=phone)
-            if not get_profile(phone).get("morning_onboarded"):
-                upsert_profile(phone, {"morning_onboarded": True})
             print(f"Sent to {phone}: {message}")
         except Exception as e:
             print(f"Failed for {phone}: {e}")

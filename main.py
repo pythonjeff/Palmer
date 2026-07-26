@@ -10,9 +10,17 @@ from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
 from apscheduler.schedulers.background import BackgroundScheduler
 from agent import get_reply, commit_reply
-from morning import generate_morning
+from morning import generate_morning, extract_morning_prefs
 from db import get_profile, upsert_profile, save_message
 from send_reminders import send_due_reminders
+
+INTRO_MESSAGE = (
+    "Hey! I'm Palmer. I'll text you every morning with whatever you actually care about — "
+    "weather, sports scores, news, crypto prices, local stuff, anything — and I'm here during the day for "
+    "questions, reminders, or whatever.\n\n"
+    "Two things to get started: what city are you in, and what do you want in your morning update? "
+    "Just tell me in plain english."
+)
 
 app = FastAPI()
 
@@ -30,7 +38,7 @@ def _send_outbound(to: str, body: str):
     _twilio.messages.create(body=body, from_=os.environ["TWILIO_PHONE_NUMBER"], to=to)
 
 
-def _handle_sms(from_number: str, body: str, is_preference_reply: bool):
+def _handle_sms(from_number: str, body: str, is_new_user: bool, is_preference_reply: bool):
     token = object()
     with _in_flight_lock:
         _in_flight[from_number].add(token)
@@ -57,11 +65,13 @@ def _handle_sms(from_number: str, body: str, is_preference_reply: bool):
         with _in_flight_lock:
             _in_flight[from_number].discard(token)
 
-    if is_preference_reply:
-        upsert_profile(from_number, {"morning_prefs_received": True})
-        briefing = generate_morning(from_number)
-        _send_outbound(from_number, briefing)
-        save_message(from_number, "assistant", briefing)
+    if is_new_user:
+        upsert_profile(from_number, {"intro_sent": True})
+        _send_outbound(from_number, INTRO_MESSAGE)
+        save_message(from_number, "assistant", INTRO_MESSAGE)
+    elif is_preference_reply:
+        extract_morning_prefs(from_number, body)
+        upsert_profile(from_number, {"morning_onboarded": True, "morning_prefs_received": True})
 
 
 @app.post("/sms")
@@ -71,12 +81,15 @@ async def sms_webhook(
     Body: str = Form(...),
 ):
     profile_before = get_profile(From)
+    # New user: never received intro AND never went through old onboarding flow
+    is_new_user = not profile_before.get("intro_sent") and not profile_before.get("morning_onboarded")
+    # Preference reply: got the intro but hasn't set their morning topics yet
     is_preference_reply = (
-        profile_before.get("morning_onboarded")
+        profile_before.get("intro_sent")
         and not profile_before.get("morning_prefs_received")
     )
 
-    background_tasks.add_task(_handle_sms, From, Body.strip(), is_preference_reply)
+    background_tasks.add_task(_handle_sms, From, Body.strip(), is_new_user, is_preference_reply)
 
     return Response(content=str(MessagingResponse()), media_type="application/xml")
 
