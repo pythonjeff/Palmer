@@ -136,6 +136,14 @@ def get_due_reminders(phone: str) -> list[dict]:
     return [{"id": r["id"], "text": r["text"]} for r in rows]
 
 
+def mark_reminder_sent(reminder_id: int):
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE reminders SET sent = 1 WHERE id = {PH}", (reminder_id,))
+    conn.commit()
+    conn.close()
+
+
 def claim_due_reminders() -> list[dict]:
     """Atomically mark due reminders as sent and return them. Prevents double-sends."""
     now = datetime.now(timezone.utc).isoformat()
