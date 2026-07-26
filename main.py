@@ -17,11 +17,9 @@ from send_reminders import send_due_reminders
 from alerts import run_alert_checks
 
 INTRO_MESSAGE = (
-    "Hey! I'm Palmer. I'll text you every morning with whatever you actually care about — "
-    "weather, sports scores, news, crypto prices, local stuff, anything — and I'm here during the day for "
-    "questions, reminders, or whatever.\n\n"
-    "Two things to get started: what city are you in, and what do you want in your morning update? "
-    "Just tell me in plain english."
+    "oh — also, I'm Palmer. mornings I'll send you whatever you actually give a damn about. "
+    "rest of the day I'm just here.\n\n"
+    "what city are you in, and what should I be keeping tabs on for you?"
 )
 
 app = FastAPI()
