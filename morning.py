@@ -5,14 +5,26 @@ from db import get_profile, upsert_profile, get_all_phones
 
 
 def _get_search_queries(profile: dict) -> list[str]:
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=150,
-        messages=[{"role": "user", "content": f"""Based on this user profile, what should I search for their morning briefing?
+    topics = profile.get("morning_topics")
+    if topics:
+        topic_list = ", ".join(topics)
+        prompt = f"""Convert these morning briefing topics into search queries:
+
+Topics: {topic_list}
+City (if relevant): {profile.get("city") or profile.get("location") or "unknown"}
+
+Return a JSON array of search queries, one per topic. Example: ["Bitcoin price today", "St. Louis weather today"]. Just the JSON array."""
+    else:
+        prompt = f"""Based on this user profile, what should I search for their morning briefing?
 
 Profile: {json.dumps(profile, indent=2)}
 
-Return a JSON array of 1-3 search queries based on what they said they want each morning. Example: ["St. Louis weather today", "Cardinals score last night"]. If unclear, return []. Just the JSON array."""}],
+Return a JSON array of 1-3 search queries based on what they said they want each morning. Example: ["St. Louis weather today", "Cardinals score last night"]. If unclear, return []. Just the JSON array."""
+
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=150,
+        messages=[{"role": "user", "content": prompt}],
     )
     text = response.content[0].text.strip()
     start, end = text.find("["), text.rfind("]") + 1

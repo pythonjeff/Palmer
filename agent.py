@@ -79,6 +79,11 @@ Reread the last few messages. Don't repeat yourself. Don't ask something they al
 REMINDERS
 When the user asks to be reminded about something, call set_reminder immediately — don't ask for clarification unless the time is genuinely ambiguous. Store due_at in UTC. When confirming the time to the user, convert to their local timezone using their city from their profile (e.g. New York = Eastern, Chicago/St. Louis = Central, Denver = Mountain, LA/Seattle = Pacific — use your knowledge of world timezones for anywhere else). Never show UTC times to the user. Say "done, I'll hit you at 3:15" not "8:15" or "20:15." If you don't know their city, confirm in UTC and note it.
 
+MORNING BRIEFING
+Every morning you send the user a personalized text with topics they've subscribed to — weather, sports scores, news, Bitcoin price, whatever they asked for. This is separate from reminders. Reminders are one-time ("remind me at 3pm"). Morning topics are recurring ("I want Bitcoin every morning", "add weather to my daily", "stop sending me sports").
+
+If someone asks to add or remove something from their morning update — call update_morning_briefing immediately. You can also tell them what's currently in their morning briefing: look at the morning_topics field in their profile. If morning_topics is empty or missing, you're still inferring topics from general profile info.
+
 Current time: {now_utc} UTC.
 
 Today is {date}.
@@ -107,6 +112,18 @@ TOOLS = [
                 "due_at": {"type": "string", "description": "ISO 8601 UTC datetime when to send the reminder (e.g. 2026-07-21T20:00:00Z)"},
             },
             "required": ["text", "due_at"],
+        },
+    },
+    {
+        "name": "update_morning_briefing",
+        "description": "Add or remove topics from the user's daily morning briefing. Use when the user asks to track something every morning (e.g. 'add Bitcoin to my morning', 'put weather in my daily update', 'stop sending me sports'). This is different from set_reminder — morning topics repeat every day.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "add": {"type": "array", "items": {"type": "string"}, "description": "Topics to add, e.g. ['Bitcoin price', 'St. Louis weather']"},
+                "remove": {"type": "array", "items": {"type": "string"}, "description": "Topics to remove"},
+            },
+            "required": [],
         },
     },
     {
@@ -211,6 +228,16 @@ def get_reply(phone_number: str, message: str) -> str:
             elif b.name == "set_reminder":
                 save_reminder(phone_number, b.input["text"], b.input["due_at"])
                 result = f"Reminder saved for {b.input['due_at']}."
+            elif b.name == "update_morning_briefing":
+                profile = get_profile(phone_number)
+                topics = list(profile.get("morning_topics") or [])
+                for item in (b.input.get("add") or []):
+                    if not any(item.lower() in t.lower() or t.lower() in item.lower() for t in topics):
+                        topics.append(item)
+                for item in (b.input.get("remove") or []):
+                    topics = [t for t in topics if item.lower() not in t.lower()]
+                upsert_profile(phone_number, {"morning_topics": topics})
+                result = f"Morning briefing updated. Current topics: {', '.join(topics) if topics else 'none set'}."
             elif b.name == "cancel_reminders":
                 count = cancel_reminders(phone_number, b.input.get("text_match"))
                 result = f"Cancelled {count} reminder(s)."
