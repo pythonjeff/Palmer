@@ -10,7 +10,7 @@ from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
 from apscheduler.schedulers.background import BackgroundScheduler
-from agent import get_reply, commit_reply
+from agent import get_reply, commit_reply, shorten_message
 from morning import generate_morning, extract_morning_prefs
 from db import get_profile, upsert_profile, save_message
 from send_reminders import send_due_reminders
@@ -48,6 +48,23 @@ def _send_outbound(to: str, body: str):
         _twilio.messages.create(body=part, from_=from_number, to=to)
 
 
+def _send_with_retry(to: str, body: str):
+    """Send a message, shortening with Haiku and retrying once if it fails."""
+    try:
+        _send_outbound(to, body)
+        return
+    except Exception as e:
+        print(f"Send failed for {to}: {e} — shortening and retrying")
+    try:
+        _send_outbound(to, shorten_message(body))
+    except Exception as e2:
+        print(f"Retry also failed for {to}: {e2}")
+        try:
+            _send_outbound(to, "something went sideways sending that — ask me again")
+        except Exception:
+            pass
+
+
 def _send_gif_outbound(to: str, media_url: str):
     _twilio.messages.create(from_=os.environ["TWILIO_PHONE_NUMBER"], to=to, media_url=[media_url])
 
@@ -73,7 +90,7 @@ def _handle_sms(from_number: str, body: str, media_url: str | None, is_new_user:
                 snippet = body if len(body) <= 50 else body[:50].rstrip() + "…"
                 reply = f"> {snippet}\n{reply}"
 
-            _send_outbound(from_number, reply)
+            _send_with_retry(from_number, reply)
             if gif_url:
                 _send_gif_outbound(from_number, gif_url)
             commit_reply(from_number, body or "[photo]", reply)

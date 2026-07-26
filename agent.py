@@ -257,6 +257,19 @@ def _update_profile(phone: str, user_msg: str, reply: str):
         pass
 
 
+def shorten_message(text: str, max_chars: int = 320) -> str:
+    """Use Haiku to shorten a message that failed to send."""
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=150,
+            messages=[{"role": "user", "content": f"Shorten this to under {max_chars} characters. Keep the key point, cut everything else. No explanation, just the shortened message:\n\n{text}"}],
+        )
+        return response.content[0].text.strip()
+    except Exception:
+        return text[:max_chars]
+
+
 def _build_system(phone: str) -> str:
     profile = get_profile(phone)
     profile_block = "What you know about them:\n" + json.dumps(profile, indent=2) if profile else "You don't know much about this person yet. Learn as you go."
