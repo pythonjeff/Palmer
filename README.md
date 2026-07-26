@@ -33,6 +33,11 @@ Palmer learns who you are over time — your city, job, interests, ongoing threa
 - Real-time search via Tavily (news, weather, sports scores, prices)
 - 15-second timeout with graceful fallback
 
+**Reliability**
+- Long messages split at paragraph breaks before sending; hard-splits at 1500 chars as fallback
+- Send failures trigger a Haiku-powered shorten-and-retry, then a plain fallback string — Palmer always sends something
+- Morning briefing token limit sized to handle 4+ topics without truncation
+
 **Security**
 - Twilio webhook signature validation (HMAC-SHA1) on every inbound request
 - All DB queries parameterized; every query scoped to phone number
