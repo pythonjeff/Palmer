@@ -4,8 +4,9 @@ load_dotenv()
 import os
 import threading
 from collections import defaultdict
-from fastapi import FastAPI, Form, Response, BackgroundTasks
+from fastapi import FastAPI, Form, Response, BackgroundTasks, HTTPException, Request
 from fastapi.responses import PlainTextResponse
+from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -76,10 +77,19 @@ def _handle_sms(from_number: str, body: str, is_new_user: bool, is_preference_re
 
 @app.post("/sms")
 async def sms_webhook(
+    request: Request,
     background_tasks: BackgroundTasks,
     From: str = Form(...),
     Body: str = Form(...),
 ):
+    validator = RequestValidator(os.environ["TWILIO_AUTH_TOKEN"])
+    form_data = await request.form()
+    url = str(request.url)
+    if request.headers.get("x-forwarded-proto") == "https":
+        url = url.replace("http://", "https://", 1)
+    if not validator.validate(url, dict(form_data), request.headers.get("X-Twilio-Signature", "")):
+        raise HTTPException(status_code=403)
+
     profile_before = get_profile(From)
     # New user: never received intro AND never went through old onboarding flow
     is_new_user = not profile_before.get("intro_sent") and not profile_before.get("morning_onboarded")
