@@ -14,6 +14,7 @@ from agent import get_reply, commit_reply, shorten_message
 from morning import generate_morning, extract_morning_prefs
 from db import get_profile, upsert_profile, save_message
 from send_reminders import send_due_reminders
+from alerts import run_alert_checks
 
 INTRO_MESSAGE = (
     "Hey! I'm Palmer. I'll text you every morning with whatever you actually care about — "
@@ -27,6 +28,7 @@ app = FastAPI()
 
 _scheduler = BackgroundScheduler()
 _scheduler.add_job(send_due_reminders, "interval", minutes=1)
+_scheduler.add_job(run_alert_checks, "interval", minutes=30)
 _scheduler.start()
 
 _in_flight: dict[str, set] = defaultdict(set)
