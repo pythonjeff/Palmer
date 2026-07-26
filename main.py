@@ -36,7 +36,16 @@ _twilio = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH
 
 
 def _send_outbound(to: str, body: str):
-    _twilio.messages.create(body=body, from_=os.environ["TWILIO_PHONE_NUMBER"], to=to)
+    from_number = os.environ["TWILIO_PHONE_NUMBER"]
+    if len(body) <= 1500:
+        _twilio.messages.create(body=body, from_=from_number, to=to)
+        return
+    # Split on paragraph breaks first, then hard-split anything still too long
+    parts = [p.strip() for p in body.split("\n\n") if p.strip()]
+    if len(parts) <= 1:
+        parts = [body[i:i+1500] for i in range(0, len(body), 1500)]
+    for part in parts:
+        _twilio.messages.create(body=part, from_=from_number, to=to)
 
 
 def _send_gif_outbound(to: str, media_url: str):
