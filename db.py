@@ -152,6 +152,26 @@ def mark_reminder_sent(reminder_id: int):
     conn.close()
 
 
+def cancel_reminders(phone: str, text_match: str = None) -> int:
+    conn = _conn()
+    cur = conn.cursor()
+    if text_match:
+        pattern = f"%{text_match.lower().strip()}%"
+        cur.execute(
+            f"UPDATE reminders SET sent = 1 WHERE phone = {PH} AND LOWER(text) LIKE {PH} AND sent = 0",
+            (phone, pattern),
+        )
+    else:
+        cur.execute(
+            f"UPDATE reminders SET sent = 1 WHERE phone = {PH} AND sent = 0",
+            (phone,),
+        )
+    count = cur.rowcount
+    conn.commit()
+    conn.close()
+    return count
+
+
 def claim_due_reminders() -> list[dict]:
     """Atomically mark due reminders as sent and return them. Prevents double-sends."""
     now = datetime.now(timezone.utc).isoformat()

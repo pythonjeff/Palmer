@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timezone
 import anthropic
 from ddgs import DDGS
-from db import init_db, get_history, save_message, get_profile, upsert_profile, save_reminder
+from db import init_db, get_history, save_message, get_profile, upsert_profile, save_reminder, cancel_reminders
 
 init_db()
 
@@ -92,6 +92,17 @@ TOOLS = [
             "required": ["text", "due_at"],
         },
     },
+    {
+        "name": "cancel_reminders",
+        "description": "Cancel pending reminders that haven't fired yet. If text_match is given, cancels only reminders whose text contains that phrase. If omitted, cancels all pending reminders for this user.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text_match": {"type": "string", "description": "Optional: only cancel reminders matching this phrase. Omit to cancel all pending reminders."},
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -177,6 +188,9 @@ def get_reply(phone_number: str, message: str) -> str:
             elif b.name == "set_reminder":
                 save_reminder(phone_number, b.input["text"], b.input["due_at"])
                 result = f"Reminder saved for {b.input['due_at']}."
+            elif b.name == "cancel_reminders":
+                count = cancel_reminders(phone_number, b.input.get("text_match"))
+                result = f"Cancelled {count} reminder(s)."
             else:
                 result = "Unknown tool."
             tool_results.append({"type": "tool_result", "tool_use_id": b.id, "content": result})
