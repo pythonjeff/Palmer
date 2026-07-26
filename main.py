@@ -2,6 +2,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
+import threading
+from collections import defaultdict
 from fastapi import FastAPI, Form, Response, BackgroundTasks
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.messaging_response import MessagingResponse
@@ -18,6 +20,9 @@ _scheduler = BackgroundScheduler()
 _scheduler.add_job(send_due_reminders, "interval", minutes=1)
 _scheduler.start()
 
+_in_flight: dict[str, set] = defaultdict(set)
+_in_flight_lock = threading.Lock()
+
 
 def _send_outbound(to: str, body: str):
     twilio = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
@@ -25,9 +30,25 @@ def _send_outbound(to: str, body: str):
 
 
 def _handle_sms(from_number: str, body: str, is_preference_reply: bool):
-    reply = get_reply(phone_number=from_number, message=body)
-    _send_outbound(from_number, reply)
-    commit_reply(from_number, body, reply)
+    token = object()
+    with _in_flight_lock:
+        _in_flight[from_number].add(token)
+
+    try:
+        reply = get_reply(phone_number=from_number, message=body)
+
+        with _in_flight_lock:
+            add_quote = len(_in_flight[from_number]) > 1
+
+        if add_quote:
+            snippet = body if len(body) <= 50 else body[:50].rstrip() + "…"
+            reply = f"> {snippet}\n{reply}"
+
+        _send_outbound(from_number, reply)
+        commit_reply(from_number, body, reply)
+    finally:
+        with _in_flight_lock:
+            _in_flight[from_number].discard(token)
 
     if is_preference_reply:
         upsert_profile(from_number, {"morning_prefs_received": True})
