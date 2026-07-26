@@ -313,9 +313,14 @@ def get_reply(phone_number: str, message: str, media_url: str = None) -> tuple[s
             messages=messages,
         )
 
-        if response.stop_reason == "end_turn":
-            text = next(b.text for b in response.content if hasattr(b, "text"))
-            return text, gif_url
+        # Extract any text block present in this response
+        text = next((b.text for b in response.content if hasattr(b, "text")), None)
+
+        if response.stop_reason in ("end_turn", "max_tokens"):
+            if text:
+                return text, gif_url
+            # end_turn with no text — unlikely but guard anyway
+            raise RuntimeError(f"stop_reason={response.stop_reason} but no text block in response")
 
         tool_results = []
         for b in response.content:
@@ -345,6 +350,13 @@ def get_reply(phone_number: str, message: str, media_url: str = None) -> tuple[s
             else:
                 result = "Unknown tool."
             tool_results.append({"type": "tool_result", "tool_use_id": b.id, "content": result})
+
+        if not tool_results:
+            # stop_reason was tool_use but no tool blocks found — something is off; return text if any
+            if text:
+                return text, gif_url
+            raise RuntimeError("stop_reason=tool_use but no tool_use blocks and no text")
+
         messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": tool_results})
 

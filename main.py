@@ -80,7 +80,18 @@ def _handle_sms(from_number: str, body: str, media_url: str | None, is_new_user:
                 reply, gif_url = get_reply(phone_number=from_number, message=body, media_url=media_url)
             except Exception as e:
                 print(f"get_reply failed for {from_number}: {e}")
-                _send_outbound(from_number, "something went sideways on my end, try again")
+                try:
+                    _send_outbound(from_number, "something went sideways on my end, try again")
+                except Exception as e2:
+                    print(f"fallback send also failed for {from_number}: {e2}")
+                return
+
+            if not reply:
+                print(f"get_reply returned empty string for {from_number}")
+                try:
+                    _send_outbound(from_number, "something went sideways on my end, try again")
+                except Exception as e2:
+                    print(f"fallback send also failed for {from_number}: {e2}")
                 return
 
             with _in_flight_lock:
