@@ -22,6 +22,7 @@ _scheduler.start()
 
 _in_flight: dict[str, set] = defaultdict(set)
 _in_flight_lock = threading.Lock()
+_phone_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
 
 
 def _send_outbound(to: str, body: str):
@@ -35,17 +36,18 @@ def _handle_sms(from_number: str, body: str, is_preference_reply: bool):
         _in_flight[from_number].add(token)
 
     try:
-        reply = get_reply(phone_number=from_number, message=body)
+        with _phone_locks[from_number]:  # serialize per phone so history never interleaves
+            reply = get_reply(phone_number=from_number, message=body)
 
-        with _in_flight_lock:
-            add_quote = len(_in_flight[from_number]) > 1
+            with _in_flight_lock:
+                add_quote = len(_in_flight[from_number]) > 1
 
-        if add_quote:
-            snippet = body if len(body) <= 50 else body[:50].rstrip() + "…"
-            reply = f"> {snippet}\n{reply}"
+            if add_quote:
+                snippet = body if len(body) <= 50 else body[:50].rstrip() + "…"
+                reply = f"> {snippet}\n{reply}"
 
-        _send_outbound(from_number, reply)
-        commit_reply(from_number, body, reply)
+            _send_outbound(from_number, reply)
+            commit_reply(from_number, body, reply)
     finally:
         with _in_flight_lock:
             _in_flight[from_number].discard(token)
