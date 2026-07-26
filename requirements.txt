@@ -4,6 +4,6 @@ twilio
 anthropic
 python-dotenv
 python-multipart
-ddgs
+tavily-python
 psycopg2-binary
 apscheduler

@@ -1,6 +1,5 @@
 import os
 import json
-from ddgs import DDGS
 from agent import client, _search
 from db import get_all_phones, get_profile
 
@@ -21,17 +20,7 @@ def _no_alert(answer: str) -> bool:
 
 
 def _shop(query: str) -> str:
-    try:
-        with DDGS() as ddgs:
-            results = list(ddgs.shopping(query, max_results=5))
-        if not results:
-            return ""
-        return "\n\n".join(
-            f"{r.get('title', '')}\n${r.get('price', 'N/A')} at {r.get('source', 'unknown')}"
-            for r in results
-        )
-    except Exception:
-        return ""
+    return _search(f"{query} sale discount")
 
 
 def _clean_field(raw) -> str:

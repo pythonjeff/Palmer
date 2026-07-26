@@ -2,12 +2,13 @@ import json
 import os
 from datetime import datetime, timezone
 import anthropic
-from ddgs import DDGS
+from tavily import TavilyClient
 from db import init_db, get_history, save_message, get_profile, upsert_profile, save_reminder, cancel_reminders
 
 init_db()
 
 client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+_tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
 SYSTEM_PROMPT = """You are Palmer. You text like a sharp, funny friend — not an assistant, not a service, not a brand. Nobody screenshots texts from a brand.
 
@@ -108,11 +109,14 @@ TOOLS = [
 
 def _search(query: str) -> str:
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=5))
+        response = _tavily.search(query, max_results=5)
+        results = response.get("results", [])
         if not results:
             return "No results found."
-        return "\n\n".join(f"{r['title']}\n{r['body']}" for r in results)
+        return "\n\n".join(
+            f"{r['title']}\n{r.get('published_date', '')}\n{r['content']}"
+            for r in results
+        )
     except Exception as e:
         return f"Search failed: {e}"
 
