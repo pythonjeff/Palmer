@@ -1,5 +1,6 @@
 import json
 import os
+import concurrent.futures
 from datetime import datetime, timezone
 import anthropic
 from tavily import TavilyClient
@@ -109,7 +110,9 @@ TOOLS = [
 
 def _search(query: str) -> str:
     try:
-        response = _tavily.search(query, max_results=5)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(_tavily.search, query, max_results=5)
+            response = future.result(timeout=15)
         results = response.get("results", [])
         if not results:
             return "No results found."
@@ -117,6 +120,8 @@ def _search(query: str) -> str:
             f"{r['title']}\n{r.get('published_date', '')}\n{r['content']}"
             for r in results
         )
+    except concurrent.futures.TimeoutError:
+        return "Search timed out."
     except Exception as e:
         return f"Search failed: {e}"
 
