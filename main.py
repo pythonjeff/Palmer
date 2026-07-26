@@ -23,11 +23,11 @@ _scheduler.start()
 _in_flight: dict[str, set] = defaultdict(set)
 _in_flight_lock = threading.Lock()
 _phone_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
+_twilio = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
 
 
 def _send_outbound(to: str, body: str):
-    twilio = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
-    twilio.messages.create(body=body, from_=os.environ["TWILIO_PHONE_NUMBER"], to=to)
+    _twilio.messages.create(body=body, from_=os.environ["TWILIO_PHONE_NUMBER"], to=to)
 
 
 def _handle_sms(from_number: str, body: str, is_preference_reply: bool):

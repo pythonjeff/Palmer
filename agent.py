@@ -7,7 +7,7 @@ from db import init_db, get_history, save_message, get_profile, upsert_profile, 
 
 init_db()
 
-client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"], timeout=45.0)
 _tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
 SYSTEM_PROMPT = """You are Palmer. You text like a sharp, funny friend — not an assistant, not a service, not a brand. Nobody screenshots texts from a brand.
@@ -170,7 +170,7 @@ def get_reply(phone_number: str, message: str) -> str:
     messages = get_history(phone_number, limit=15)
     messages.append({"role": "user", "content": message})
 
-    while True:
+    for _ in range(6):  # cap tool call iterations
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
@@ -180,8 +180,7 @@ def get_reply(phone_number: str, message: str) -> str:
         )
 
         if response.stop_reason == "end_turn":
-            reply = next(b.text for b in response.content if hasattr(b, "text"))
-            break
+            return next(b.text for b in response.content if hasattr(b, "text"))
 
         tool_results = []
         for b in response.content:
@@ -201,7 +200,7 @@ def get_reply(phone_number: str, message: str) -> str:
         messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": tool_results})
 
-    return reply
+    raise RuntimeError("tool loop exceeded max iterations without end_turn")
 
 
 def commit_reply(phone_number: str, message: str, reply: str):
