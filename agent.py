@@ -119,11 +119,23 @@ TOOLS = [
     },
     {
         "name": "send_gif",
-        "description": "Search for and send a GIF as a reaction or punchline. Use sparingly — a well-timed GIF is funny, a frequent one is noise. Good for celebrations, reactions, absurdity. Search terms like 'eye roll', 'slow clap', 'mind blown', 'this is fine' work well.",
+        "description": """Search for and send a GIF. Use sparingly — one well-timed GIF beats three mediocre ones.
+
+THINK IN MEMES AND CULTURAL REFERENCES, not literal descriptions. Specific references return far better results than generic ones.
+
+Good search strategies:
+- Reaction memes: 'this is fine fire', 'Jim Halpert stare to camera', 'Michael Scott no god please no', 'concerned Kermit', 'Dwight head shake', 'Ron Swanson nod'
+- Celebration: 'Leonardo DiCaprio cheers', 'Oprah you get a car', 'LeBron shimmy', 'Carlton dance'
+- Disbelief/chaos: 'John Travolta confused', 'math lady meme', 'dog sitting in fire', 'it crowd fire'
+- Awkward/cringe: 'Steve Carell no please', 'nervous laugh', 'that's what she said'
+- Agreement/validation: 'Parks and Recreation treat yourself', 'Patrick Stewart yes', 'slow clap'
+- Disappointment: 'Schitt's Creek ew', 'arrested development her', 'Tobias never nude'
+
+Match the register: confusion → 'John Travolta confused', celebration → 'confetti explosion', someone being dramatic → 'Sarah Jessica Parker gasp'. Never search just 'funny' or 'happy' — too generic.""",
         "input_schema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Tenor search term, e.g. 'michael scott no', 'celebrate', 'eye roll'"},
+                "query": {"type": "string", "description": "Specific meme or cultural reference search, e.g. 'Michael Scott no god please no' or 'this is fine fire'"},
             },
             "required": ["query"],
         },
@@ -198,13 +210,13 @@ def _get_gif(query: str) -> str | None:
     try:
         resp = _requests.get(
             "https://api.giphy.com/v1/gifs/search",
-            params={"api_key": api_key, "q": query, "limit": 5, "rating": "pg-13"},
+            params={"api_key": api_key, "q": query, "limit": 10, "rating": "pg-13"},
             timeout=8,
         )
         data = resp.json().get("data", [])
         if not data:
             return None
-        pick = random.choice(data)
+        pick = random.choice(data[:3])  # top 3 are most relevant; add variety without going too far down
         # downsized keeps files under ~2MB — better for MMS delivery
         images = pick.get("images", {})
         return (images.get("downsized") or images.get("original") or {}).get("url")
