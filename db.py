@@ -113,8 +113,16 @@ def upsert_profile(phone: str, updates: dict):
 
 
 def save_reminder(phone: str, text: str, due_at: str):
+    normalized = text.lower().strip().rstrip("!")
     conn = _conn()
     cur = conn.cursor()
+    cur.execute(
+        f"SELECT id FROM reminders WHERE phone = {PH} AND LOWER(TRIM(REPLACE(text, '!', ''))) = {PH} AND sent = 0",
+        (phone, normalized),
+    )
+    if cur.fetchone():
+        conn.close()
+        return
     cur.execute(
         f"INSERT INTO reminders (phone, text, due_at) VALUES ({PH}, {PH}, {PH})",
         (phone, text, due_at),
