@@ -191,22 +191,23 @@ def _fetch_media(url: str) -> tuple[str, str] | None:
 
 
 def _get_gif(query: str) -> str | None:
-    """Search Tenor for a GIF matching the query. Returns a URL or None."""
-    api_key = os.environ.get("TENOR_API_KEY")
+    """Search Giphy for a GIF matching the query. Returns a URL or None."""
+    api_key = os.environ.get("GIPHY_API_KEY")
     if not api_key:
         return None
     try:
         resp = _requests.get(
-            "https://tenor.googleapis.com/v2/search",
-            params={"q": query, "key": api_key, "limit": 5, "media_filter": "mediumgif,gif"},
+            "https://api.giphy.com/v1/gifs/search",
+            params={"api_key": api_key, "q": query, "limit": 5, "rating": "pg-13"},
             timeout=8,
         )
-        results = resp.json().get("results", [])
-        if not results:
+        data = resp.json().get("data", [])
+        if not data:
             return None
-        pick = random.choice(results)
-        formats = pick.get("media_formats", {})
-        return (formats.get("mediumgif") or formats.get("gif") or {}).get("url")
+        pick = random.choice(data)
+        # downsized keeps files under ~2MB — better for MMS delivery
+        images = pick.get("images", {})
+        return (images.get("downsized") or images.get("original") or {}).get("url")
     except Exception:
         return None
 
