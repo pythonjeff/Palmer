@@ -20,8 +20,15 @@ Palmer learns who you are over time — your city, job, interests, ongoing threa
 
 **Morning Briefing**
 - Daily personalized text based on each user's subscribed topics
+- Searches scoped to past 48 hours with publish dates surfaced — stale results are skipped, not paraphrased
 - User-configurable topics ("add Bitcoin to my morning", "remove sports") via `update_morning_briefing` tool
 - New users onboarded immediately on first text — no waiting until next morning
+
+**Proactive Alerts**
+- Once-daily scan of each user's interests for breaking news
+- Searches scoped to past 24 hours; Haiku scores significance 1–10 with today's date as a hard gate
+- Only fires at score ≥ 8 — massive breaking news, not routine updates
+- Randomized send time per user per day (deterministic hash, 1pm–9pm UTC window)
 
 **Reminders**
 - Set one-time reminders at any future time ("remind me at 3pm to call Dave")
@@ -29,13 +36,21 @@ Palmer learns who you are over time — your city, job, interests, ongoing threa
 - Deduplication prevents double-saves; atomic Postgres claiming prevents double-sends
 - Timezone-aware confirmations based on user's city
 
-**Web Search**
-- Real-time search via Tavily (news, weather, sports scores, prices)
-- 15-second timeout with graceful fallback
+**Live Data Tools**
+- **Weather** — OpenWeatherMap API: accurate current conditions and 5-day forecast. Handles "next Saturday", "this weekend", specific dates. Never uses web crawl for weather.
+- **Crypto prices** — CoinGecko: real-time price, 24h change, 7d change for Bitcoin, ETH, Doge, Solana, and more. No API key required.
+- **Stock prices** — yfinance: any ticker (AAPL, TSLA, SPY, QQQ, etc). Date-aware — correctly labels weekend/holiday data as "Friday close" not "today".
+- **News search** — Tavily in news mode (7-day window) for sports scores, current events, general facts
+
+**Information Curation**
+- Palmer routes each query to the right tool — weather never goes through web search, prices never go through web search
+- Connects information to what it knows about the user: weather to their plans, prices to context, news to why it matters to them specifically
+- Surfaces adjacent things they'd care about, not just literal answers
 
 **Reliability**
-- Long messages split at paragraph breaks before sending; hard-splits at 1500 chars as fallback
-- Send failures trigger a Haiku-powered shorten-and-retry, then a plain fallback string — Palmer always sends something
+- Three-layer send pipeline: split at paragraph breaks → Haiku shorten-and-retry → plain fallback string
+- All exception paths protected — Palmer always sends something, or logs why it couldn't
+- `max_tokens` and tool loop edge cases handled; empty replies caught before hitting Twilio
 - Morning briefing token limit sized to handle 4+ topics without truncation
 
 **Security**
@@ -47,10 +62,13 @@ Palmer learns who you are over time — your city, job, interests, ongoing threa
 - **FastAPI** — webhook server
 - **Twilio** — SMS/MMS in and out
 - **Anthropic Claude Sonnet 4.6** — conversation and tool use
-- **Anthropic Claude Haiku 4.5** — profile extraction, morning topic parsing
-- **Tavily** — web search
+- **Anthropic Claude Haiku 4.5** — profile extraction, morning topic parsing, alert scoring, message shortening
+- **Tavily** — news search (topic=news mode)
+- **OpenWeatherMap** — weather current + forecast
+- **CoinGecko** — crypto prices (free, no key)
+- **yfinance** — stock prices
 - **Giphy** — GIF search
-- **APScheduler** — 1-minute reminder sweep, in-process
+- **APScheduler** — 1-minute reminder sweep + 30-minute alert sweep, in-process
 - **Heroku Postgres** — message history, user profiles, reminders
 
 ## Setup
@@ -87,14 +105,15 @@ Set your Twilio webhook to `https://<ngrok-url>/sms` (HTTP POST).
 ```bash
 heroku create
 heroku addons:create heroku-postgresql:essential-0
-heroku config:set ANTHROPIC_API_KEY=... TWILIO_ACCOUNT_SID=... TWILIO_AUTH_TOKEN=... TWILIO_PHONE_NUMBER=... TAVILY_API_KEY=... GIPHY_API_KEY=...
+heroku config:set ANTHROPIC_API_KEY=... TWILIO_ACCOUNT_SID=... TWILIO_AUTH_TOKEN=... \
+  TWILIO_PHONE_NUMBER=... TAVILY_API_KEY=... GIPHY_API_KEY=... OWM_API_KEY=...
 heroku config:set WEB_CONCURRENCY=1
 git push heroku main
 ```
 
 Set the Twilio webhook URL to `https://<your-app>.herokuapp.com/sms`.
 
-Heroku Scheduler should run `python run_morning.py` once daily at your preferred morning time.
+Heroku Scheduler should run `python send_morning.py` once daily at your preferred morning time.
 
 ## Environment Variables
 
@@ -106,6 +125,7 @@ Heroku Scheduler should run `python run_morning.py` once daily at your preferred
 | `TWILIO_PHONE_NUMBER` | Your Twilio number (e.g. +15551234567) |
 | `TAVILY_API_KEY` | From app.tavily.com |
 | `GIPHY_API_KEY` | From developers.giphy.com (free) |
+| `OWM_API_KEY` | From openweathermap.org (free tier) |
 | `DATABASE_URL` | Postgres connection string (auto-set by Heroku addon) |
 
 ## Preview Endpoints
@@ -120,4 +140,6 @@ GET /preview/hourly?phone=+15551234567 # preview hourly weather/sports/deals che
 - `WEB_CONCURRENCY=1` is required — in-memory phone locks and the APScheduler only work correctly in a single process
 - Per-phone `threading.Lock` in `_phone_locks` serializes `_handle_sms` so history never interleaves between concurrent inbound messages from the same number
 - Reminder claiming uses `FOR UPDATE SKIP LOCKED` on Postgres to prevent double-sends across scheduler ticks
-- Anthropic client has a 45s timeout; Tavily search is wrapped in a `ThreadPoolExecutor` with a 15s timeout to prevent silent hangs from holding the phone lock
+- Anthropic client has a 45s timeout; all external API calls (Tavily, OWM, yfinance) wrapped in `ThreadPoolExecutor` with 15s timeout
+- Tool routing: `get_weather` → OWM, `get_price` → CoinGecko/yfinance, `web_search` → Tavily news mode. Each tool owns its domain — no overlap.
+- Alert recency enforced at two layers: Tavily `days=1` filters the search, then Haiku scores with today's date and caps old news at 4/10
