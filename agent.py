@@ -99,7 +99,7 @@ Today is {date}.
 TOOLS = [
     {
         "name": "web_search",
-        "description": "Search the web for current information — news, prices, weather, sports, etc. Only use this when you actually need up-to-date facts you don't already know. Don't search for things you can answer from general knowledge.",
+        "description": "Search the web for current information — news, prices, weather, sports, etc. Only use this when you actually need up-to-date facts you don't already know. Don't search for things you can answer from general knowledge. For time-sensitive queries (weather, scores, prices, forecasts), always include the specific date or 'today' in the query — e.g. 'Chicago weather Saturday July 26 2026' not just 'Chicago weather'. Results include publish dates; if results look stale or don't match the date asked about, say so rather than presenting old information as current.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -178,7 +178,7 @@ def _search(query: str) -> str:
         if not results:
             return "No results found."
         return "\n\n".join(
-            f"{r['title']}\n{r.get('published_date', '')}\n{r['content']}"
+            f"{r['title']}\nPublished: {r.get('published_date', 'unknown')}\n{r['content']}"
             for r in results
         )
     except concurrent.futures.TimeoutError:
