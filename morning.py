@@ -1,7 +1,31 @@
 import json
 import os
-from agent import client, _search, _build_system
+import concurrent.futures
+from datetime import date as date_type
+from agent import client, _tavily, _build_system
 from db import get_profile, upsert_profile, get_all_phones
+
+
+def _search_morning(query: str) -> str:
+    """Search for recent news, surfacing publish dates so stale results are visible."""
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(
+                _tavily.search, query,
+                topic="news", days=2, max_results=5,
+            )
+            response = future.result(timeout=15)
+        results = response.get("results", [])
+        if not results:
+            return "No results found."
+        return "\n\n".join(
+            f"{r['title']}\nPublished: {r.get('published_date', 'unknown')}\n{r['content']}"
+            for r in results
+        )
+    except concurrent.futures.TimeoutError:
+        return "Search timed out."
+    except Exception as e:
+        return f"Search failed: {e}"
 
 
 def extract_morning_prefs(phone: str, pref_text: str):
@@ -32,21 +56,24 @@ Return a JSON array of strings. Just the array, nothing else."""}],
 
 
 def _get_search_queries(profile: dict) -> list[str]:
+    today = date_type.today().strftime("%B %d, %Y")
     topics = profile.get("morning_topics")
     if topics:
         topic_list = ", ".join(topics)
-        prompt = f"""Convert these morning briefing topics into search queries:
+        prompt = f"""Today is {today}. Convert these morning briefing topics into search queries that will find fresh, current results from today or last night.
 
 Topics: {topic_list}
 City (if relevant): {profile.get("city") or profile.get("location") or "unknown"}
 
-Return a JSON array of search queries, one per topic. Example: ["Bitcoin price today", "St. Louis weather today"]. Just the JSON array."""
+Make queries time-specific — include "today", "this morning", "last night", or "{today}" where it helps get current results.
+Return a JSON array of search queries, one per topic. Example: ["Bitcoin price {today}", "St. Louis weather today", "Cardinals score last night"]. Just the JSON array."""
     else:
-        prompt = f"""Based on this user profile, what should I search for their morning briefing?
+        prompt = f"""Today is {today}. Based on this user profile, what should I search for their morning briefing?
 
 Profile: {json.dumps(profile, indent=2)}
 
-Return a JSON array of 1-3 search queries based on what they said they want each morning. Example: ["St. Louis weather today", "Cardinals score last night"]. If unclear, return []. Just the JSON array."""
+Make queries time-specific — use "today", "this morning", or "{today}" to get current results.
+Return a JSON array of 1-3 search queries. Example: ["St. Louis weather today", "Cardinals score last night"]. If unclear, return []. Just the JSON array."""
 
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
@@ -66,9 +93,19 @@ Return a JSON array of 1-3 search queries based on what they said they want each
 def generate_morning(phone: str) -> str:
     profile = get_profile(phone)
     system = _build_system(phone)
+    today = date_type.today().strftime("%B %d, %Y")
     queries = _get_search_queries(profile)
-    results = "\n\n".join(f"{q}:\n{_search(q)}" for q in queries) if queries else ""
-    prompt = f"Write a morning text for this person. Here's what you found:\n\n{results}\n\nWeave it in naturally, Palmer's voice. One or two sentences per topic max — the whole thing should fit in a single text. No bullet points. Just the message."
+    results = "\n\n".join(f"{q}:\n{_search_morning(q)}" for q in queries) if queries else ""
+    prompt = f"""Today is {today}. Write a morning text for this person based on what you found below.
+
+Search results:
+{results}
+
+Rules:
+- Only include information that's clearly from today or last night. Check the Published dates.
+- If results for a topic look stale, outdated, or generic — skip that topic entirely. Do not make something up or paraphrase old news.
+- One or two sentences per topic max. The whole thing should fit in a single text.
+- Palmer's voice — no bullet points, no headers, no "good morning". Just the message."""
 
     response = client.messages.create(
         model="claude-sonnet-4-6",
