@@ -10,9 +10,9 @@ from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
 from apscheduler.schedulers.background import BackgroundScheduler
-from agent import get_reply, commit_reply, shorten_message
+from agent import get_reply, save_assistant_turn, shorten_message
 from morning import generate_morning, extract_morning_prefs
-from db import get_profile, upsert_profile, save_message
+from db import get_profile, upsert_profile, save_message, get_history
 from send_reminders import send_due_reminders
 from alerts import run_alert_checks
 
@@ -74,7 +74,13 @@ def _send_gif_outbound(to: str, media_url: str):
 
 
 def _handle_sms(from_number: str, body: str, media_url: str | None):
-    # Compute new-user flags here (in background thread) so the HTTP handler never blocks
+    try:
+        _handle_sms_inner(from_number, body, media_url)
+    except Exception as e:
+        print(f"UNHANDLED ERROR in _handle_sms for {from_number}: {e}")
+
+
+def _handle_sms_inner(from_number: str, body: str, media_url: str | None):
     profile_before = get_profile(from_number)
     is_new_user = not profile_before.get("intro_sent") and not profile_before.get("morning_onboarded")
     is_preference_reply = (
@@ -87,8 +93,16 @@ def _handle_sms(from_number: str, body: str, media_url: str | None):
 
     try:
         with _phone_locks[from_number]:  # serialize per phone so history never interleaves
+            # Fetch history BEFORE saving the current message so it isn't double-included
+            history = get_history(from_number, limit=20)
+            # Save user message NOW — if the process dies mid-reply, this exchange
+            # is still in DB so the next message has full context
+            save_message(from_number, "user", body or "[photo]")
+
             try:
-                reply, gif_url = get_reply(phone_number=from_number, message=body, media_url=media_url)
+                reply, gif_url = get_reply(
+                    phone_number=from_number, message=body, media_url=media_url, history=history
+                )
             except Exception as e:
                 print(f"get_reply failed for {from_number}: {e}")
                 try:
@@ -115,7 +129,8 @@ def _handle_sms(from_number: str, body: str, media_url: str | None):
             _send_with_retry(from_number, reply)
             if gif_url:
                 _send_gif_outbound(from_number, gif_url)
-            commit_reply(from_number, body or "[photo]", reply)
+            save_assistant_turn(from_number, body, reply)
+            print(f"Replied to {from_number}: {reply[:100]}")
     finally:
         with _in_flight_lock:
             _in_flight[from_number].discard(token)

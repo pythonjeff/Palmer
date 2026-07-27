@@ -498,9 +498,16 @@ def _build_system(phone: str) -> str:
     )
 
 
-def get_reply(phone_number: str, message: str, media_url: str = None) -> tuple[str, str | None]:
+def save_assistant_turn(phone_number: str, user_msg: str, reply: str):
+    """Persist the assistant reply and update profile. Call after user message is already saved."""
+    save_message(phone_number, "assistant", reply)
+    _update_profile(phone_number, user_msg, reply)
+
+
+def get_reply(phone_number: str, message: str, media_url: str = None, history: list[dict] | None = None) -> tuple[str, str | None]:
     """Generate a reply. Returns (text, gif_url) — gif_url is None if no GIF was queued."""
-    messages = get_history(phone_number, limit=15)
+    messages = history if history is not None else get_history(phone_number, limit=20)
+    system = _build_system(phone_number)
 
     # Build user content — include image if MMS photo was attached
     if media_url:
@@ -522,7 +529,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None) -> tuple[s
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
-            system=_build_system(phone_number),
+            system=system,
             tools=TOOLS,
             messages=messages,
         )
