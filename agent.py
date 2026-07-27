@@ -3,11 +3,31 @@ import os
 import base64
 import random
 import concurrent.futures
-from datetime import datetime, timezone
+from collections import Counter
+from datetime import datetime, timezone, date as _date, timedelta
 import anthropic
 import requests as _requests
 from tavily import TavilyClient
 from db import init_db, get_history, save_message, get_profile, upsert_profile, save_reminder, cancel_reminders
+
+_CRYPTO_IDS = {
+    "bitcoin": "bitcoin", "btc": "bitcoin",
+    "ethereum": "ethereum", "eth": "ethereum",
+    "dogecoin": "dogecoin", "doge": "dogecoin",
+    "solana": "solana", "sol": "solana",
+    "cardano": "cardano", "ada": "cardano",
+    "xrp": "ripple", "ripple": "ripple",
+    "litecoin": "litecoin", "ltc": "litecoin",
+    "avalanche": "avalanche-2", "avax": "avalanche-2",
+    "polygon": "matic-network", "matic": "matic-network",
+    "shiba inu": "shiba-inu", "shib": "shiba-inu",
+    "bnb": "binancecoin", "binance coin": "binancecoin",
+    "chainlink": "chainlink", "link": "chainlink",
+    "polkadot": "polkadot", "dot": "polkadot",
+    "uniswap": "uniswap", "uni": "uniswap",
+    "stellar": "stellar", "xlm": "stellar",
+    "monero": "monero", "xmr": "monero",
+}
 
 init_db()
 
@@ -90,6 +110,21 @@ Every morning you send the user a personalized text with topics they've subscrib
 
 If someone asks to add or remove something from their morning update — call update_morning_briefing immediately. You can also tell them what's currently in their morning briefing: look at the morning_topics field in their profile. If morning_topics is empty or missing, you're still inferring topics from general profile info.
 
+USE THE RIGHT TOOL
+You have specialized tools — route correctly or the data will be wrong:
+- get_weather: any weather question, current or forecast. Never use web_search for weather.
+- get_price: any crypto or stock price. Never use web_search for prices.
+- web_search: news, sports scores, current events, general facts. Not weather or prices.
+- send_gif: when a GIF lands better than words.
+
+CURATION
+You're not a search engine reading results aloud. You're someone who read the information and thought about what actually matters for this specific person. Add the layer that makes it useful:
+- Weather: connect it to what they've got going on if you know ("should be perfect for that game Saturday", "might want to rethink the outdoor plans")
+- Prices: give context, not just the number ("up 12% in 48 hours is a big move — usually means something's happening")
+- News: lead with why it matters to them, not just what happened
+- When you notice something adjacent to what they asked about that they'd genuinely care about, mention it — one thing, briefly
+The difference between a useful answer and a search result is whether someone who knows them thought about it first.
+
 Current time: {now_utc} UTC.
 
 Today is {date}.
@@ -99,13 +134,36 @@ Today is {date}.
 TOOLS = [
     {
         "name": "web_search",
-        "description": "Search the web for current information — news, prices, weather, sports, etc. Only use this when you actually need up-to-date facts you don't already know. Don't search for things you can answer from general knowledge. For time-sensitive queries (weather, scores, prices, forecasts), always include the specific date or 'today' in the query — e.g. 'Chicago weather Saturday July 26 2026' not just 'Chicago weather'. Results include publish dates; if results look stale or don't match the date asked about, say so rather than presenting old information as current.",
+        "description": "Search for current news, sports scores, events, and general facts. Do NOT use for weather (use get_weather) or prices (use get_price). Include specific dates in queries when recency matters — e.g. 'Cardinals score July 26 2026' not 'Cardinals score'. Results include publish dates; if results look stale, say so rather than presenting old info as current.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string"}
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "get_weather",
+        "description": "Get accurate weather — current conditions or multi-day forecast. Use for ANY weather question. Pass the user's city from their profile if they don't specify a location.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "location": {"type": "string", "description": "City name, e.g. 'Chicago' or 'New York'"},
+                "when": {"type": "string", "description": "When: 'now', 'today', 'tomorrow', 'this weekend', 'next saturday', or a date like '2026-08-02'. Defaults to today."},
+            },
+            "required": ["location"],
+        },
+    },
+    {
+        "name": "get_price",
+        "description": "Get real-time price for crypto or stocks. Use for Bitcoin, Ethereum, other crypto, or any stock ticker (AAPL, TSLA, SPY, QQQ, etc). Returns current price and % change.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "asset": {"type": "string", "description": "Crypto name or symbol (bitcoin, eth, doge) or stock ticker (AAPL, TSLA, SPY)"},
+            },
+            "required": ["asset"],
         },
     },
     {
@@ -172,7 +230,7 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
 def _search(query: str) -> str:
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(_tavily.search, query, max_results=5)
+            future = ex.submit(_tavily.search, query, topic="news", days=7, max_results=5)
             response = future.result(timeout=15)
         results = response.get("results", [])
         if not results:
@@ -185,6 +243,148 @@ def _search(query: str) -> str:
         return "Search timed out."
     except Exception as e:
         return f"Search failed: {e}"
+
+
+def _get_weather(location: str, when: str = "today") -> str:
+    api_key = os.environ.get("OWM_API_KEY")
+    if not api_key:
+        return "Weather API key not configured."
+
+    when_lower = (when or "today").lower().strip()
+    use_current = any(w in when_lower for w in ("now", "current", "today", "tonight"))
+
+    try:
+        if use_current:
+            resp = _requests.get(
+                "https://api.openweathermap.org/data/2.5/weather",
+                params={"q": location, "appid": api_key, "units": "imperial"},
+                timeout=10,
+            )
+            if resp.status_code == 404:
+                return f"Couldn't find weather for '{location}'."
+            resp.raise_for_status()
+            d = resp.json()
+            m = d["main"]
+            desc = d["weather"][0]["description"]
+            wind = d.get("wind", {}).get("speed", 0)
+            pop_pct = round(d.get("pop", 0) * 100)
+            return (
+                f"{location} right now: {m['temp']:.0f}°F (feels {m['feels_like']:.0f}°F), {desc}. "
+                f"High {m['temp_max']:.0f}°F / Low {m['temp_min']:.0f}°F. "
+                f"Humidity {m['humidity']}%. Wind {wind:.0f} mph."
+            )
+
+        # Forecast for a future date
+        resp = _requests.get(
+            "https://api.openweathermap.org/data/2.5/forecast",
+            params={"q": location, "appid": api_key, "units": "imperial", "cnt": 40},
+            timeout=10,
+        )
+        if resp.status_code == 404:
+            return f"Couldn't find weather for '{location}'."
+        resp.raise_for_status()
+        items = resp.json()["list"]
+
+        today = _date.today()
+        wd = today.weekday()
+
+        if "tomorrow" in when_lower:
+            target = today + timedelta(days=1)
+        elif "saturday" in when_lower or "weekend" in when_lower:
+            ahead = (5 - wd) % 7 or 7
+            target = today + timedelta(days=ahead)
+        elif "sunday" in when_lower:
+            ahead = (6 - wd) % 7 or 7
+            target = today + timedelta(days=ahead)
+        else:
+            try:
+                target = datetime.strptime(when.strip(), "%Y-%m-%d").date()
+            except Exception:
+                target = today + timedelta(days=1)
+
+        target_str = target.isoformat()
+        entries = [e for e in items if e["dt_txt"].startswith(target_str)]
+
+        if not entries:
+            return f"No forecast available for {target_str} in {location} — forecast only covers 5 days out."
+
+        temps = [e["main"]["temp"] for e in entries]
+        feels = [e["main"]["feels_like"] for e in entries]
+        descs = [e["weather"][0]["description"] for e in entries]
+        pops = [e.get("pop", 0) for e in entries]
+        winds = [e.get("wind", {}).get("speed", 0) for e in entries]
+
+        main_desc = Counter(descs).most_common(1)[0][0]
+        return (
+            f"{location} on {target.strftime('%A, %B %d')}: "
+            f"High {max(temps):.0f}°F / Low {min(temps):.0f}°F (feels like {max(feels):.0f}°F at peak). "
+            f"{main_desc.capitalize()}. Rain chance {max(pops)*100:.0f}%. Wind up to {max(winds):.0f} mph."
+        )
+    except Exception as e:
+        return f"Weather lookup failed: {e}"
+
+
+def _get_price(asset: str) -> str:
+    asset_lower = asset.lower().strip()
+
+    def _fmt_pct(p: float) -> str:
+        sign = "+" if p >= 0 else ""
+        return f"{sign}{p:.1f}%"
+
+    # Crypto path
+    coin_id = _CRYPTO_IDS.get(asset_lower)
+    if coin_id:
+        try:
+            resp = _requests.get(
+                "https://api.coingecko.com/api/v3/simple/price",
+                params={
+                    "ids": coin_id,
+                    "vs_currencies": "usd",
+                    "include_24hr_change": "true",
+                    "include_7d_change": "true",
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json().get(coin_id, {})
+            if not data:
+                return f"No price data found for {asset}."
+            price = data["usd"]
+            c24 = data.get("usd_24h_change") or 0
+            c7d = data.get("usd_7d_change") or 0
+            price_str = f"${price:,.2f}" if price < 1000 else f"${price:,.0f}"
+            return f"{asset.title()}: {price_str} ({_fmt_pct(c24)} today, {_fmt_pct(c7d)} this week)"
+        except Exception as e:
+            return f"Crypto price lookup failed: {e}"
+
+    # Stock path via yfinance
+    try:
+        import yfinance as yf
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            def _fetch():
+                t = yf.Ticker(asset.upper())
+                return t.fast_info, t.history(period="5d")
+            fi, hist = ex.submit(_fetch).result(timeout=15)
+
+        current = fi.last_price
+        if current is None or current == 0:
+            return f"Couldn't find price data for '{asset}'. Check the ticker symbol."
+
+        prev = fi.regular_market_previous_close or current
+        c24 = (current - prev) / prev * 100
+
+        c7d_str = ""
+        if len(hist) >= 4:
+            week_ago = float(hist["Close"].iloc[0])
+            c7d = (current - week_ago) / week_ago * 100
+            c7d_str = f", {_fmt_pct(c7d)} this week"
+
+        return f"{asset.upper()}: ${current:.2f} ({_fmt_pct(c24)} today{c7d_str})"
+
+    except concurrent.futures.TimeoutError:
+        return f"Stock lookup timed out for '{asset}'."
+    except Exception as e:
+        return f"Stock lookup failed for '{asset}': {e}"
 
 
 _SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -328,6 +528,10 @@ def get_reply(phone_number: str, message: str, media_url: str = None) -> tuple[s
                 continue
             if b.name == "web_search":
                 result = _search(b.input["query"])
+            elif b.name == "get_weather":
+                result = _get_weather(b.input["location"], b.input.get("when", "today"))
+            elif b.name == "get_price":
+                result = _get_price(b.input["asset"])
             elif b.name == "send_gif":
                 gif_url = _get_gif(b.input["query"])
                 result = f"GIF queued: {gif_url}" if gif_url else "No GIF found for that query."

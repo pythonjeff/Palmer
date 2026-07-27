@@ -7,3 +7,4 @@ python-multipart
 tavily-python
 psycopg2-binary
 apscheduler
+yfinance
