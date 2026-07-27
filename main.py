@@ -39,17 +39,24 @@ _seen_sids_lock = threading.Lock()
 _SEEN_SIDS_MAX = 200
 
 
-def _send_outbound(to: str, body: str):
+_APP_URL = os.environ.get("APP_URL", "").rstrip("/")
+_STATUS_CALLBACK_URL = f"{_APP_URL}/sms-status" if _APP_URL else None
+
+
+def _send_outbound(to: str, body: str, add_status_callback: bool = True):
     from_number = os.environ["TWILIO_PHONE_NUMBER"]
+    kwargs = {"from_": from_number, "to": to}
+    if add_status_callback and _STATUS_CALLBACK_URL:
+        kwargs["status_callback"] = _STATUS_CALLBACK_URL
     if len(body) <= 1500:
-        _twilio.messages.create(body=body, from_=from_number, to=to)
+        _twilio.messages.create(body=body, **kwargs)
         return
     # Split on paragraph breaks first, then hard-split anything still too long
     parts = [p.strip() for p in body.split("\n\n") if p.strip()]
     if len(parts) <= 1:
         parts = [body[i:i+1500] for i in range(0, len(body), 1500)]
     for part in parts:
-        _twilio.messages.create(body=part, from_=from_number, to=to)
+        _twilio.messages.create(body=part, **kwargs)
 
 
 def _send_with_retry(to: str, body: str):
@@ -177,6 +184,38 @@ async def sms_webhook(
     background_tasks.add_task(_handle_sms, From, body, media_url)
 
     return Response(content=str(MessagingResponse()), media_type="application/xml")
+
+
+_RETRIABLE_ERRORS = {"30019", "21617"}  # content size errors fixable by shortening
+
+
+@app.post("/sms-status")
+async def sms_status_webhook(
+    request: Request,
+    MessageSid: str = Form(...),
+    MessageStatus: str = Form(...),
+    ErrorCode: str = Form(default=""),
+    To: str = Form(...),
+):
+    validator = RequestValidator(os.environ["TWILIO_AUTH_TOKEN"])
+    form_data = await request.form()
+    url = str(request.url)
+    if request.headers.get("x-forwarded-proto") == "https":
+        url = url.replace("http://", "https://", 1)
+    if not validator.validate(url, dict(form_data), request.headers.get("X-Twilio-Signature", "")):
+        raise HTTPException(status_code=403)
+
+    if MessageStatus in ("failed", "undelivered") and ErrorCode in _RETRIABLE_ERRORS:
+        print(f"Delivery failed for {To} (SID={MessageSid}, error={ErrorCode}) — shortening and retrying")
+        try:
+            original = _twilio.messages(MessageSid).fetch()
+            short = shorten_message(original.body)
+            _send_outbound(To, short, add_status_callback=False)
+            print(f"Status-callback retry sent to {To}: {short[:80]}")
+        except Exception as e:
+            print(f"Status-callback retry failed for {To}: {e}")
+
+    return Response(status_code=204)
 
 
 @app.get("/preview")
