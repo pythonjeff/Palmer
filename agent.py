@@ -331,7 +331,7 @@ def _get_price(asset: str) -> str:
         sign = "+" if p >= 0 else ""
         return f"{sign}{p:.1f}%"
 
-    # Crypto path
+    # Crypto path — CoinGecko 24h change is a true rolling window, not market-day-dependent
     coin_id = _CRYPTO_IDS.get(asset_lower)
     if coin_id:
         try:
@@ -353,7 +353,7 @@ def _get_price(asset: str) -> str:
             c24 = data.get("usd_24h_change") or 0
             c7d = data.get("usd_7d_change") or 0
             price_str = f"${price:,.2f}" if price < 1000 else f"${price:,.0f}"
-            return f"{asset.title()}: {price_str} ({_fmt_pct(c24)} today, {_fmt_pct(c7d)} this week)"
+            return f"{asset.title()}: {price_str} ({_fmt_pct(c24)} past 24h, {_fmt_pct(c7d)} past 7 days)"
         except Exception as e:
             return f"Crypto price lookup failed: {e}"
 
@@ -370,6 +370,20 @@ def _get_price(asset: str) -> str:
         if current is None or current == 0:
             return f"Couldn't find price data for '{asset}'. Check the ticker symbol."
 
+        # Determine what trading day this data is actually from
+        today = _date.today()
+        last_trade_date = hist.index[-1].date() if not hist.empty else None
+
+        if last_trade_date == today:
+            day_label = "today"
+            market_note = ""
+        elif last_trade_date == today - timedelta(days=1):
+            day_label = "yesterday"
+            market_note = ""
+        else:
+            day_label = last_trade_date.strftime("%A") if last_trade_date else "last session"
+            market_note = " — market closed"
+
         prev = fi.regular_market_previous_close or current
         c24 = (current - prev) / prev * 100
 
@@ -377,9 +391,9 @@ def _get_price(asset: str) -> str:
         if len(hist) >= 4:
             week_ago = float(hist["Close"].iloc[0])
             c7d = (current - week_ago) / week_ago * 100
-            c7d_str = f", {_fmt_pct(c7d)} this week"
+            c7d_str = f", {_fmt_pct(c7d)} past 5 sessions"
 
-        return f"{asset.upper()}: ${current:.2f} ({_fmt_pct(c24)} today{c7d_str})"
+        return f"{asset.upper()}: ${current:.2f} ({_fmt_pct(c24)} on {day_label}{c7d_str}{market_note})"
 
     except concurrent.futures.TimeoutError:
         return f"Stock lookup timed out for '{asset}'."
