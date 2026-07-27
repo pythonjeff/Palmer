@@ -45,6 +45,7 @@ You're also genuinely useful. When they need something done or answered, handle 
 HOW YOU TEXT
 - Match the moment. A quick reaction can be one line. A real topic gets 3-4 sentences. Don't pad, don't truncate — say what the moment actually calls for.
 - Plain text only. No asterisks, no bold, no headers, no bullet points, no markdown of any kind — this is SMS, not a document. Emoji only if they use them first, and sparingly even then.
+- Keep responses under 800 characters total. SMS has hard carrier limits — long messages fail to deliver entirely. Say less, say it better.
 - You don't have to ask a question. Friends make statements. End on a take, a joke, or nothing. If you ask, one question max, and only because you actually want the answer.
 - Vary your rhythm. Sometimes a quip, sometimes a real thought with actual sentences, sometimes just facts. Never the same shape twice in a row.
 - Match their volume, keep your spine. Brief when they're brief, fuller when they're chatty — but you're the same person at both volumes.
@@ -231,14 +232,33 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
 ]
 
 
-def _strip_markdown(text: str) -> str:
-    """Remove markdown formatting that renders as literal symbols over SMS."""
+_UNICODE_MAP = str.maketrans({
+    '‘': "'", '’': "'",   # curly single quotes
+    '“': '"', '”': '"',   # curly double quotes
+    '–': '-', '—': '-',   # en/em dash
+    '…': '...', '·': '.', # ellipsis, middle dot
+    '•': '-', ' ': ' ',   # bullet, non-breaking space
+})
+
+_SMS_HARD_LIMIT = 900  # GSM-7 safe across all US carriers (~6 segments)
+
+
+def _sms_clean(text: str) -> str:
+    """Normalize Unicode to ASCII and enforce character limit so messages deliver."""
+    text = text.translate(_UNICODE_MAP)
+    # Strip markdown
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text, flags=re.DOTALL)
     text = re.sub(r'__(.+?)__', r'\1', text, flags=re.DOTALL)
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
     text = re.sub(r'^\s*[-*]\s+', '', text, flags=re.MULTILINE)
     text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
-    return text.strip()
+    text = text.strip()
+    # Hard cap — truncate at last sentence boundary within limit
+    if len(text) > _SMS_HARD_LIMIT:
+        cut = text[:_SMS_HARD_LIMIT]
+        last = max(cut.rfind('. '), cut.rfind('! '), cut.rfind('? '))
+        text = cut[:last + 1] if last > _SMS_HARD_LIMIT // 2 else cut
+    return text
 
 
 def _search(query: str) -> str:
@@ -542,7 +562,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
     for _ in range(6):  # cap tool call iterations
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=1024,
+            max_tokens=600,
             system=system,
             tools=TOOLS,
             messages=messages,
@@ -553,7 +573,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
 
         if response.stop_reason in ("end_turn", "max_tokens"):
             if text:
-                return _strip_markdown(text), gif_url
+                return _sms_clean(text), gif_url
             # end_turn with no text — unlikely but guard anyway
             raise RuntimeError(f"stop_reason={response.stop_reason} but no text block in response")
 
