@@ -34,6 +34,10 @@ _in_flight_lock = threading.Lock()
 _phone_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
 _twilio = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
 
+_seen_sids: list[str] = []
+_seen_sids_lock = threading.Lock()
+_SEEN_SIDS_MAX = 200
+
 
 def _send_outbound(to: str, body: str):
     from_number = os.environ["TWILIO_PHONE_NUMBER"]
@@ -133,6 +137,7 @@ async def sms_webhook(
     Body: str = Form(default=""),
     NumMedia: int = Form(default=0),
     MediaUrl0: str = Form(default=None),
+    MessageSid: str = Form(default=""),
 ):
     validator = RequestValidator(os.environ["TWILIO_AUTH_TOKEN"])
     form_data = await request.form()
@@ -141,6 +146,15 @@ async def sms_webhook(
         url = url.replace("http://", "https://", 1)
     if not validator.validate(url, dict(form_data), request.headers.get("X-Twilio-Signature", "")):
         raise HTTPException(status_code=403)
+
+    if MessageSid:
+        with _seen_sids_lock:
+            if MessageSid in _seen_sids:
+                print(f"Duplicate MessageSid {MessageSid} — dropping Twilio retry")
+                return Response(content=str(MessagingResponse()), media_type="application/xml")
+            _seen_sids.append(MessageSid)
+            if len(_seen_sids) > _SEEN_SIDS_MAX:
+                del _seen_sids[0]
 
     body = Body.strip()
     media_url = MediaUrl0 if NumMedia > 0 else None
