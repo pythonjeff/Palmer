@@ -5,7 +5,7 @@ import concurrent.futures
 from datetime import datetime, timezone, date as date_type
 
 from agent import client, _tavily, _build_system
-from db import get_all_phones, get_profile, upsert_profile
+from db import get_all_phones, get_profile, upsert_profile, save_message
 
 
 def _search_recent(query: str) -> str:
@@ -150,6 +150,7 @@ def run_alert_checks():
             if score >= 8 and summary:
                 message = _draft_alert(phone, summary)
                 twilio.messages.create(body=message, from_=from_number, to=phone)
+                save_message(phone, "assistant", message)
                 upsert_profile(phone, {"alert_sent_date": today})
                 print(f"Alert sent to {phone} (score={score}): {message}")
             else:

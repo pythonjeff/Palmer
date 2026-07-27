@@ -3,7 +3,7 @@ load_dotenv()
 
 import os
 from twilio.rest import Client as TwilioClient
-from db import claim_due_reminders
+from db import claim_due_reminders, save_message
 
 
 def send_due_reminders():
@@ -16,11 +16,9 @@ def send_due_reminders():
 
     for r in reminders:
         try:
-            twilio.messages.create(
-                body=f"hey — {r['text']}",
-                from_=from_number,
-                to=r["phone"],
-            )
+            body = f"hey — {r['text']}"
+            twilio.messages.create(body=body, from_=from_number, to=r["phone"])
+            save_message(r["phone"], "assistant", body)
             print(f"Sent reminder {r['id']} to {r['phone']}: {r['text']}")
         except Exception as e:
             print(f"Failed reminder {r['id']} to {r['phone']}: {e}")
