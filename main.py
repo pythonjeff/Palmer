@@ -69,7 +69,14 @@ def _send_gif_outbound(to: str, media_url: str):
     _twilio.messages.create(from_=os.environ["TWILIO_PHONE_NUMBER"], to=to, media_url=[media_url])
 
 
-def _handle_sms(from_number: str, body: str, media_url: str | None, is_new_user: bool, is_preference_reply: bool):
+def _handle_sms(from_number: str, body: str, media_url: str | None):
+    # Compute new-user flags here (in background thread) so the HTTP handler never blocks
+    profile_before = get_profile(from_number)
+    is_new_user = not profile_before.get("intro_sent") and not profile_before.get("morning_onboarded")
+    is_preference_reply = (
+        profile_before.get("intro_sent") and not profile_before.get("morning_prefs_received")
+    )
+
     token = object()
     with _in_flight_lock:
         _in_flight[from_number].add(token)
@@ -138,16 +145,7 @@ async def sms_webhook(
     body = Body.strip()
     media_url = MediaUrl0 if NumMedia > 0 else None
 
-    profile_before = get_profile(From)
-    # New user: never received intro AND never went through old onboarding flow
-    is_new_user = not profile_before.get("intro_sent") and not profile_before.get("morning_onboarded")
-    # Preference reply: got the intro but hasn't set their morning topics yet
-    is_preference_reply = (
-        profile_before.get("intro_sent")
-        and not profile_before.get("morning_prefs_received")
-    )
-
-    background_tasks.add_task(_handle_sms, From, body, media_url, is_new_user, is_preference_reply)
+    background_tasks.add_task(_handle_sms, From, body, media_url)
 
     return Response(content=str(MessagingResponse()), media_type="application/xml")
 

@@ -3,7 +3,7 @@ import os
 import concurrent.futures
 from datetime import date as date_type
 from agent import client, _tavily, _build_system
-from db import get_profile, upsert_profile, get_all_phones
+from db import get_profile, upsert_profile, get_all_phones, save_message
 
 
 def _search_morning(query: str) -> str:
@@ -138,6 +138,7 @@ def send_morning_messages():
             parts = _split_message(message)
             for part in parts:
                 twilio.messages.create(body=part, from_=from_number, to=phone)
+            save_message(phone, "assistant", message)
             print(f"Sent to {phone} ({len(parts)} part(s)): {message}")
         except Exception as e:
             print(f"Failed for {phone}: {e}")
