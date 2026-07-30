@@ -12,6 +12,7 @@ from tavily import TavilyClient
 from db import (
     init_db, get_history, save_message, get_profile, upsert_profile, save_reminder, cancel_reminders,
     get_message_count, get_older_messages, HISTORY_LIMIT,
+    save_watch, get_user_watches, cancel_watches,
 )
 
 _CRYPTO_IDS = {
@@ -231,6 +232,30 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
             "type": "object",
             "properties": {
                 "text_match": {"type": "string", "description": "Optional: only cancel reminders matching this phrase. Omit to cancel all pending reminders."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "add_watch",
+        "description": "Set up a persistent background news watch. Palmer will check every 30 minutes and text the user if it hits. Use when the user asks to be alerted when something happens — a geopolitical event, a sports outcome, a stock move, anything news-trackable. Generate specific, targeted search queries that will surface this event if it occurs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "description": {"type": "string", "description": "What to watch for, in the user's own terms. e.g. 'Iran and US military strikes'"},
+                "queries": {"type": "array", "items": {"type": "string"}, "description": "2-3 search queries to run every 30 min. Make them specific enough to hit on the event but not so narrow they miss variations. e.g. ['Iran US military strike attack 2026', 'US strikes Iran retaliation']"},
+                "cooldown_hours": {"type": "integer", "description": "Minimum hours between alerts for this watch. Default 4. Use 1-2 for urgent breaking-news watches, 8-12 for slower-moving situations."},
+            },
+            "required": ["description", "queries"],
+        },
+    },
+    {
+        "name": "cancel_watch",
+        "description": "Cancel one or all active background watches. Use when the user says 'stop watching', 'I don't need that alert anymore', etc.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text_match": {"type": "string", "description": "Optional: cancel only watches whose description contains this phrase. Omit to cancel all watches."},
             },
             "required": [],
         },
@@ -744,6 +769,10 @@ def _build_system(phone: str, include_recent: bool = False) -> str:
             f"mention it: something like 'you keep bringing up [X] — want me to add that to your morning?' "
             f"Use update_morning_briefing if they say yes. Don't force it if the moment isn't right."
         )
+    watches = get_user_watches(phone)
+    if watches:
+        watch_lines = "\n".join(f"- [{w['id']}] {w['description']}" for w in watches)
+        system += f"\n\nActive watches (background news checks you're running for them):\n{watch_lines}"
     return system
 
 
@@ -838,6 +867,12 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
             elif b.name == "cancel_reminders":
                 count = cancel_reminders(phone_number, b.input.get("text_match"))
                 result = f"Cancelled {count} reminder(s)."
+            elif b.name == "add_watch":
+                watch_id = save_watch(phone_number, b.input["description"], b.input["queries"], b.input.get("cooldown_hours", 4))
+                result = f"Watch set (id={watch_id}). I'll check every 30 minutes and text you if it hits."
+            elif b.name == "cancel_watch":
+                count = cancel_watches(phone_number, b.input.get("text_match"))
+                result = f"Cancelled {count} watch(es)."
             else:
                 result = "Unknown tool."
             tool_results.append({"type": "tool_result", "tool_use_id": b.id, "content": result})

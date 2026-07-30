@@ -14,6 +14,7 @@ from morning import generate_morning, extract_morning_prefs
 from db import get_profile, upsert_profile, save_message, get_history, HISTORY_LIMIT
 from send_reminders import send_due_reminders
 from alerts import run_alert_checks
+from watches import run_watches
 from sms_util import ensure_sms, send_sms, FALLBACK_SMS
 
 INTRO_MESSAGE = (
@@ -27,6 +28,7 @@ app = FastAPI()
 _scheduler = BackgroundScheduler()
 _scheduler.add_job(send_due_reminders, "interval", minutes=1)
 _scheduler.add_job(run_alert_checks, "interval", minutes=30)
+_scheduler.add_job(run_watches, "interval", minutes=30)
 _scheduler.start()
 
 _in_flight: dict[str, set] = defaultdict(set)

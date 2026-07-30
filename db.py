@@ -53,6 +53,18 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS watches (
+            id {ID_COL},
+            phone TEXT NOT NULL,
+            description TEXT NOT NULL,
+            queries TEXT NOT NULL,
+            cooldown_hours INTEGER NOT NULL DEFAULT 4,
+            last_alerted TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -211,3 +223,74 @@ def claim_due_reminders() -> list[dict]:
     conn.commit()
     conn.close()
     return [{"id": r["id"], "phone": r["phone"], "text": r["text"]} for r in rows]
+
+
+def save_watch(phone: str, description: str, queries: list[str], cooldown_hours: int = 4) -> int:
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"INSERT INTO watches (phone, description, queries, cooldown_hours) VALUES ({PH}, {PH}, {PH}, {PH})",
+        (phone, description, json.dumps(queries), cooldown_hours),
+    )
+    watch_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return watch_id
+
+
+def get_active_watches() -> list[dict]:
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, phone, description, queries, cooldown_hours, last_alerted FROM watches WHERE active = 1")
+    rows = cur.fetchall()
+    conn.close()
+    return [
+        {
+            "id": r["id"],
+            "phone": r["phone"],
+            "description": r["description"],
+            "queries": json.loads(r["queries"]),
+            "cooldown_hours": r["cooldown_hours"],
+            "last_alerted": r["last_alerted"],
+        }
+        for r in rows
+    ]
+
+
+def get_user_watches(phone: str) -> list[dict]:
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, description, cooldown_hours, last_alerted FROM watches WHERE phone = %s AND active = 1" if _DATABASE_URL
+        else "SELECT id, description, cooldown_hours, last_alerted FROM watches WHERE phone = ? AND active = 1",
+        (phone,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [{"id": r["id"], "description": r["description"], "cooldown_hours": r["cooldown_hours"], "last_alerted": r["last_alerted"]} for r in rows]
+
+
+def update_watch_alerted(watch_id: int):
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE watches SET last_alerted = {PH} WHERE id = {PH}", (now, watch_id))
+    conn.commit()
+    conn.close()
+
+
+def cancel_watches(phone: str, text_match: str = None) -> int:
+    conn = _conn()
+    cur = conn.cursor()
+    if text_match:
+        pattern = f"%{text_match.lower().strip()}%"
+        cur.execute(
+            f"UPDATE watches SET active = 0 WHERE phone = {PH} AND LOWER(description) LIKE {PH} AND active = 1",
+            (phone, pattern),
+        )
+    else:
+        cur.execute(f"UPDATE watches SET active = 0 WHERE phone = {PH} AND active = 1", (phone,))
+    count = cur.rowcount
+    conn.commit()
+    conn.close()
+    return count
