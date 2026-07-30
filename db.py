@@ -161,27 +161,6 @@ def save_reminder(phone: str, text: str, due_at: str):
     conn.close()
 
 
-def get_due_reminders(phone: str) -> list[dict]:
-    now = datetime.now(timezone.utc).isoformat()
-    conn = _conn()
-    cur = conn.cursor()
-    cur.execute(
-        f"SELECT id, text FROM reminders WHERE phone = {PH} AND due_at <= {PH} AND sent = 0",
-        (phone, now),
-    )
-    rows = cur.fetchall()
-    conn.close()
-    return [{"id": r["id"], "text": r["text"]} for r in rows]
-
-
-def mark_reminder_sent(reminder_id: int):
-    conn = _conn()
-    cur = conn.cursor()
-    cur.execute(f"UPDATE reminders SET sent = 1 WHERE id = {PH}", (reminder_id,))
-    conn.commit()
-    conn.close()
-
-
 def cancel_reminders(phone: str, text_match: str = None) -> int:
     conn = _conn()
     cur = conn.cursor()
