@@ -1,7 +1,7 @@
 import json
 import os
 from datetime import datetime, date as date_type
-from agent import client, _build_system, _sms_clean, _search, _parse_json, _derive_timezone, HAIKU_MODEL, SONNET_MODEL
+from agent import client, _build_system, _sms_clean, _search, _get_weather, _parse_json, _derive_timezone, HAIKU_MODEL, SONNET_MODEL
 from db import get_profile, upsert_profile, get_all_phones, save_message
 
 
@@ -51,6 +51,24 @@ Omit keys with no value. morning_topics can be []."""}],
     return []
 
 
+def _infer_city_from_topics(topics: list[str]) -> str | None:
+    """Extract a city from morning topics when the profile has no city set."""
+    if not topics:
+        return None
+    try:
+        response = client.messages.create(
+            model=HAIKU_MODEL,
+            max_tokens=20,
+            messages=[{"role": "user", "content": f"What city is implied by these morning briefing topics? Reply with just the city name (e.g. 'Kirkwood, MO'), or NONE.\n{topics}"}],
+        )
+        result = response.content[0].text.strip()
+        if result.upper() != "NONE" and len(result) < 60:
+            return result
+    except Exception:
+        pass
+    return None
+
+
 def _get_search_queries(profile: dict) -> list[str]:
     today = date_type.today().strftime("%B %d, %Y")
     topics = profile.get("morning_topics")
@@ -80,12 +98,25 @@ Return a JSON array of 1-3 search queries. Example: ["St. Louis weather today", 
     return parsed if isinstance(parsed, list) else []
 
 
+_WEATHER_KEYWORDS = ("weather", "forecast", "temperature", "rain", "snow", "wind", "humidity")
+
+
 def generate_morning(phone: str) -> str:
     profile = get_profile(phone)
     system = _build_system(phone, include_recent=True)
     today = date_type.today().strftime("%B %d, %Y")
     queries = _get_search_queries(profile)
-    results = "\n\n".join(f"{q}:\n{_search(q, days=2)}" for q in queries) if queries else ""
+    city = profile.get("city") or ""
+
+    result_parts = []
+    for q in queries:
+        if city and any(w in q.lower() for w in _WEATHER_KEYWORDS):
+            # Route weather queries through the live weather API, not web search
+            result_parts.append(f"{q}:\n{_get_weather(city, 'today')}")
+        else:
+            result_parts.append(f"{q}:\n{_search(q, days=2)}")
+
+    results = "\n\n".join(result_parts) if result_parts else ""
     prompt = f"""Today is {today}. Write a morning text for this person based on what you found below.
 
 Search results:
@@ -104,7 +135,10 @@ Rules:
         system=system,
         messages=[{"role": "user", "content": prompt}],
     )
-    return _sms_clean(response.content[0].text.strip())
+    result = _sms_clean(response.content[0].text.strip())
+    if len(result) < 20:
+        raise ValueError(f"generate_morning produced suspiciously short output: {repr(result)}")
+    return result
 
 
 def _split_message(text: str, max_chars: int = 900) -> list[str]:
@@ -141,6 +175,11 @@ def send_morning_messages():
         tz = profile.get("timezone")
         if not tz:
             city = profile.get("city")
+            if not city:
+                # Try to recover city from morning topics (e.g. "Kirkwood, MO weather")
+                city = _infer_city_from_topics(profile.get("morning_topics") or [])
+                if city:
+                    upsert_profile(phone, {"city": city})
             if city:
                 tz = _derive_timezone(city)
                 if tz:
