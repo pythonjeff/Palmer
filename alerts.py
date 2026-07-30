@@ -4,7 +4,7 @@ import os
 import concurrent.futures
 from datetime import datetime, timezone, date as date_type
 
-from agent import client, _tavily, _build_system
+from agent import client, _tavily, _build_system, _sms_clean
 from db import get_all_phones, get_profile, upsert_profile, save_message
 
 
@@ -118,9 +118,9 @@ def _draft_alert(phone: str, summary: str) -> str:
             system=system,
             messages=[{"role": "user", "content": f"Send a short unprompted text about this news. Palmer's voice — casual, like you just saw it and thought of them. No opener, no ceremony, just the news and why it matters.\n\nNews: {summary}"}],
         )
-        return response.content[0].text.strip()
+        return _sms_clean(response.content[0].text.strip())
     except Exception:
-        return summary
+        return _sms_clean(summary)
 
 
 def run_alert_checks():

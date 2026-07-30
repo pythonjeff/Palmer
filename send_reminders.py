@@ -4,6 +4,7 @@ load_dotenv()
 import os
 from twilio.rest import Client as TwilioClient
 from db import claim_due_reminders, save_message
+from agent import _sms_clean
 
 
 def send_due_reminders():
@@ -16,7 +17,7 @@ def send_due_reminders():
 
     for r in reminders:
         try:
-            body = f"hey — {r['text']}"
+            body = _sms_clean(f"hey - {r['text']}")
             twilio.messages.create(body=body, from_=from_number, to=r["phone"])
             save_message(r["phone"], "assistant", body)
             print(f"Sent reminder {r['id']} to {r['phone']}: {r['text']}")

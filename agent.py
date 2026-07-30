@@ -246,6 +246,7 @@ _SMS_HARD_LIMIT = 900  # GSM-7 safe across all US carriers (~6 segments)
 def _sms_clean(text: str) -> str:
     """Normalize Unicode to ASCII and enforce character limit so messages deliver."""
     text = text.translate(_UNICODE_MAP)
+    text = text.encode('ascii', 'ignore').decode('ascii')  # strip emoji and remaining non-GSM-7
     # Strip markdown
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text, flags=re.DOTALL)
     text = re.sub(r'__(.+?)__', r'\1', text, flags=re.DOTALL)

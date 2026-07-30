@@ -2,7 +2,7 @@ import json
 import os
 import concurrent.futures
 from datetime import date as date_type
-from agent import client, _tavily, _build_system
+from agent import client, _tavily, _build_system, _sms_clean
 from db import get_profile, upsert_profile, get_all_phones, save_message
 
 
@@ -105,7 +105,8 @@ Rules:
 - Only include information that's clearly from today or last night. Check the Published dates.
 - If results for a topic look stale, outdated, or generic — skip that topic entirely. Do not make something up or paraphrase old news.
 - One or two sentences per topic max. The whole thing should fit in a single text.
-- Palmer's voice — no bullet points, no headers, no "good morning". Just the message."""
+- Palmer's voice — no bullet points, no headers, no "good morning". Just the message.
+- Plain ASCII text only. No emoji, no special characters, no dashes longer than a hyphen."""
 
     response = client.messages.create(
         model="claude-sonnet-4-6",
@@ -113,7 +114,7 @@ Rules:
         system=system,
         messages=[{"role": "user", "content": prompt}],
     )
-    return response.content[0].text.strip()
+    return _sms_clean(response.content[0].text.strip())
 
 
 def _split_message(text: str, max_chars: int = 900) -> list[str]:
