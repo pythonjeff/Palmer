@@ -1,31 +1,8 @@
 import json
 import os
-import concurrent.futures
 from datetime import datetime, date as date_type
-from agent import client, _tavily, _build_system, _sms_clean
+from agent import client, _build_system, _sms_clean, _search, _parse_json, _derive_timezone, HAIKU_MODEL, SONNET_MODEL
 from db import get_profile, upsert_profile, get_all_phones, save_message
-
-
-def _search_morning(query: str) -> str:
-    """Search for recent news, surfacing publish dates so stale results are visible."""
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(
-                _tavily.search, query,
-                topic="news", days=2, max_results=5,
-            )
-            response = future.result(timeout=15)
-        results = response.get("results", [])
-        if not results:
-            return "No results found."
-        return "\n\n".join(
-            f"{r['title']}\nPublished: {r.get('published_date', 'unknown')}\n{r['content']}"
-            for r in results
-        )
-    except concurrent.futures.TimeoutError:
-        return "Search timed out."
-    except Exception as e:
-        return f"Search failed: {e}"
 
 
 def extract_morning_prefs(phone: str, pref_text: str) -> list[str]:
@@ -34,7 +11,7 @@ def extract_morning_prefs(phone: str, pref_text: str) -> list[str]:
         profile = get_profile(phone)
         city = profile.get("city") or ""
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=HAIKU_MODEL,
             max_tokens=300,
             messages=[{"role": "user", "content": f"""Someone just replied to "What city are you in, and what should I be tracking for you?"
 
@@ -51,15 +28,12 @@ Return JSON only:
 {{"morning_topics": ["..."], "city": "...", "name": "...", "interests": ["..."]}}
 Omit keys with no value. morning_topics can be []."""}],
         )
-        text = response.content[0].text.strip()
-        start, end = text.find("{"), text.rfind("}") + 1
-        if start != -1 and end > start:
-            data = json.loads(text[start:end])
+        data = _parse_json(response.content[0].text)
+        if isinstance(data, dict):
             updates = {k: v for k, v in data.items() if v}
             topics = updates.pop("morning_topics", [])
             if updates:
                 if updates.get("city") and not profile.get("timezone"):
-                    from agent import _derive_timezone
                     tz = _derive_timezone(updates["city"])
                     if tz:
                         updates["timezone"] = tz
@@ -98,18 +72,12 @@ Make queries time-specific — use "today", "this morning", or "{today}" to get 
 Return a JSON array of 1-3 search queries. Example: ["St. Louis weather today", "Cardinals score last night"]. If unclear, return []. Just the JSON array."""
 
     response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model=HAIKU_MODEL,
         max_tokens=150,
         messages=[{"role": "user", "content": prompt}],
     )
-    text = response.content[0].text.strip()
-    start, end = text.find("["), text.rfind("]") + 1
-    if start != -1 and end > start:
-        try:
-            return json.loads(text[start:end])
-        except Exception:
-            pass
-    return []
+    parsed = _parse_json(response.content[0].text)
+    return parsed if isinstance(parsed, list) else []
 
 
 def generate_morning(phone: str) -> str:
@@ -117,7 +85,7 @@ def generate_morning(phone: str) -> str:
     system = _build_system(phone, include_recent=True)
     today = date_type.today().strftime("%B %d, %Y")
     queries = _get_search_queries(profile)
-    results = "\n\n".join(f"{q}:\n{_search_morning(q)}" for q in queries) if queries else ""
+    results = "\n\n".join(f"{q}:\n{_search(q, days=2)}" for q in queries) if queries else ""
     prompt = f"""Today is {today}. Write a morning text for this person based on what you found below.
 
 Search results:
@@ -131,7 +99,7 @@ Rules:
 - Plain ASCII text only. No emoji, no special characters, no dashes longer than a hyphen."""
 
     response = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=SONNET_MODEL,
         max_tokens=500,
         system=system,
         messages=[{"role": "user", "content": prompt}],
@@ -140,11 +108,13 @@ Rules:
 
 
 def _split_message(text: str, max_chars: int = 900) -> list[str]:
-    """Split at paragraph breaks if the message exceeds max_chars."""
+    """Split at paragraph breaks; fall back to hard chunks if no breaks exist."""
     if len(text) <= max_chars:
         return [text]
     parts = [p.strip() for p in text.split("\n\n") if p.strip()]
-    return parts if len(parts) > 1 else [text]
+    if len(parts) > 1:
+        return parts
+    return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
 
 
 def _is_morning_local(tz_name: str) -> bool:

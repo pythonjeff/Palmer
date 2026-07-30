@@ -42,10 +42,6 @@ _APP_URL = os.environ.get("APP_URL", "").rstrip("/")
 _STATUS_CALLBACK_URL = f"{_APP_URL}/sms-status" if _APP_URL else None
 
 
-def _send_with_retry(to: str, body: str) -> bool:
-    """Send a message via shared SMS helper."""
-    return ensure_sms(to, body)
-
 
 def _send_gif_outbound(to: str, media_url: str):
     from twilio.rest import Client as TwilioClient
@@ -105,7 +101,7 @@ def _handle_sms_inner(from_number: str, body: str, media_url: str | None) -> boo
                     snippet = body if len(body) <= 50 else body[:50].rstrip() + "…"
                     reply = f"> {snippet}\n{reply}"
 
-                reply_sent = _send_with_retry(from_number, reply)
+                reply_sent = ensure_sms(from_number, reply)
                 if not reply_sent:
                     reply_sent = ensure_sms(from_number, FALLBACK_SMS)
                 else:

@@ -1,33 +1,9 @@
 import hashlib
-import json
 import os
-import concurrent.futures
 from datetime import datetime, timezone, date as date_type
 
-from agent import client, _tavily, _build_system, _sms_clean, _all_interests
+from agent import client, _build_system, _sms_clean, _all_interests, _search, _parse_json, HAIKU_MODEL, SONNET_MODEL
 from db import get_all_phones, get_profile, upsert_profile, save_message
-
-
-def _search_recent(query: str) -> str:
-    """Search for news from the past 24 hours only."""
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(
-                _tavily.search, query,
-                topic="news", days=1, max_results=5,
-            )
-            response = future.result(timeout=15)
-        results = response.get("results", [])
-        if not results:
-            return "No results found."
-        return "\n\n".join(
-            f"{r['title']}\nPublished: {r.get('published_date', 'unknown')}\n{r['content']}"
-            for r in results
-        )
-    except concurrent.futures.TimeoutError:
-        return "Search timed out."
-    except Exception as e:
-        return f"Search failed: {e}"
 
 
 def _daily_alert_hour(phone: str) -> int:
@@ -57,7 +33,7 @@ def _get_alert_queries(profile: dict) -> list[str]:
     city = profile.get("city") or ""
     try:
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=HAIKU_MODEL,
             max_tokens=150,
             messages=[{"role": "user", "content": f"""Generate search queries to find BREAKING or MAJOR news for someone interested in: {", ".join(topics)}
 City: {city or "unknown"}
@@ -65,10 +41,9 @@ City: {city or "unknown"}
 Focus on significant, unexpected, or major developments — not routine updates.
 Return a JSON array of 2-3 queries. Just the array."""}],
         )
-        text = response.content[0].text.strip()
-        start, end = text.find("["), text.rfind("]") + 1
-        if start != -1 and end > start:
-            return json.loads(text[start:end])
+        parsed = _parse_json(response.content[0].text)
+        if isinstance(parsed, list):
+            return parsed
     except Exception:
         pass
     return []
@@ -82,7 +57,7 @@ def _check_significance(results: str, profile: dict) -> tuple[int, str]:
 
     try:
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=HAIKU_MODEL,
             max_tokens=200,
             messages=[{"role": "user", "content": f"""Today is {today}. Is there BREAKING news here — published TODAY — that someone interested in [{interest_str}] would want to know about RIGHT NOW, unprompted?
 
@@ -102,10 +77,8 @@ Score 1-10:
 Reply with JSON only: {{"score": N, "summary": "one sentence of what happened and when"}}
 If score < 8 set summary to ""."""}],
         )
-        text = response.content[0].text.strip()
-        start, end = text.find("{"), text.rfind("}") + 1
-        if start != -1 and end > start:
-            data = json.loads(text[start:end])
+        data = _parse_json(response.content[0].text)
+        if isinstance(data, dict):
             return int(data.get("score", 0)), data.get("summary", "")
     except Exception:
         pass
@@ -117,7 +90,7 @@ def _draft_alert(phone: str, summary: str) -> str:
     system = _build_system(phone, include_recent=True)
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=SONNET_MODEL,
             max_tokens=150,
             system=system,
             messages=[{"role": "user", "content": f"Send a short unprompted text about this news. Palmer's voice — casual, like you just saw it and thought of them. No opener, no ceremony, just the news and why it matters.\n\nNews: {summary}"}],
@@ -146,7 +119,7 @@ def run_alert_checks():
             continue
 
         try:
-            results = "\n\n".join(f"{q}:\n{_search_recent(q)}" for q in queries)
+            results = "\n\n".join(f"{q}:\n{_search(q, days=1)}" for q in queries)
             score, summary = _check_significance(results, profile)
 
             if score >= 8 and summary:

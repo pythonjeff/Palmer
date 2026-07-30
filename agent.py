@@ -33,6 +33,9 @@ _CRYPTO_IDS = {
     "monero": "monero", "xmr": "monero",
 }
 
+HAIKU_MODEL = "claude-haiku-4-5-20251001"
+SONNET_MODEL = "claude-sonnet-4-6"
+
 init_db()
 
 client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"], timeout=45.0)
@@ -265,10 +268,23 @@ def _sms_clean(text: str) -> str:
     return text
 
 
-def _search(query: str) -> str:
+def _parse_json(text: str) -> dict | list | None:
+    """Extract and parse the first JSON object or array from a string."""
+    for open_ch, close_ch in (("{", "}"), ("[", "]")):
+        start = text.find(open_ch)
+        end = text.rfind(close_ch) + 1
+        if start != -1 and end > start:
+            try:
+                return json.loads(text[start:end])
+            except json.JSONDecodeError:
+                pass
+    return None
+
+
+def _search(query: str, days: int = 7) -> str:
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(_tavily.search, query, topic="news", days=7, max_results=5)
+            future = ex.submit(_tavily.search, query, topic="news", days=days, max_results=5)
             response = future.result(timeout=15)
         results = response.get("results", [])
         if not results:
@@ -544,7 +560,7 @@ def _derive_timezone(city: str) -> str | None:
     try:
         from zoneinfo import ZoneInfo
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=HAIKU_MODEL,
             max_tokens=30,
             messages=[{"role": "user", "content": f"What is the IANA timezone identifier for {city}? Reply with only the identifier, e.g. America/Chicago"}],
         )
@@ -562,7 +578,7 @@ def _track_conversation_topic(phone: str, user_msg: str, reply: str, profile: di
     morning_topics = profile.get("morning_topics") or []
     try:
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=HAIKU_MODEL,
             max_tokens=15,
             messages=[{"role": "user", "content": f"""What topic did this text exchange touch on? Two words or fewer. If it's small talk, a reminder set, or nothing topical, say NONE.
 
@@ -656,19 +672,16 @@ def _consolidate_history(phone: str):
     )
     try:
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=HAIKU_MODEL,
             max_tokens=500,
             messages=[{"role": "user", "content": CONSOLIDATE_PROMPT.format(
                 profile=json.dumps(profile, indent=2) if profile else "none yet",
                 messages=transcript,
             )}],
         )
-        text = response.content[0].text.strip()
-        start, end = text.find("{"), text.rfind("}") + 1
-        if start != -1 and end > start:
-            updates = json.loads(text[start:end])
-            if updates:
-                _apply_profile_updates(phone, profile, updates)
+        updates = _parse_json(response.content[0].text)
+        if updates:
+            _apply_profile_updates(phone, profile, updates)
     except Exception:
         pass
 
@@ -678,7 +691,7 @@ def _update_profile(phone: str, user_msg: str, reply: str):
     profile = _normalize_profile(phone, profile)  # migrate aliases and derive timezone for existing users
     try:
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=HAIKU_MODEL,
             max_tokens=300,
             messages=[{"role": "user", "content": EXTRACT_PROMPT.format(
                 user_msg=user_msg,
@@ -686,12 +699,9 @@ def _update_profile(phone: str, user_msg: str, reply: str):
                 profile=json.dumps(profile, indent=2) if profile else "none yet",
             )}],
         )
-        text = response.content[0].text.strip()
-        start, end = text.find("{"), text.rfind("}") + 1
-        if start != -1 and end > start:
-            updates = json.loads(text[start:end])
-            if updates:
-                profile = _apply_profile_updates(phone, profile, updates)
+        updates = _parse_json(response.content[0].text)
+        if updates:
+            profile = _apply_profile_updates(phone, profile, updates)
     except Exception:
         pass
     _track_conversation_topic(phone, user_msg, reply, profile)
@@ -701,7 +711,7 @@ def shorten_message(text: str, max_chars: int = 320) -> str:
     """Use Haiku to shorten a message that failed to send."""
     try:
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=HAIKU_MODEL,
             max_tokens=150,
             messages=[{"role": "user", "content": f"Shorten this to under {max_chars} characters. Keep the key point, cut everything else. No explanation, just the shortened message:\n\n{text}"}],
         )
@@ -783,7 +793,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
 
     for _ in range(6):  # cap tool call iterations
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=SONNET_MODEL,
             max_tokens=600,
             system=system,
             tools=TOOLS,

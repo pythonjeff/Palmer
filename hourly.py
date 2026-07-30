@@ -1,6 +1,6 @@
 import os
 import json
-from agent import client, _search
+from agent import client, _search, HAIKU_MODEL
 from db import get_all_phones, get_profile
 
 
@@ -8,7 +8,7 @@ import re
 
 def _ask_haiku(prompt: str) -> str:
     response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model=HAIKU_MODEL,
         max_tokens=150,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -71,7 +71,9 @@ def _check_sports(profile: dict) -> str | None:
     if not raw:
         return None
     team = _clean_field(raw)
-    results = _search(f"St. Louis {team} game score result today")
+    city = _clean_field(profile.get("city") or "") or ""
+    query = f"{city} {team} game score result today".strip() if city else f"{team} game score result today"
+    results = _search(query)
     if not results:
         return None
     answer = _ask_haiku(f"""Sports search results for {team}:
