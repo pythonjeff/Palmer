@@ -36,7 +36,7 @@ def _clean_field(raw) -> str:
 
 def _check_weather(profile: dict) -> str | None:
     import requests
-    city = profile.get("city") or profile.get("location")
+    city = profile.get("city")
     if not city:
         return None
     city = _clean_field(city)
@@ -67,7 +67,7 @@ Reply ONLY with one of:
 
 
 def _check_sports(profile: dict) -> str | None:
-    raw = profile.get("sports_teams") or profile.get("favorite_teams") or profile.get("teams") or profile.get("sports")
+    raw = profile.get("sports_teams")
     if not raw:
         return None
     team = _clean_field(raw)
@@ -87,7 +87,7 @@ Reply ONLY with one of:
 
 
 def _check_deals(profile: dict) -> str | None:
-    raw = profile.get("brands") or profile.get("tracked_brands") or profile.get("shopping_interests") or profile.get("fashion_taste")
+    raw = profile.get("brands")
     if not raw:
         return None
     brands = _clean_field(raw)
@@ -106,13 +106,13 @@ Reply ONLY with one of:
     return None if _no_alert(answer) else answer
 
 
-def _send(twilio, from_number: str, phone: str, alerts: list[str]):
+def _send(phone: str, alerts: list[str]):
+    from sms_util import send_sms
+    from db import save_message
+    body = "\n\n".join(alerts)
     try:
-        twilio.messages.create(
-            body="\n\n".join(alerts),
-            from_=from_number,
-            to=phone,
-        )
+        send_sms(phone, body)
+        save_message(phone, "assistant", body)
         print(f"Sent {len(alerts)} alert(s) to {phone}")
     except Exception as e:
         print(f"Send failed for {phone}: {e}")
@@ -125,15 +125,12 @@ INTRO_QUESTIONS = [
 ]
 
 def _profile_has_enough(profile: dict) -> bool:
-    return any(profile.get(k) for k in ["city", "location", "sports_teams", "favorite_teams", "brands", "tracked_brands"])
+    return any(profile.get(k) for k in ["city", "sports_teams", "brands"])
 
 
 def run_hourly_checks():
     import random
-    from twilio.rest import Client
     from db import upsert_profile
-    twilio = Client(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
-    from_number = os.environ["TWILIO_PHONE_NUMBER"]
 
     for phone in get_all_phones():
         profile = get_profile(phone)
@@ -142,9 +139,9 @@ def run_hourly_checks():
         if not _profile_has_enough(profile):
             if not profile.get("hourly_intro_sent"):
                 upsert_profile(phone, {"hourly_intro_sent": True})
-                _send(twilio, from_number, phone, [random.choice(INTRO_QUESTIONS)])
+                _send(phone, [random.choice(INTRO_QUESTIONS)])
             elif alerts:
-                _send(twilio, from_number, phone, alerts)
+                _send(phone, alerts)
             continue
 
         if profile.get("morning_prefs_received"):
@@ -157,4 +154,4 @@ def run_hourly_checks():
                     print(f"{checker.__name__} failed for {phone}: {e}")
 
         if alerts:
-            _send(twilio, from_number, phone, alerts)
+            _send(phone, alerts)

@@ -1,7 +1,7 @@
 import json
 import os
 import concurrent.futures
-from datetime import date as date_type
+from datetime import datetime, date as date_type
 from agent import client, _tavily, _build_system, _sms_clean
 from db import get_profile, upsert_profile, get_all_phones, save_message
 
@@ -28,31 +28,53 @@ def _search_morning(query: str) -> str:
         return f"Search failed: {e}"
 
 
-def extract_morning_prefs(phone: str, pref_text: str):
-    """Extract morning topics from a user's preference reply and save to profile."""
+def extract_morning_prefs(phone: str, pref_text: str) -> list[str]:
+    """Extract morning topics and profile fields from onboarding reply. Returns extracted topics."""
     try:
         profile = get_profile(phone)
-        city = profile.get("city") or profile.get("location") or ""
+        city = profile.get("city") or ""
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=200,
-            messages=[{"role": "user", "content": f"""Someone just replied to "What do you want in your morning update?"
+            max_tokens=300,
+            messages=[{"role": "user", "content": f"""Someone just replied to "What city are you in, and what should I be tracking for you?"
 
 Their reply: "{pref_text}"
-Their city (if known): "{city}"
+Their city (if already known): "{city}"
 
-Extract what morning topics to track. Make them specific and searchable — include city name where relevant. Examples: "Chicago weather", "Bitcoin price", "Cardinals game score", "national news headlines".
+Extract everything worth saving:
+1. morning_topics — specific searchable topics for daily briefing (include city where relevant). Examples: "Chicago weather", "Bitcoin price", "Cardinals game score"
+2. city — if they mention where they live
+3. name — if they introduce themselves
+4. interests, sports_teams — anything else they mention caring about
 
-Return a JSON array of strings. Just the array, nothing else."""}],
+Return JSON only:
+{{"morning_topics": ["..."], "city": "...", "name": "...", "interests": ["..."]}}
+Omit keys with no value. morning_topics can be []."""}],
         )
         text = response.content[0].text.strip()
-        start, end = text.find("["), text.rfind("]") + 1
+        start, end = text.find("{"), text.rfind("}") + 1
         if start != -1 and end > start:
-            topics = json.loads(text[start:end])
+            data = json.loads(text[start:end])
+            updates = {k: v for k, v in data.items() if v}
+            topics = updates.pop("morning_topics", [])
+            if updates:
+                if updates.get("city") and not profile.get("timezone"):
+                    from agent import _derive_timezone
+                    tz = _derive_timezone(updates["city"])
+                    if tz:
+                        updates["timezone"] = tz
+                upsert_profile(phone, updates)
             if topics:
-                upsert_profile(phone, {"morning_topics": topics})
+                existing = profile.get("morning_topics") or []
+                merged = list(existing)
+                for t in topics:
+                    if not any(t.lower() in e.lower() or e.lower() in t.lower() for e in merged):
+                        merged.append(t)
+                upsert_profile(phone, {"morning_topics": merged})
+                return topics
     except Exception:
         pass
+    return []
 
 
 def _get_search_queries(profile: dict) -> list[str]:
@@ -63,7 +85,7 @@ def _get_search_queries(profile: dict) -> list[str]:
         prompt = f"""Today is {today}. Convert these morning briefing topics into search queries that will find fresh, current results from today or last night.
 
 Topics: {topic_list}
-City (if relevant): {profile.get("city") or profile.get("location") or "unknown"}
+City (if relevant): {profile.get("city") or "unknown"}
 
 Make queries time-specific — include "today", "this morning", "last night", or "{today}" where it helps get current results.
 Return a JSON array of search queries, one per topic. Example: ["Bitcoin price {today}", "St. Louis weather today", "Cardinals score last night"]. Just the JSON array."""
@@ -92,7 +114,7 @@ Return a JSON array of 1-3 search queries. Example: ["St. Louis weather today", 
 
 def generate_morning(phone: str) -> str:
     profile = get_profile(phone)
-    system = _build_system(phone)
+    system = _build_system(phone, include_recent=True)
     today = date_type.today().strftime("%B %d, %Y")
     queries = _get_search_queries(profile)
     results = "\n\n".join(f"{q}:\n{_search_morning(q)}" for q in queries) if queries else ""
@@ -125,21 +147,38 @@ def _split_message(text: str, max_chars: int = 900) -> list[str]:
     return parts if len(parts) > 1 else [text]
 
 
+def _is_morning_local(tz_name: str) -> bool:
+    """Return True if it's currently 6–9am in the given IANA timezone."""
+    try:
+        from zoneinfo import ZoneInfo
+        return 6 <= datetime.now(ZoneInfo(tz_name)).hour < 9
+    except Exception:
+        return False
+
+
+# NOTE: Heroku Scheduler must run send_morning.py every hour (not once daily)
+# for per-timezone sends to work. The morning_sent_date guard prevents double-sends.
 def send_morning_messages():
-    from twilio.rest import Client
-    twilio = Client(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
-    from_number = os.environ["TWILIO_PHONE_NUMBER"]
+    from sms_util import send_sms
+    today = date_type.today().isoformat()
 
     for phone in get_all_phones():
         profile = get_profile(phone)
         if not profile.get("morning_onboarded"):
-            continue  # not onboarded yet — intro flow handles this
+            continue
+        if profile.get("morning_sent_date") == today:
+            continue  # already sent today
+        tz = profile.get("timezone")
+        if tz and not _is_morning_local(tz):
+            continue  # not morning yet in this user's timezone
+        # No timezone stored: send on first run of the day (old behavior fallback)
         try:
             message = generate_morning(phone)
             parts = _split_message(message)
             for part in parts:
-                twilio.messages.create(body=part, from_=from_number, to=phone)
+                send_sms(phone, part)
             save_message(phone, "assistant", message)
+            upsert_profile(phone, {"morning_sent_date": today})
             print(f"Sent to {phone} ({len(parts)} part(s)): {message}")
         except Exception as e:
             print(f"Failed for {phone}: {e}")

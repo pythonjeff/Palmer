@@ -4,7 +4,7 @@ import os
 import concurrent.futures
 from datetime import datetime, timezone, date as date_type
 
-from agent import client, _tavily, _build_system, _sms_clean
+from agent import client, _tavily, _build_system, _sms_clean, _all_interests
 from db import get_all_phones, get_profile, upsert_profile, save_message
 
 
@@ -37,20 +37,24 @@ def _daily_alert_hour(phone: str) -> int:
     return 13 + (h % 9)  # 1pm-9pm UTC = roughly 8am-4pm Central
 
 
-def _in_alert_window(phone: str) -> bool:
+def _in_alert_window(phone: str, profile: dict) -> bool:
+    tz_name = profile.get("timezone")
+    if tz_name:
+        try:
+            from zoneinfo import ZoneInfo
+            local_hour = datetime.now(ZoneInfo(tz_name)).hour
+            return 13 <= local_hour <= 21  # 1pm–9pm local time
+        except Exception:
+            pass
     return datetime.now(timezone.utc).hour == _daily_alert_hour(phone)
 
 
 def _get_alert_queries(profile: dict) -> list[str]:
-    topics = list(profile.get("morning_topics") or [])
-    for key in ["sports_teams", "favorite_teams", "interests"]:
-        val = profile.get(key)
-        if val:
-            topics.append(str(val))
+    topics = _all_interests(profile)
     if not topics:
         return []
 
-    city = profile.get("city") or profile.get("location") or ""
+    city = profile.get("city") or ""
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -72,7 +76,7 @@ Return a JSON array of 2-3 queries. Just the array."""}],
 
 def _check_significance(results: str, profile: dict) -> tuple[int, str]:
     """Score news significance 1-10 for this user. Returns (score, summary)."""
-    topics = profile.get("morning_topics") or []
+    topics = _all_interests(profile)
     interest_str = ", ".join(topics) if topics else "general news"
     today = date_type.today().isoformat()
 
@@ -110,7 +114,7 @@ If score < 8 set summary to ""."""}],
 
 def _draft_alert(phone: str, summary: str) -> str:
     """Write the alert in Palmer's voice."""
-    system = _build_system(phone)
+    system = _build_system(phone, include_recent=True)
     try:
         response = client.messages.create(
             model="claude-sonnet-4-6",
@@ -124,9 +128,7 @@ def _draft_alert(phone: str, summary: str) -> str:
 
 
 def run_alert_checks():
-    from twilio.rest import Client
-    twilio = Client(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
-    from_number = os.environ["TWILIO_PHONE_NUMBER"]
+    from sms_util import send_sms
     today = date_type.today().isoformat()
 
     for phone in get_all_phones():
@@ -136,7 +138,7 @@ def run_alert_checks():
             continue
         if profile.get("alert_sent_date") == today:
             continue
-        if not _in_alert_window(phone):
+        if not _in_alert_window(phone, profile):
             continue
 
         queries = _get_alert_queries(profile)
@@ -149,7 +151,7 @@ def run_alert_checks():
 
             if score >= 8 and summary:
                 message = _draft_alert(phone, summary)
-                twilio.messages.create(body=message, from_=from_number, to=phone)
+                send_sms(phone, message)
                 save_message(phone, "assistant", message)
                 upsert_profile(phone, {"alert_sent_date": today})
                 print(f"Alert sent to {phone} (score={score}): {message}")

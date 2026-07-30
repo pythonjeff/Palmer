@@ -57,12 +57,42 @@ def init_db():
     conn.close()
 
 
-def get_history(phone: str, limit: int = 15) -> list[dict]:
+HISTORY_LIMIT = 20
+
+
+def get_history(phone: str, limit: int = HISTORY_LIMIT) -> list[dict]:
     conn = _conn()
     cur = conn.cursor()
     cur.execute(
         f"SELECT role, content FROM messages WHERE phone = {PH} ORDER BY created_at DESC LIMIT {PH}",
         (phone, limit),
+    )
+    rows = list(reversed(cur.fetchall()))
+    conn.close()
+    return [{"role": r["role"], "content": r["content"]} for r in rows]
+
+
+def get_message_count(phone: str) -> int:
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(f"SELECT COUNT(*) AS cnt FROM messages WHERE phone = {PH}", (phone,))
+    row = cur.fetchone()
+    conn.close()
+    return row["cnt"] if row else 0
+
+
+def get_older_messages(phone: str, skip_recent: int = HISTORY_LIMIT) -> list[dict]:
+    """Return messages older than the most recent skip_recent, for consolidation."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT role, content FROM messages
+        WHERE phone = {PH}
+        ORDER BY created_at DESC
+        LIMIT 100 OFFSET {PH}
+        """,
+        (phone, skip_recent),
     )
     rows = list(reversed(cur.fetchall()))
     conn.close()

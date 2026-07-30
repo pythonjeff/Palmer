@@ -8,13 +8,13 @@ from fastapi import FastAPI, Form, Response, BackgroundTasks, HTTPException, Req
 from fastapi.responses import PlainTextResponse
 from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
-from twilio.rest import Client as TwilioClient
 from apscheduler.schedulers.background import BackgroundScheduler
-from agent import get_reply, save_assistant_turn, shorten_message
+from agent import get_reply, save_assistant_turn, shorten_message, _sms_clean
 from morning import generate_morning, extract_morning_prefs
-from db import get_profile, upsert_profile, save_message, get_history
+from db import get_profile, upsert_profile, save_message, get_history, HISTORY_LIMIT
 from send_reminders import send_due_reminders
 from alerts import run_alert_checks
+from sms_util import ensure_sms, send_sms, FALLBACK_SMS
 
 INTRO_MESSAGE = (
     "oh — also, I'm Palmer. mornings I send a quick rundown of whatever's actually relevant to you. "
@@ -32,7 +32,6 @@ _scheduler.start()
 _in_flight: dict[str, set] = defaultdict(set)
 _in_flight_lock = threading.Lock()
 _phone_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
-_twilio = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
 
 _seen_sids: list[str] = []
 _seen_sids_lock = threading.Lock()
@@ -43,51 +42,32 @@ _APP_URL = os.environ.get("APP_URL", "").rstrip("/")
 _STATUS_CALLBACK_URL = f"{_APP_URL}/sms-status" if _APP_URL else None
 
 
-def _send_outbound(to: str, body: str, add_status_callback: bool = True):
-    from_number = os.environ["TWILIO_PHONE_NUMBER"]
-    kwargs = {"from_": from_number, "to": to}
-    if add_status_callback and _STATUS_CALLBACK_URL:
-        kwargs["status_callback"] = _STATUS_CALLBACK_URL
-    if len(body) <= 1500:
-        _twilio.messages.create(body=body, **kwargs)
-        return
-    # Split on paragraph breaks first, then hard-split anything still too long
-    parts = [p.strip() for p in body.split("\n\n") if p.strip()]
-    if len(parts) <= 1:
-        parts = [body[i:i+1500] for i in range(0, len(body), 1500)]
-    for part in parts:
-        _twilio.messages.create(body=part, **kwargs)
-
-
-def _send_with_retry(to: str, body: str):
-    """Send a message, shortening with Haiku and retrying once if it fails."""
-    try:
-        _send_outbound(to, body)
-        return
-    except Exception as e:
-        print(f"Send failed for {to}: {e} — shortening and retrying")
-    try:
-        _send_outbound(to, shorten_message(body))
-    except Exception as e2:
-        print(f"Retry also failed for {to}: {e2}")
-        try:
-            _send_outbound(to, "something went sideways sending that — ask me again")
-        except Exception:
-            pass
+def _send_with_retry(to: str, body: str) -> bool:
+    """Send a message via shared SMS helper."""
+    return ensure_sms(to, body)
 
 
 def _send_gif_outbound(to: str, media_url: str):
-    _twilio.messages.create(from_=os.environ["TWILIO_PHONE_NUMBER"], to=to, media_url=[media_url])
+    from twilio.rest import Client as TwilioClient
+    try:
+        TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"]).messages.create(
+            from_=os.environ["TWILIO_PHONE_NUMBER"], to=to, media_url=[media_url]
+        )
+    except Exception as e:
+        print(f"GIF send failed for {to}: {e}")
 
 
 def _handle_sms(from_number: str, body: str, media_url: str | None):
+    reply_sent = False
     try:
-        _handle_sms_inner(from_number, body, media_url)
+        reply_sent = _handle_sms_inner(from_number, body, media_url)
     except Exception as e:
         print(f"UNHANDLED ERROR in _handle_sms for {from_number}: {e}")
+    if not reply_sent:
+        ensure_sms(from_number, FALLBACK_SMS)
 
 
-def _handle_sms_inner(from_number: str, body: str, media_url: str | None):
+def _handle_sms_inner(from_number: str, body: str, media_url: str | None) -> bool:
     profile_before = get_profile(from_number)
     is_new_user = not profile_before.get("intro_sent") and not profile_before.get("morning_onboarded")
     is_preference_reply = (
@@ -98,57 +78,62 @@ def _handle_sms_inner(from_number: str, body: str, media_url: str | None):
     with _in_flight_lock:
         _in_flight[from_number].add(token)
 
+    reply_sent = False
     try:
         with _phone_locks[from_number]:  # serialize per phone so history never interleaves
-            # Fetch history BEFORE saving the current message so it isn't double-included
-            history = get_history(from_number, limit=20)
-            # Save user message NOW — if the process dies mid-reply, this exchange
-            # is still in DB so the next message has full context
+            history = get_history(from_number, limit=HISTORY_LIMIT)
             save_message(from_number, "user", body or "[photo]")
 
+            reply = None
+            gif_url = None
             try:
                 reply, gif_url = get_reply(
                     phone_number=from_number, message=body, media_url=media_url, history=history
                 )
             except Exception as e:
                 print(f"get_reply failed for {from_number}: {e}")
-                try:
-                    _send_outbound(from_number, "something went sideways on my end, try again")
-                except Exception as e2:
-                    print(f"fallback send also failed for {from_number}: {e2}")
-                return
 
-            if not reply:
-                print(f"get_reply returned empty string for {from_number}")
-                try:
-                    _send_outbound(from_number, "something went sideways on my end, try again")
-                except Exception as e2:
-                    print(f"fallback send also failed for {from_number}: {e2}")
-                return
+            if not reply or not reply.strip():
+                if reply is not None:
+                    print(f"get_reply returned empty string for {from_number}")
+                reply_sent = ensure_sms(from_number, FALLBACK_SMS)
+            else:
+                with _in_flight_lock:
+                    add_quote = len(_in_flight[from_number]) > 1
 
-            with _in_flight_lock:
-                add_quote = len(_in_flight[from_number]) > 1
+                if add_quote:
+                    snippet = body if len(body) <= 50 else body[:50].rstrip() + "…"
+                    reply = f"> {snippet}\n{reply}"
 
-            if add_quote:
-                snippet = body if len(body) <= 50 else body[:50].rstrip() + "…"
-                reply = f"> {snippet}\n{reply}"
-
-            _send_with_retry(from_number, reply)
-            if gif_url:
-                _send_gif_outbound(from_number, gif_url)
-            save_assistant_turn(from_number, body, reply)
-            print(f"Replied to {from_number}: {reply[:100]}")
+                reply_sent = _send_with_retry(from_number, reply)
+                if not reply_sent:
+                    reply_sent = ensure_sms(from_number, FALLBACK_SMS)
+                else:
+                    if gif_url:
+                        _send_gif_outbound(from_number, gif_url)
+                    try:
+                        save_assistant_turn(from_number, body, reply)
+                    except Exception as e:
+                        print(f"save_assistant_turn failed for {from_number}: {e}")
+                    print(f"Replied to {from_number}: {reply[:100]}")
     finally:
         with _in_flight_lock:
             _in_flight[from_number].discard(token)
 
     if is_new_user:
         upsert_profile(from_number, {"intro_sent": True})
-        _send_outbound(from_number, INTRO_MESSAGE)
+        send_sms(from_number, INTRO_MESSAGE)
         save_message(from_number, "assistant", INTRO_MESSAGE)
     elif is_preference_reply:
-        extract_morning_prefs(from_number, body)
+        topics = extract_morning_prefs(from_number, body)
         upsert_profile(from_number, {"morning_onboarded": True, "morning_prefs_received": True})
+        if topics:
+            topic_str = ", ".join(topics)
+            confirmation = _sms_clean(f"got it — tracking {topic_str} every morning.")
+            send_sms(from_number, confirmation)
+            save_message(from_number, "assistant", confirmation)
+
+    return reply_sent
 
 
 @app.post("/sms")
@@ -208,10 +193,12 @@ async def sms_status_webhook(
     if MessageStatus in ("failed", "undelivered") and ErrorCode in _RETRIABLE_ERRORS:
         print(f"Delivery failed for {To} (SID={MessageSid}, error={ErrorCode}) — shortening and retrying")
         try:
-            original = _twilio.messages(MessageSid).fetch()
-            short = shorten_message(original.body)
-            _send_outbound(To, short, add_status_callback=False)
-            print(f"Status-callback retry sent to {To}: {short[:80]}")
+            from twilio.rest import Client as TwilioClient
+            original = TwilioClient(
+                os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"]
+            ).messages(MessageSid).fetch()
+            ensure_sms(To, shorten_message(original.body), add_status_callback=False)
+            print(f"Status-callback retry sent to {To}")
         except Exception as e:
             print(f"Status-callback retry failed for {To}: {e}")
 

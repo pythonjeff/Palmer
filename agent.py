@@ -9,7 +9,10 @@ from datetime import datetime, timezone, date as _date, timedelta
 import anthropic
 import requests as _requests
 from tavily import TavilyClient
-from db import init_db, get_history, save_message, get_profile, upsert_profile, save_reminder, cancel_reminders
+from db import (
+    init_db, get_history, save_message, get_profile, upsert_profile, save_reminder, cancel_reminders,
+    get_message_count, get_older_messages, HISTORY_LIMIT,
+)
 
 _CRYPTO_IDS = {
     "bitcoin": "bitcoin", "btc": "bitcoin",
@@ -476,6 +479,118 @@ def _get_gif(query: str) -> str | None:
         return None
 
 
+# Canonical profile schema. Everything reads these keys; aliases are normalized on write.
+_PROFILE_ALIASES = {
+    "location": "city",
+    "favorite_teams": "sports_teams",
+    "teams": "sports_teams",
+    "sports": "sports_teams",
+    "tracked_brands": "brands",
+    "shopping_interests": "brands",
+    "fashion_taste": "brands",
+}
+
+
+def _canonical_updates(updates: dict) -> dict:
+    """Map any alias keys to their canonical names and null out the aliases."""
+    result = {}
+    for k, v in updates.items():
+        canonical = _PROFILE_ALIASES.get(k, k)
+        if canonical not in result:
+            result[canonical] = v
+        if k != canonical:
+            result[k] = None  # null the alias so it doesn't persist
+    return result
+
+
+def _normalize_profile(phone: str, profile: dict) -> dict:
+    """Migrate alias keys in an existing profile to canonical form. Idempotent."""
+    migrations = {}
+    for alias, canonical in _PROFILE_ALIASES.items():
+        val = profile.get(alias)
+        if val is not None:
+            if not profile.get(canonical):
+                migrations[canonical] = val
+            migrations[alias] = None
+    city = migrations.get("city") or profile.get("city")
+    if city and not profile.get("timezone"):
+        tz = _derive_timezone(city)
+        if tz:
+            migrations["timezone"] = tz
+    if migrations:
+        upsert_profile(phone, migrations)
+        return {**profile, **migrations}
+    return profile
+
+
+def _all_interests(profile: dict) -> list[str]:
+    """Collect all interest signals — morning_topics, sports_teams, interests — deduplicated."""
+    seen_lower: set[str] = set()
+    result = []
+    for key in ["morning_topics", "sports_teams", "interests"]:
+        val = profile.get(key)
+        if not val:
+            continue
+        items = val if isinstance(val, list) else [str(val)]
+        for item in items:
+            if item.lower() not in seen_lower:
+                seen_lower.add(item.lower())
+                result.append(item)
+    return result
+
+
+def _derive_timezone(city: str) -> str | None:
+    """Return an IANA timezone string for a city, or None if it can't be determined."""
+    try:
+        from zoneinfo import ZoneInfo
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=30,
+            messages=[{"role": "user", "content": f"What is the IANA timezone identifier for {city}? Reply with only the identifier, e.g. America/Chicago"}],
+        )
+        tz = response.content[0].text.strip()
+        ZoneInfo(tz)  # raises if invalid
+        return tz
+    except Exception:
+        return None
+
+
+def _track_conversation_topic(phone: str, user_msg: str, reply: str, profile: dict):
+    """Track what topic this exchange was about; flag it for morning suggestion if recurring."""
+    if profile.get("pending_morning_suggestion"):
+        return  # already have a pending suggestion — don't pile on
+    morning_topics = profile.get("morning_topics") or []
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=15,
+            messages=[{"role": "user", "content": f"""What topic did this text exchange touch on? Two words or fewer. If it's small talk, a reminder set, or nothing topical, say NONE.
+
+User: {user_msg[:200]}
+Reply: {reply[:200]}
+
+Topic (2 words max, or NONE):"""}],
+        )
+        topic = response.content[0].text.strip()
+        if not topic or topic.upper() == "NONE" or len(topic) > 30:
+            return
+        topic_low = topic.lower()
+        # Skip if already tracked in morning topics
+        if any(topic_low in t.lower() or t.lower() in topic_low for t in morning_topics):
+            return
+        # Update rolling topic history (last 20 exchanges)
+        recent = list(profile.get("conversation_topics") or [])
+        recent.append(topic_low)
+        recent = recent[-20:]
+        count = sum(1 for t in recent if topic_low in t or t in topic_low)
+        updates: dict = {"conversation_topics": recent}
+        if count >= 3:
+            updates["pending_morning_suggestion"] = topic
+        upsert_profile(phone, updates)
+    except Exception:
+        pass
+
+
 EXTRACT_PROMPT = """After this text exchange, what's worth remembering about this person?
 
 User: {user_msg}
@@ -484,11 +599,83 @@ You: {reply}
 Existing profile:
 {profile}
 
-Return a JSON object with only new or updated fields. Think: life details, things they care about, ongoing threads to revisit, personality, patterns. Keep keys short (e.g. "city", "job", "stressed_about", "follow_up", "vibe"). If nothing new, return {{}}."""
+Return a JSON object with only new or updated fields. Capture everything that builds a full picture of who they are — life details, relationships, preferences, ongoing threads, personality, patterns, plans, worries.
+
+Canonical key names:
+- "city" (not location), "name", "timezone"
+- "sports_teams" (not favorite_teams/teams/sports)
+- "brands" (not tracked_brands/shopping_interests)
+- "job", "stressed_about", "follow_up", "vibe", "interests"
+- "relationships" (dict or list: partner, kids, pets, close friends, coworkers they mention)
+- "life_context" (short string: what's going on in their life right now)
+- "communication_style" (how they text: brief, emoji-heavy, formal, etc.)
+
+If nothing new, return {{}}."""
+
+CONSOLIDATE_PROMPT = """These are older text messages with someone. Summarize what matters for knowing them long-term.
+
+Existing profile:
+{profile}
+
+Older messages:
+{messages}
+
+Return a JSON object merging durable facts into the profile. Update or add:
+- "life_summary": 2-4 sentences on who they are and what's going on
+- "ongoing_threads": list of open topics to follow up on later
+- Any specific fields from the extract schema (city, job, interests, relationships, etc.)
+
+Only include fields with real new information. If nothing durable, return {{}}."""
+
+
+def _apply_profile_updates(phone: str, profile: dict, updates: dict) -> dict:
+    """Merge canonical profile updates and derive timezone when city is set."""
+    if not updates:
+        return profile
+    updates = _canonical_updates(updates)
+    new_city = updates.get("city")
+    if new_city and not profile.get("timezone") and "timezone" not in updates:
+        tz = _derive_timezone(new_city)
+        if tz:
+            updates["timezone"] = tz
+    upsert_profile(phone, updates)
+    return get_profile(phone)
+
+
+def _consolidate_history(phone: str):
+    """Fold messages beyond the live window into long-term profile fields."""
+    if get_message_count(phone) < HISTORY_LIMIT * 2:
+        return
+    older = get_older_messages(phone, skip_recent=HISTORY_LIMIT)
+    if len(older) < 10:
+        return
+    profile = get_profile(phone)
+    profile = _normalize_profile(phone, profile)
+    transcript = "\n".join(
+        f"{m['role']}: {m['content'][:300]}" for m in older[-80:]
+    )
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=500,
+            messages=[{"role": "user", "content": CONSOLIDATE_PROMPT.format(
+                profile=json.dumps(profile, indent=2) if profile else "none yet",
+                messages=transcript,
+            )}],
+        )
+        text = response.content[0].text.strip()
+        start, end = text.find("{"), text.rfind("}") + 1
+        if start != -1 and end > start:
+            updates = json.loads(text[start:end])
+            if updates:
+                _apply_profile_updates(phone, profile, updates)
+    except Exception:
+        pass
 
 
 def _update_profile(phone: str, user_msg: str, reply: str):
     profile = get_profile(phone)
+    profile = _normalize_profile(phone, profile)  # migrate aliases and derive timezone for existing users
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -504,9 +691,10 @@ def _update_profile(phone: str, user_msg: str, reply: str):
         if start != -1 and end > start:
             updates = json.loads(text[start:end])
             if updates:
-                upsert_profile(phone, updates)
+                profile = _apply_profile_updates(phone, profile, updates)
     except Exception:
         pass
+    _track_conversation_topic(phone, user_msg, reply, profile)
 
 
 def shorten_message(text: str, max_chars: int = 320) -> str:
@@ -522,26 +710,59 @@ def shorten_message(text: str, max_chars: int = 320) -> str:
         return text[:max_chars]
 
 
-def _build_system(phone: str) -> str:
+def _build_system(phone: str, include_recent: bool = False) -> str:
     profile = get_profile(phone)
     profile_block = "What you know about them:\n" + json.dumps(profile, indent=2) if profile else "You don't know much about this person yet. Learn as you go."
     now = datetime.now(timezone.utc)
-    return SYSTEM_PROMPT.format(
+    system = SYSTEM_PROMPT.format(
         date=now.strftime("%A, %B %d, %Y"),
         now_utc=now.strftime("%H:%M"),
         profile_block=profile_block,
     )
+    if include_recent:
+        recent = get_history(phone, limit=8)
+        if recent:
+            lines = "\n".join(
+                f"{m['role']}: {m['content'][:250]}" for m in recent
+            )
+            system += f"\n\nRecent texts (for continuity — don't recite back):\n{lines}"
+    suggestion = profile.get("pending_morning_suggestion")
+    if suggestion:
+        system += (
+            f"\n\nYou've noticed this person keeps coming back to {suggestion} in conversation, "
+            f"but it's not in their morning update. At a natural moment in this exchange — not as your opener — "
+            f"mention it: something like 'you keep bringing up [X] — want me to add that to your morning?' "
+            f"Use update_morning_briefing if they say yes. Don't force it if the moment isn't right."
+        )
+    return system
 
 
 def save_assistant_turn(phone_number: str, user_msg: str, reply: str):
     """Persist the assistant reply and update profile. Call after user message is already saved."""
     save_message(phone_number, "assistant", reply)
+    # Capture suggestion before _update_profile runs (it may read it to skip topic tracking)
+    pre_profile = get_profile(phone_number)
+    shown_suggestion = pre_profile.get("pending_morning_suggestion")
     _update_profile(phone_number, user_msg, reply)
+    # One shot: clear the suggestion Palmer just had a chance to raise. Also reset
+    # the topic count so we don't immediately re-trigger. If user said yes the
+    # morning_topics already updated via update_morning_briefing; if no, they had a chance.
+    if shown_suggestion:
+        post_profile = get_profile(phone_number)
+        cleaned_topics = [
+            t for t in (post_profile.get("conversation_topics") or [])
+            if shown_suggestion.lower() not in t and t not in shown_suggestion.lower()
+        ]
+        upsert_profile(phone_number, {
+            "pending_morning_suggestion": None,
+            "conversation_topics": cleaned_topics,
+        })
+    _consolidate_history(phone_number)
 
 
 def get_reply(phone_number: str, message: str, media_url: str = None, history: list[dict] | None = None) -> tuple[str, str | None]:
     """Generate a reply. Returns (text, gif_url) — gif_url is None if no GIF was queued."""
-    messages = history if history is not None else get_history(phone_number, limit=20)
+    messages = history if history is not None else get_history(phone_number, limit=HISTORY_LIMIT)
     system = _build_system(phone_number)
 
     # Build user content — include image if MMS photo was attached
@@ -614,17 +835,10 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
         if not tool_results:
             # stop_reason was tool_use but no tool blocks found — something is off; return text if any
             if text:
-                return text, gif_url
+                return _sms_clean(text), gif_url
             raise RuntimeError("stop_reason=tool_use but no tool_use blocks and no text")
 
         messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": tool_results})
 
     raise RuntimeError("tool loop exceeded max iterations without end_turn")
-
-
-def commit_reply(phone_number: str, message: str, reply: str):
-    """Persist a delivered exchange to history and update profile."""
-    save_message(phone_number, "user", message)
-    save_message(phone_number, "assistant", reply)
-    _update_profile(phone_number, message, reply)
