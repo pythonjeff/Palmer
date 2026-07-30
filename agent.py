@@ -324,139 +324,124 @@ def _search(query: str, days: int = 7) -> str:
         return f"Search failed: {e}"
 
 
-def _fetch_current_weather(location: str, api_key: str) -> dict:
-    resp = _requests.get(
-        "https://api.openweathermap.org/data/2.5/weather",
-        params={"q": location, "appid": api_key, "units": "imperial"},
-        timeout=10,
-    )
-    if resp.status_code == 404:
-        raise ValueError(f"Location not found: {location}")
-    resp.raise_for_status()
-    return resp.json()
+_WMO_DESCRIPTIONS = {
+    0: "clear sky", 1: "mainly clear", 2: "partly cloudy", 3: "overcast",
+    45: "foggy", 48: "icy fog",
+    51: "light drizzle", 53: "moderate drizzle", 55: "heavy drizzle",
+    61: "light rain", 63: "moderate rain", 65: "heavy rain",
+    71: "light snow", 73: "moderate snow", 75: "heavy snow", 77: "snow grains",
+    80: "rain showers", 81: "moderate rain showers", 82: "heavy rain showers",
+    85: "snow showers", 86: "heavy snow showers",
+    95: "thunderstorm", 96: "thunderstorm with hail", 99: "severe thunderstorm",
+}
 
 
-def _fetch_forecast(location: str, api_key: str) -> list:
+def _geocode(location: str) -> tuple[float, float, str]:
     resp = _requests.get(
-        "https://api.openweathermap.org/data/2.5/forecast",
-        params={"q": location, "appid": api_key, "units": "imperial", "cnt": 40},
-        timeout=10,
+        "https://geocoding-api.open-meteo.com/v1/search",
+        params={"name": location, "count": 1, "language": "en", "format": "json"},
+        timeout=8,
     )
-    if resp.status_code == 404:
-        raise ValueError(f"Location not found: {location}")
     resp.raise_for_status()
-    return resp.json()["list"]
+    results = resp.json().get("results")
+    if not results:
+        raise ValueError(f"Location not found: {location}")
+    r = results[0]
+    name = r.get("name", location)
+    admin = r.get("admin1", "")
+    resolved = f"{name}, {admin}" if admin else name
+    return r["latitude"], r["longitude"], resolved
 
 
 def _get_weather(location: str, when: str = "today") -> str:
-    api_key = os.environ.get("OWM_API_KEY")
-    if not api_key:
-        return f"OWM_API_KEY not set — use web_search to look up weather for {location}."
-
     when_lower = (when or "today").lower().strip()
     is_now = any(w in when_lower for w in ("now", "current"))
     is_today = any(w in when_lower for w in ("today", "tonight"))
 
     try:
+        lat, lon, resolved = _geocode(location)
+
+        resp = _requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat, "longitude": lon,
+                "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m",
+                "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max,weather_code",
+                "temperature_unit": "fahrenheit",
+                "wind_speed_unit": "mph",
+                "forecast_days": 8,
+                "timezone": "auto",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        curr = data["current"]
+        daily = data["daily"]
+        temp = curr["temperature_2m"]
+        feels = curr["apparent_temperature"]
+        humidity = curr["relative_humidity_2m"]
+        wind_now = curr["wind_speed_10m"]
+        desc = _WMO_DESCRIPTIONS.get(curr["weather_code"], "unknown conditions")
+
         if is_now or is_today:
-            # Always use current-conditions endpoint for live accuracy.
-            # OWM's 3-hour forecast loses today's morning high by afternoon, making
-            # high/low look wrong. Current endpoint always reflects what it's like right now.
-            d = _fetch_current_weather(location, api_key)
-            temp = d["main"]["temp"]
-            feels = d["main"]["feels_like"]
-            humidity = d["main"]["humidity"]
-            wind = d.get("wind", {}).get("speed", 0)
-            desc = d["weather"][0]["description"]
-
-            if is_now:
-                return (
-                    f"{location} right now: {temp:.0f}°F (feels {feels:.0f}°F), {desc}. "
-                    f"Humidity {humidity}%. Wind {wind:.0f} mph."
-                )
-
-            # "today" — supplement with forecast for rain chance and rest-of-day conditions
-            rain_str = ""
-            try:
-                items = _fetch_forecast(location, api_key)
-                today_str = _date.today().isoformat()
-                upcoming = [e for e in items if e["dt_txt"].startswith(today_str)]
-                if upcoming:
-                    max_pop = max(e.get("pop", 0) for e in upcoming)
-                    max_wind = max(e.get("wind", {}).get("speed", 0) for e in upcoming)
-                    wind = max(wind, max_wind)
-                    if max_pop > 0.05:
-                        rain_str = f" Rain chance: {max_pop * 100:.0f}%."
-            except Exception:
-                pass  # forecast supplement is best-effort; current conditions are enough
-
+            rain_pct = daily["precipitation_probability_max"][0]
+            wind_max = daily["wind_speed_10m_max"][0]
+            rain_str = f" Rain chance: {rain_pct}%." if rain_pct > 5 else ""
+            label = "right now" if is_now else "today"
             return (
-                f"{location} today: {temp:.0f}°F right now (feels {feels:.0f}°F), {desc}."
-                f"{rain_str} Humidity {humidity}%. Wind up to {wind:.0f} mph."
+                f"{resolved} {label}: {temp:.0f}°F (feels {feels:.0f}°F), {desc}."
+                f"{rain_str} Humidity {humidity}%. Wind {wind_now:.0f} mph"
+                + (f", gusting to {wind_max:.0f} mph." if wind_max > wind_now + 5 else ".")
             )
 
-        # Future date — forecast API gives full high/low for days we haven't reached yet
-        items = _fetch_forecast(location, api_key)
+        # Future date
         today = _date.today()
         wd = today.weekday()
-
-        if "tomorrow" in when_lower:
-            target = today + timedelta(days=1)
-        elif "saturday" in when_lower or "weekend" in when_lower:
-            ahead = (5 - wd) % 7 or 7
-            target = today + timedelta(days=ahead)
-        elif "sunday" in when_lower:
-            ahead = (6 - wd) % 7 or 7
-            target = today + timedelta(days=ahead)
-        elif "monday" in when_lower:
-            ahead = (0 - wd) % 7 or 7
-            target = today + timedelta(days=ahead)
-        elif "tuesday" in when_lower:
-            ahead = (1 - wd) % 7 or 7
-            target = today + timedelta(days=ahead)
-        elif "wednesday" in when_lower:
-            ahead = (2 - wd) % 7 or 7
-            target = today + timedelta(days=ahead)
-        elif "thursday" in when_lower:
-            ahead = (3 - wd) % 7 or 7
-            target = today + timedelta(days=ahead)
-        elif "friday" in when_lower:
-            ahead = (4 - wd) % 7 or 7
-            target = today + timedelta(days=ahead)
-        else:
+        day_offsets = {
+            "tomorrow": 1,
+            "monday": (0 - wd) % 7 or 7,
+            "tuesday": (1 - wd) % 7 or 7,
+            "wednesday": (2 - wd) % 7 or 7,
+            "thursday": (3 - wd) % 7 or 7,
+            "friday": (4 - wd) % 7 or 7,
+            "saturday": (5 - wd) % 7 or 7,
+            "sunday": (6 - wd) % 7 or 7,
+            "weekend": (5 - wd) % 7 or 7,
+        }
+        delta = next((v for k, v in day_offsets.items() if k in when_lower), None)
+        if delta is None:
             try:
                 target = datetime.strptime(when.strip(), "%Y-%m-%d").date()
+                delta = (target - today).days
             except Exception:
-                target = today + timedelta(days=1)
+                delta = 1
 
-        target_str = target.isoformat()
-        entries = [e for e in items if e["dt_txt"].startswith(target_str)]
+        if delta < 0 or delta >= len(daily["time"]):
+            return f"No forecast available for that date in {resolved} — forecast covers 8 days out."
 
-        if not entries:
-            return (
-                f"No forecast data for {target_str} in {location} (OWM only covers 5 days out). "
-                f"Use web_search to find weather for that date."
-            )
+        target_date = today + timedelta(days=delta)
+        hi = daily["temperature_2m_max"][delta]
+        lo = daily["temperature_2m_min"][delta]
+        rain_pct = daily["precipitation_probability_max"][delta]
+        wind_max = daily["wind_speed_10m_max"][delta]
+        desc_daily = _WMO_DESCRIPTIONS.get(daily["weather_code"][delta], "unknown conditions")
 
-        temps = [e["main"]["temp"] for e in entries]
-        feels_list = [e["main"]["feels_like"] for e in entries]
-        descs = [e["weather"][0]["description"] for e in entries]
-        pops = [e.get("pop", 0) for e in entries]
-        winds = [e.get("wind", {}).get("speed", 0) for e in entries]
-
-        main_desc = Counter(descs).most_common(1)[0][0]
         return (
-            f"{location} on {target.strftime('%A, %B %d')}: "
-            f"High {max(temps):.0f}°F / Low {min(temps):.0f}°F (feels like {max(feels_list):.0f}°F at peak). "
-            f"{main_desc.capitalize()}. Rain chance {max(pops) * 100:.0f}%. Wind up to {max(winds):.0f} mph."
+            f"{resolved} on {target_date.strftime('%A, %B %d')}: "
+            f"High {hi:.0f}°F / Low {lo:.0f}°F. {desc_daily.capitalize()}. "
+            f"Rain chance {rain_pct}%. Wind up to {wind_max:.0f} mph."
         )
 
     except ValueError as e:
-        return str(e)
+        return (
+            f"{e}. Use web_search with query 'weather {location} today' to get weather data."
+        )
     except Exception as e:
         return (
             f"Weather lookup failed ({e}). "
-            f"Fall back to web_search with query 'current weather {location} today' to get weather data."
+            f"Use web_search with query 'weather {location} today' to get weather data."
         )
 
 
