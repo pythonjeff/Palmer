@@ -139,9 +139,8 @@ def send_morning_messages():
         if profile.get("morning_sent_date") == today:
             continue  # already sent today
         tz = profile.get("timezone")
-        if tz and not _is_morning_local(tz):
-            continue  # not morning yet in this user's timezone
-        # No timezone stored: send on first run of the day (old behavior fallback)
+        if not tz or not _is_morning_local(tz):
+            continue  # skip if timezone unknown or not currently 6-9am local
         try:
             message = generate_morning(phone)
             parts = _split_message(message)
