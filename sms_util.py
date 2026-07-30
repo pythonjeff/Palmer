@@ -51,7 +51,7 @@ def send_sms(to: str, body: str, *, add_status_callback: bool = True, media_url:
 
     seen: set[str] = set()
     for attempt in candidates:
-        attempt = (attempt or FALLBACK_SMS).strip()
+        attempt = _sms_clean((attempt or FALLBACK_SMS).strip())
         if not attempt or attempt in seen:
             continue
         seen.add(attempt)

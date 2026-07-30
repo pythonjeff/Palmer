@@ -330,10 +330,12 @@ def _get_weather(location: str, when: str = "today") -> str:
         return "Weather API key not configured."
 
     when_lower = (when or "today").lower().strip()
-    use_current = any(w in when_lower for w in ("now", "current", "today", "tonight"))
+    is_now = any(w in when_lower for w in ("now", "current"))
 
     try:
-        if use_current:
+        if is_now:
+            # Current conditions only — the current-weather API's temp_max/min are not
+            # day forecast highs/lows, so we only report what it actually knows accurately.
             resp = _requests.get(
                 "https://api.openweathermap.org/data/2.5/weather",
                 params={"q": location, "appid": api_key, "units": "imperial"},
@@ -346,14 +348,13 @@ def _get_weather(location: str, when: str = "today") -> str:
             m = d["main"]
             desc = d["weather"][0]["description"]
             wind = d.get("wind", {}).get("speed", 0)
-            pop_pct = round(d.get("pop", 0) * 100)
             return (
                 f"{location} right now: {m['temp']:.0f}°F (feels {m['feels_like']:.0f}°F), {desc}. "
-                f"High {m['temp_max']:.0f}°F / Low {m['temp_min']:.0f}°F. "
                 f"Humidity {m['humidity']}%. Wind {wind:.0f} mph."
             )
 
-        # Forecast for a future date
+        # Forecast path — handles today, tomorrow, weekend, or a specific date.
+        # The forecast API correctly provides day high/low and rain probability.
         resp = _requests.get(
             "https://api.openweathermap.org/data/2.5/forecast",
             params={"q": location, "appid": api_key, "units": "imperial", "cnt": 40},
@@ -367,7 +368,9 @@ def _get_weather(location: str, when: str = "today") -> str:
         today = _date.today()
         wd = today.weekday()
 
-        if "tomorrow" in when_lower:
+        if any(w in when_lower for w in ("today", "tonight")):
+            target = today
+        elif "tomorrow" in when_lower:
             target = today + timedelta(days=1)
         elif "saturday" in when_lower or "weekend" in when_lower:
             ahead = (5 - wd) % 7 or 7
@@ -379,7 +382,7 @@ def _get_weather(location: str, when: str = "today") -> str:
             try:
                 target = datetime.strptime(when.strip(), "%Y-%m-%d").date()
             except Exception:
-                target = today + timedelta(days=1)
+                target = today
 
         target_str = target.isoformat()
         entries = [e for e in items if e["dt_txt"].startswith(target_str)]
@@ -394,8 +397,9 @@ def _get_weather(location: str, when: str = "today") -> str:
         winds = [e.get("wind", {}).get("speed", 0) for e in entries]
 
         main_desc = Counter(descs).most_common(1)[0][0]
+        label = "Today" if target == today else target.strftime("%A, %B %d")
         return (
-            f"{location} on {target.strftime('%A, %B %d')}: "
+            f"{location} {label}: "
             f"High {max(temps):.0f}°F / Low {min(temps):.0f}°F (feels like {max(feels):.0f}°F at peak). "
             f"{main_desc.capitalize()}. Rain chance {max(pops)*100:.0f}%. Wind up to {max(winds):.0f} mph."
         )
@@ -740,9 +744,10 @@ def shorten_message(text: str, max_chars: int = 320) -> str:
             max_tokens=150,
             messages=[{"role": "user", "content": f"Shorten this to under {max_chars} characters. Keep the key point, cut everything else. No explanation, just the shortened message:\n\n{text}"}],
         )
-        return response.content[0].text.strip()
+        result = _sms_clean(response.content[0].text.strip())
+        return result[:max_chars] if len(result) > max_chars else result
     except Exception:
-        return text[:max_chars]
+        return _sms_clean(text)[:max_chars]
 
 
 def _build_system(phone: str, include_recent: bool = False) -> str:

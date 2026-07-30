@@ -118,10 +118,10 @@ def _split_message(text: str, max_chars: int = 900) -> list[str]:
 
 
 def _is_morning_local(tz_name: str) -> bool:
-    """Return True if it's currently 6–9am in the given IANA timezone."""
+    """Return True if it's currently 6–10am in the given IANA timezone."""
     try:
         from zoneinfo import ZoneInfo
-        return 6 <= datetime.now(ZoneInfo(tz_name)).hour < 9
+        return 6 <= datetime.now(ZoneInfo(tz_name)).hour < 10
     except Exception:
         return False
 
@@ -139,8 +139,14 @@ def send_morning_messages():
         if profile.get("morning_sent_date") == today:
             continue  # already sent today
         tz = profile.get("timezone")
+        if not tz:
+            city = profile.get("city")
+            if city:
+                tz = _derive_timezone(city)
+                if tz:
+                    upsert_profile(phone, {"timezone": tz})
         if not tz or not _is_morning_local(tz):
-            continue  # skip if timezone unknown or not currently 6-9am local
+            continue  # skip if timezone still unknown or not currently 6-10am local
         try:
             message = generate_morning(phone)
             parts = _split_message(message)
