@@ -66,14 +66,22 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    # Migration for watches tables created before last_alert_summary existed
-    if _DATABASE_URL:
-        cur.execute("ALTER TABLE watches ADD COLUMN IF NOT EXISTS last_alert_summary TEXT")
-    else:
-        try:
-            cur.execute("ALTER TABLE watches ADD COLUMN last_alert_summary TEXT")
-        except sqlite3.OperationalError:
-            pass  # column already exists
+    # Migrations for columns added after initial deploy
+    new_cols = [
+        "last_alert_summary TEXT",
+        "daily_alert_count INTEGER DEFAULT 0",
+        "daily_alert_date TEXT",
+        "recent_summaries TEXT",
+    ]
+    for col_def in new_cols:
+        col_name = col_def.split()[0]
+        if _DATABASE_URL:
+            cur.execute(f"ALTER TABLE watches ADD COLUMN IF NOT EXISTS {col_def}")
+        else:
+            try:
+                cur.execute(f"ALTER TABLE watches ADD COLUMN {col_def}")
+            except Exception:
+                pass  # already exists
     conn.commit()
     conn.close()
 
@@ -250,7 +258,11 @@ def save_watch(phone: str, description: str, queries: list[str], cooldown_hours:
 def get_active_watches() -> list[dict]:
     conn = _conn()
     cur = conn.cursor()
-    cur.execute("SELECT id, phone, description, queries, cooldown_hours, last_alerted, last_alert_summary FROM watches WHERE active = 1")
+    cur.execute(
+        "SELECT id, phone, description, queries, cooldown_hours, last_alerted, "
+        "last_alert_summary, daily_alert_count, daily_alert_date, recent_summaries "
+        "FROM watches WHERE active = 1"
+    )
     rows = cur.fetchall()
     conn.close()
     return [
@@ -262,6 +274,9 @@ def get_active_watches() -> list[dict]:
             "cooldown_hours": r["cooldown_hours"],
             "last_alerted": r["last_alerted"],
             "last_alert_summary": r["last_alert_summary"],
+            "daily_alert_count": r["daily_alert_count"] or 0,
+            "daily_alert_date": r["daily_alert_date"],
+            "recent_summaries": json.loads(r["recent_summaries"]) if r["recent_summaries"] else [],
         }
         for r in rows
     ]
@@ -280,16 +295,36 @@ def get_user_watches(phone: str) -> list[dict]:
     return [{"id": r["id"], "description": r["description"], "cooldown_hours": r["cooldown_hours"], "last_alerted": r["last_alerted"]} for r in rows]
 
 
-def update_watch_alerted(watch_id: int, summary: str | None = None):
+def update_watch_alerted(watch_id: int, summary: str, recent_summaries: list[str]):
     now = datetime.now(timezone.utc).isoformat()
+    today = datetime.now(timezone.utc).date().isoformat()
     conn = _conn()
     cur = conn.cursor()
     cur.execute(
-        f"UPDATE watches SET last_alerted = {PH}, last_alert_summary = {PH} WHERE id = {PH}",
-        (now, summary, watch_id),
+        f"""UPDATE watches SET
+            last_alerted = {PH},
+            last_alert_summary = {PH},
+            recent_summaries = {PH},
+            daily_alert_count = CASE WHEN daily_alert_date = {PH} THEN daily_alert_count + 1 ELSE 1 END,
+            daily_alert_date = {PH}
+        WHERE id = {PH}""",
+        (now, summary, json.dumps(recent_summaries), today, today, watch_id),
     )
     conn.commit()
     conn.close()
+
+
+def get_messages_after(phone: str, since_iso: str) -> list[dict]:
+    """Return messages for a phone sent after since_iso. Used for engagement detection."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT role FROM messages WHERE phone = {PH} AND created_at > {PH} ORDER BY created_at ASC",
+        (phone, since_iso),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [{"role": r["role"]} for r in rows]
 
 
 def cancel_watches(phone: str, text_match: str = None) -> int:
