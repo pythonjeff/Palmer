@@ -346,8 +346,9 @@ def _parse_published(value) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def _search_raw(query: str, days: int = 1, max_age_hours: float = 12) -> list[dict]:
-    """Return raw Tavily result dicts filtered by recency. Each has title, url, content, published_date."""
+def _search_raw(query: str, days: int = 1, max_age_hours: float = 12,
+                min_score: float = 0.5) -> list[dict]:
+    """Return Tavily result dicts filtered by recency and quality, sorted best-first."""
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
             future = ex.submit(_tavily.search, query, topic="news", days=days, max_results=5)
@@ -358,7 +359,9 @@ def _search_raw(query: str, days: int = 1, max_age_hours: float = 12) -> list[di
         for r in results:
             pub = _parse_published(r.get("published_date"))
             if pub and now - pub <= timedelta(hours=max_age_hours):
-                kept.append(r)
+                if (r.get("score") or 0) >= min_score:
+                    kept.append(r)
+        kept.sort(key=lambda r: r.get("score") or 0, reverse=True)
         return kept
     except Exception:
         return []

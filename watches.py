@@ -1,3 +1,5 @@
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone, timedelta, date as _date
 
 from agent import client, _search_raw, _sms_clean, HAIKU_MODEL
@@ -58,6 +60,29 @@ Reply YES or NO."""}],
     return response.content[0].text.strip().upper().startswith("YES")
 
 
+def _url_reachable(url: str, timeout: int = 4) -> bool:
+    """HEAD check that the URL resolves. Treats 405 (HEAD not allowed) as reachable."""
+    try:
+        req = urllib.request.Request(
+            url, method="HEAD", headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status < 400
+    except urllib.error.HTTPError as e:
+        return e.code == 405  # HEAD blocked but page exists
+    except Exception:
+        return False
+
+
+def _best_result(results: list[dict]) -> dict | None:
+    """Return the highest-scoring result with a reachable URL, or None if all fail."""
+    for r in results:  # already sorted best-first by score
+        url = r.get("url", "")
+        if url and _url_reachable(url):
+            return r
+    return None
+
+
 def _format_alert(result: dict) -> str:
     """Format a raw search result as a headline + link SMS."""
     title = (result.get("title") or "").strip()
@@ -112,8 +137,13 @@ def run_watches():
             if not _check_watch_hit(combined, watch["description"], watch["recent_summaries"], engaged):
                 continue
 
-            # Send the top result as headline + link — no Sonnet summarization
-            alert = _format_alert(all_raw[0])
+            # Pick best reachable result — falls through to next if top URL is dead
+            top = _best_result(all_raw)
+            if not top:
+                print(f"Watch {watch['id']}: all URLs unreachable, skipping alert")
+                continue
+
+            alert = _format_alert(top)
             if not alert:
                 continue
 
@@ -121,7 +151,7 @@ def run_watches():
             save_message(watch["phone"], "assistant", alert)
 
             # Use title for dedup context (shorter than full alert with URL)
-            title = (all_raw[0].get("title") or alert)[:120]
+            title = (top.get("title") or alert)[:120]
             recent = (watch["recent_summaries"] + [title])[-3:]
             update_watch_alerted(watch["id"], title, recent)
             print(f"Watch {watch['id']} triggered for {watch['phone']} (engaged={engaged}): {alert[:80]}")
