@@ -129,6 +129,20 @@ def _gather_morning_data(profile: dict) -> list[str]:
     return sections
 
 
+_META_COMMENTARY_PHRASES = [
+    "not sending", "won't send", "can't include", "skipping this",
+    "this one falls", "this one's right", "avoid zone", "dark content zone",
+    "preference", "they asked", "they set",
+]
+
+
+def _reject_meta_commentary(text: str):
+    lower = text.lower()
+    for phrase in _META_COMMENTARY_PHRASES:
+        if phrase in lower:
+            raise ValueError(f"generate_morning produced meta-commentary: {repr(text[:100])}")
+
+
 def generate_morning(phone: str) -> str:
     profile = get_profile(phone)
     system = _build_system(phone, include_recent=True)
@@ -148,6 +162,14 @@ def generate_morning(phone: str) -> str:
         context_lines.append(f"Life context: {life_ctx}")
     context_block = ("\n\n" + "\n".join(context_lines)) if context_lines else ""
 
+    prefs = profile.get("morning_prefs") or {}
+    avoid_list = prefs.get("avoid") or []
+    avoid_rule = (
+        f"- Silently skip any item that involves: {', '.join(avoid_list)}. "
+        "Do NOT mention that you're skipping it — just omit it and move on.\n"
+        if avoid_list else ""
+    )
+
     prompt = f"""Today is {today}. Write this person's morning text using only the data below.
 
 {data}{context_block}
@@ -156,7 +178,7 @@ Rules:
 - Lead with the weather if it's included.
 - Only report what's in the data above. If a topic's results are empty or look stale, skip that topic entirely — never fill in from memory or paraphrase old news.
 - One or two sentences per item. Keep the whole thing under 700 characters.
-- If there's an open thread above that has a natural check-in moment (something time-sensitive, emotional, or where progress is expected), weave in one brief mention — like a friend who remembered. Skip it if nothing fits naturally.
+{avoid_rule}- If there's an open thread above that has a natural check-in moment (something time-sensitive, emotional, or where progress is expected), weave in one brief mention — like a friend who remembered. Skip it if nothing fits naturally.
 - Palmer's voice — no bullet points, no headers, no "good morning". Just the message.
 - Plain ASCII text only. No emoji, no special characters, no dashes longer than a hyphen."""
 
@@ -169,6 +191,7 @@ Rules:
     result = _sms_clean(response.content[0].text.strip())
     if len(result) < 20:
         raise ValueError(f"generate_morning produced suspiciously short output: {repr(result)}")
+    _reject_meta_commentary(result)
     return result
 
 
