@@ -3,8 +3,14 @@ from agent import client, _search, _sms_clean, HAIKU_MODEL, SONNET_MODEL
 from db import get_active_watches, update_watch_alerted
 
 
-def _check_watch_hit(results: str, description: str) -> bool:
-    """Ask Haiku whether search results actually match the watch description."""
+def _check_watch_hit(results: str, description: str, last_alert_summary: str | None = None) -> bool:
+    """Ask Haiku whether results contain a major, new breaking development for this watch."""
+    dedup_block = ""
+    if last_alert_summary:
+        dedup_block = f"""
+The user was already alerted about this: "{last_alert_summary}"
+If the results describe the same event or development as that alert, reply NO.
+"""
     response = client.messages.create(
         model=HAIKU_MODEL,
         max_tokens=10,
@@ -12,8 +18,9 @@ def _check_watch_hit(results: str, description: str) -> bool:
 
 Search results:
 {results[:2000]}
-
-Do these results contain a clear, new event that matches the watch description?
+{dedup_block}
+Is there a MAJOR breaking development here — something significant, genuinely new, and time-sensitive that matches the watch description? The bar is high: this triggers an SMS interruption, so only a truly critical new event qualifies.
+Reply NO for routine coverage, ongoing-situation updates, analysis, opinion pieces, speculation, or anything that is not clearly a new critical event.
 Reply with exactly YES or NO."""}],
     )
     return response.content[0].text.strip().upper().startswith("YES")
@@ -55,21 +62,23 @@ def run_watches():
 
             all_results = []
             for query in watch["queries"]:
-                results = _search(query, days=1)
-                if results:
+                # Only dated results from the last 12 hours — anything older or
+                # undated isn't breaking news.
+                results = _search(query, days=1, require_date=True, max_age_hours=12)
+                if results and results != "No results found.":
                     all_results.append(results)
 
             if not all_results:
                 continue
 
             combined = "\n\n".join(all_results)
-            if not _check_watch_hit(combined, watch["description"]):
+            if not _check_watch_hit(combined, watch["description"], watch.get("last_alert_summary")):
                 continue
 
             alert = _draft_watch_alert(combined, watch["description"])
             send_sms(watch["phone"], alert)
             save_message(watch["phone"], "assistant", alert)
-            update_watch_alerted(watch["id"])
+            update_watch_alerted(watch["id"], alert)
             print(f"Watch {watch['id']} triggered for {watch['phone']}: {alert[:80]}")
 
         except Exception as e:

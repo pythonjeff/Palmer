@@ -118,9 +118,9 @@ REMINDERS
 When the user asks to be reminded about something, call set_reminder immediately — don't ask for clarification unless the time is genuinely ambiguous. Store due_at in UTC. When confirming the time to the user, convert to their local timezone using their city from their profile (e.g. New York = Eastern, Chicago/St. Louis = Central, Denver = Mountain, LA/Seattle = Pacific — use your knowledge of world timezones for anywhere else). Never show UTC times to the user. Say "done, I'll hit you at 3:15" not "8:15" or "20:15." If you don't know their city, confirm in UTC and note it.
 
 MORNING BRIEFING
-Every morning you send the user a personalized text with topics they've subscribed to — weather, sports scores, news, Bitcoin price, whatever they asked for. This is separate from reminders. Reminders are one-time ("remind me at 3pm"). Morning topics are recurring ("I want Bitcoin every morning", "add weather to my daily", "stop sending me sports").
+Every morning at 8:30 their local time (or whatever time they've picked) you send the user a short update: their local weather, plus any topics they've subscribed to — sports scores, news, Bitcoin price, whatever they asked for. This is separate from reminders. Reminders are one-time ("remind me at 3pm"). Morning topics are recurring ("I want Bitcoin every morning", "stop sending me sports").
 
-If someone asks to add or remove something from their morning update — call update_morning_briefing immediately. You can also tell them what's currently in their morning briefing: look at the morning_topics field in their profile. If morning_topics is empty or missing, you're still inferring topics from general profile info.
+If someone asks to add or remove something from their morning update — call update_morning_briefing immediately. If someone asks to change when it arrives ("send my update at 7 instead", "make it 9am") — call set_morning_time immediately. You can tell them what's in their briefing from the morning_topics field in their profile; if it's empty they just get the weather.
 
 USE THE RIGHT TOOL
 You have specialized tools — route correctly or the data will be wrong:
@@ -226,6 +226,17 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
         },
     },
     {
+        "name": "set_morning_time",
+        "description": "Change what time the user's daily morning briefing is sent, in their local timezone. Use when they ask to get their morning update earlier, later, or at a specific time (e.g. 'send my update at 7', 'make my briefing 9am'). The default is 08:30. Convert whatever they say into 24-hour HH:MM.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "time": {"type": "string", "description": "24-hour local time HH:MM, e.g. '07:00' for 7am, '08:30' for 8:30am"},
+            },
+            "required": ["time"],
+        },
+    },
+    {
         "name": "cancel_reminders",
         "description": "Cancel pending reminders that haven't fired yet. If text_match is given, cancels only reminders whose text contains that phrase. If omitted, cancels all pending reminders for this user.",
         "input_schema": {
@@ -238,7 +249,7 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "add_watch",
-        "description": "Set up a persistent background news watch. Palmer will check every 30 minutes and text the user if it hits. Use when the user asks to be alerted when something happens — a geopolitical event, a sports outcome, a stock move, anything news-trackable. Generate specific, targeted search queries that will surface this event if it occurs.",
+        "description": "Set up a persistent background news watch. Palmer checks every 30 minutes but only texts the user for a MAJOR breaking development — significant, new, and time-sensitive. Routine coverage, analysis, and incremental updates never trigger an alert. Use when the user asks to be alerted when something happens — a geopolitical event, a sports outcome, a stock move, anything news-trackable. Generate specific, targeted search queries that will surface this event if it occurs. When confirming, make clear you'll only text if something major breaks.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -293,6 +304,12 @@ def _sms_clean(text: str) -> str:
     return text
 
 
+def _normalize_hhmm(raw) -> str | None:
+    """Validate a 24-hour HH:MM string; returns zero-padded form or None."""
+    m = re.match(r"^\s*([01]?\d|2[0-3]):([0-5]\d)\s*$", str(raw))
+    return f"{int(m.group(1)):02d}:{m.group(2)}" if m else None
+
+
 def _parse_json(text: str) -> dict | list | None:
     """Extract and parse the first JSON object or array from a string."""
     for open_ch, close_ch in (("{", "}"), ("[", "]")):
@@ -306,12 +323,41 @@ def _parse_json(text: str) -> dict | list | None:
     return None
 
 
-def _search(query: str, days: int = 7) -> str:
+def _parse_published(value) -> datetime | None:
+    """Parse a Tavily published_date into an aware UTC datetime, or None."""
+    if not value:
+        return None
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(str(value))
+    except Exception:
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _search(query: str, days: int = 7, require_date: bool = False,
+            max_age_hours: float | None = None) -> str:
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
             future = ex.submit(_tavily.search, query, topic="news", days=days, max_results=5)
             response = future.result(timeout=15)
         results = response.get("results", [])
+        if require_date or max_age_hours is not None:
+            now = datetime.now(timezone.utc)
+            kept = []
+            for r in results:
+                pub = _parse_published(r.get("published_date"))
+                if pub is None:
+                    continue  # undated results can't be trusted as fresh
+                if max_age_hours is not None and now - pub > timedelta(hours=max_age_hours):
+                    continue
+                kept.append(r)
+            results = kept
         if not results:
             return "No results found."
         return "\n\n".join(
@@ -907,12 +953,19 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     topics = [t for t in topics if item.lower() not in t.lower()]
                 upsert_profile(phone_number, {"morning_topics": topics})
                 result = f"Morning briefing updated. Current topics: {', '.join(topics) if topics else 'none set'}."
+            elif b.name == "set_morning_time":
+                normalized = _normalize_hhmm(b.input.get("time", ""))
+                if normalized:
+                    upsert_profile(phone_number, {"morning_time": normalized})
+                    result = f"Morning briefing time set to {normalized} local."
+                else:
+                    result = f"Invalid time {b.input.get('time')!r} — must be 24-hour HH:MM, e.g. 07:00."
             elif b.name == "cancel_reminders":
                 count = cancel_reminders(phone_number, b.input.get("text_match"))
                 result = f"Cancelled {count} reminder(s)."
             elif b.name == "add_watch":
                 watch_id = save_watch(phone_number, b.input["description"], b.input["queries"], b.input.get("cooldown_hours", 4))
-                result = f"Watch set (id={watch_id}). I'll check every 30 minutes and text you if it hits."
+                result = f"Watch set (id={watch_id}). I'll check every 30 minutes and only text if something major breaks."
             elif b.name == "cancel_watch":
                 count = cancel_watches(phone_number, b.input.get("text_match"))
                 result = f"Cancelled {count} watch(es)."

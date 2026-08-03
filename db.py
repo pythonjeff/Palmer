@@ -61,10 +61,19 @@ def init_db():
             queries TEXT NOT NULL,
             cooldown_hours INTEGER NOT NULL DEFAULT 4,
             last_alerted TEXT,
+            last_alert_summary TEXT,
             active INTEGER NOT NULL DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Migration for watches tables created before last_alert_summary existed
+    if _DATABASE_URL:
+        cur.execute("ALTER TABLE watches ADD COLUMN IF NOT EXISTS last_alert_summary TEXT")
+    else:
+        try:
+            cur.execute("ALTER TABLE watches ADD COLUMN last_alert_summary TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
     conn.close()
 
@@ -134,7 +143,7 @@ def get_profile(phone: str) -> dict:
 def get_all_phones() -> list[str]:
     conn = _conn()
     cur = conn.cursor()
-    cur.execute("SELECT DISTINCT phone FROM messages")
+    cur.execute("SELECT phone FROM users")
     phones = [r["phone"] for r in cur.fetchall()]
     conn.close()
     return phones
@@ -241,7 +250,7 @@ def save_watch(phone: str, description: str, queries: list[str], cooldown_hours:
 def get_active_watches() -> list[dict]:
     conn = _conn()
     cur = conn.cursor()
-    cur.execute("SELECT id, phone, description, queries, cooldown_hours, last_alerted FROM watches WHERE active = 1")
+    cur.execute("SELECT id, phone, description, queries, cooldown_hours, last_alerted, last_alert_summary FROM watches WHERE active = 1")
     rows = cur.fetchall()
     conn.close()
     return [
@@ -252,6 +261,7 @@ def get_active_watches() -> list[dict]:
             "queries": json.loads(r["queries"]),
             "cooldown_hours": r["cooldown_hours"],
             "last_alerted": r["last_alerted"],
+            "last_alert_summary": r["last_alert_summary"],
         }
         for r in rows
     ]
@@ -270,11 +280,14 @@ def get_user_watches(phone: str) -> list[dict]:
     return [{"id": r["id"], "description": r["description"], "cooldown_hours": r["cooldown_hours"], "last_alerted": r["last_alerted"]} for r in rows]
 
 
-def update_watch_alerted(watch_id: int):
+def update_watch_alerted(watch_id: int, summary: str | None = None):
     now = datetime.now(timezone.utc).isoformat()
     conn = _conn()
     cur = conn.cursor()
-    cur.execute(f"UPDATE watches SET last_alerted = {PH} WHERE id = {PH}", (now, watch_id))
+    cur.execute(
+        f"UPDATE watches SET last_alerted = {PH}, last_alert_summary = {PH} WHERE id = {PH}",
+        (now, summary, watch_id),
+    )
     conn.commit()
     conn.close()
 

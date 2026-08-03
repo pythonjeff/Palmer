@@ -1,8 +1,16 @@
-import json
-import os
-from datetime import datetime, date as date_type
-from agent import client, _build_system, _sms_clean, _search, _get_weather, _parse_json, _derive_timezone, HAIKU_MODEL, SONNET_MODEL
+import re
+from datetime import datetime, date as date_type, timedelta
+from agent import (
+    client, _build_system, _sms_clean, _search, _get_weather, _get_price,
+    _parse_json, _derive_timezone, _CRYPTO_IDS, HAIKU_MODEL, SONNET_MODEL,
+)
 from db import get_profile, upsert_profile, get_all_phones, save_message
+
+DEFAULT_MORNING_TIME = "08:30"
+# How long after the target time we'll still send (covers missed scheduler ticks
+# or a transient generation failure) before giving up for the day.
+CATCHUP_WINDOW_MINUTES = 120
+MAX_TOPICS = 3
 
 
 def extract_morning_prefs(phone: str, pref_text: str) -> list[str]:
@@ -46,8 +54,8 @@ Omit keys with no value. morning_topics can be []."""}],
                         merged.append(t)
                 upsert_profile(phone, {"morning_topics": merged})
                 return topics
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"extract_morning_prefs failed for {phone}: {e}")
     return []
 
 
@@ -64,74 +72,74 @@ def _infer_city_from_topics(topics: list[str]) -> str | None:
         result = response.content[0].text.strip()
         if result.upper() != "NONE" and len(result) < 60:
             return result
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"_infer_city_from_topics failed: {e}")
     return None
 
 
-def _get_search_queries(profile: dict) -> list[str]:
-    today = date_type.today().strftime("%B %d, %Y")
-    topics = profile.get("morning_topics")
-    if topics:
-        topic_list = ", ".join(topics)
-        prompt = f"""Today is {today}. Convert these morning briefing topics into search queries that will find fresh, current results from today or last night.
-
-Topics: {topic_list}
-City (if relevant): {profile.get("city") or "unknown"}
-
-Make queries time-specific — include "today", "this morning", "last night", or "{today}" where it helps get current results.
-Return a JSON array of search queries, one per topic. Example: ["Bitcoin price {today}", "St. Louis weather today", "Cardinals score last night"]. Just the JSON array."""
-    else:
-        prompt = f"""Today is {today}. Based on this user profile, what should I search for their morning briefing?
-
-Profile: {json.dumps(profile, indent=2)}
-
-Make queries time-specific — use "today", "this morning", or "{today}" to get current results.
-Return a JSON array of 1-3 search queries. Example: ["St. Louis weather today", "Cardinals score last night"]. If unclear, return []. Just the JSON array."""
-
-    response = client.messages.create(
-        model=HAIKU_MODEL,
-        max_tokens=150,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    parsed = _parse_json(response.content[0].text)
-    return parsed if isinstance(parsed, list) else []
-
-
 _WEATHER_KEYWORDS = ("weather", "forecast", "temperature", "rain", "snow", "wind", "humidity")
+_PRICE_KEYWORDS = ("price", "stock", "shares", "ticker", "crypto")
+
+
+def _price_asset_for_topic(topic: str) -> str | None:
+    """Return an asset identifier if this topic is a price request, else None."""
+    low = topic.lower()
+    for name in _CRYPTO_IDS:
+        if re.search(rf"\b{re.escape(name)}\b", low):
+            return name
+    if any(k in low for k in _PRICE_KEYWORDS):
+        ticker = re.search(r"\b([A-Z]{1,5})\b", topic)
+        if ticker:
+            return ticker.group(1)
+    return None
+
+
+def _gather_morning_data(profile: dict) -> list[str]:
+    """Fetch the briefing data: local weather always (when city known), then up to
+    MAX_TOPICS user topics — prices from the price API, everything else from
+    dated news search only."""
+    sections = []
+    city = profile.get("city") or ""
+    if city:
+        sections.append(f"Local weather:\n{_get_weather(city, 'today')}")
+
+    topics = [
+        t for t in (profile.get("morning_topics") or [])
+        if t and not any(w in t.lower() for w in _WEATHER_KEYWORDS)  # weather already covered
+    ]
+    for topic in topics[:MAX_TOPICS]:
+        asset = _price_asset_for_topic(topic)
+        if asset:
+            sections.append(f"{topic}:\n{_get_price(asset)}")
+        else:
+            sections.append(f"{topic}:\n{_search(topic, days=1, require_date=True)}")
+    return sections
 
 
 def generate_morning(phone: str) -> str:
     profile = get_profile(phone)
     system = _build_system(phone, include_recent=True)
-    today = date_type.today().strftime("%B %d, %Y")
-    queries = _get_search_queries(profile)
-    city = profile.get("city") or ""
+    today = _local_today(profile.get("timezone")).strftime("%B %d, %Y")
 
-    result_parts = []
-    for q in queries:
-        if city and any(w in q.lower() for w in _WEATHER_KEYWORDS):
-            # Route weather queries through the live weather API, not web search
-            result_parts.append(f"{q}:\n{_get_weather(city, 'today')}")
-        else:
-            result_parts.append(f"{q}:\n{_search(q, days=2)}")
+    sections = _gather_morning_data(profile)
+    if not sections:
+        raise ValueError("no morning data available — user has no city and no topics")
+    data = "\n\n".join(sections)
 
-    results = "\n\n".join(result_parts) if result_parts else ""
-    prompt = f"""Today is {today}. Write a morning text for this person based on what you found below.
+    prompt = f"""Today is {today}. Write this person's morning text using only the data below.
 
-Search results:
-{results}
+{data}
 
 Rules:
-- Only include information that's clearly from today or last night. Check the Published dates.
-- If results for a topic look stale, outdated, or generic — skip that topic entirely. Do not make something up or paraphrase old news.
-- One or two sentences per topic max. The whole thing should fit in a single text.
+- Lead with the weather if it's included.
+- Only report what's in the data above. If a topic's results are empty or look stale, skip that topic entirely — never fill in from memory or paraphrase old news.
+- One or two sentences per item. Keep the whole thing under 450 characters — it must fit in a single text.
 - Palmer's voice — no bullet points, no headers, no "good morning". Just the message.
 - Plain ASCII text only. No emoji, no special characters, no dashes longer than a hyphen."""
 
     response = client.messages.create(
         model=SONNET_MODEL,
-        max_tokens=500,
+        max_tokens=300,
         system=system,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -151,48 +159,95 @@ def _split_message(text: str, max_chars: int = 900) -> list[str]:
     return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
 
 
-def _is_morning_local(tz_name: str) -> bool:
-    """Return True if it's currently 6–10am in the given IANA timezone."""
+def _local_now(tz_name: str) -> datetime:
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo(tz_name))
+
+
+def _local_today(tz_name: str | None) -> date_type:
+    """The user's local calendar date; falls back to server date if tz is missing/bad."""
+    if tz_name:
+        try:
+            return _local_now(tz_name).date()
+        except Exception:
+            pass
+    return date_type.today()
+
+
+def _parse_morning_time(value) -> tuple[int, int]:
+    """Parse an 'HH:MM' preference; fall back to the 8:30 default on anything invalid."""
     try:
-        from zoneinfo import ZoneInfo
-        return 6 <= datetime.now(ZoneInfo(tz_name)).hour < 10
+        h, m = str(value).strip().split(":")
+        h, m = int(h), int(m)
+        if 0 <= h < 24 and 0 <= m < 60:
+            return h, m
     except Exception:
-        return False
+        pass
+    return (8, 30)
 
 
-# NOTE: Heroku Scheduler must run send_morning.py every hour (not once daily)
-# for per-timezone sends to work. The morning_sent_date guard prevents double-sends.
+def _in_send_window(now_local: datetime, morning_time: str | None,
+                    catchup_minutes: int = CATCHUP_WINDOW_MINUTES) -> bool:
+    """True if now is at/after the user's morning time but within the catch-up window."""
+    h, m = _parse_morning_time(morning_time or DEFAULT_MORNING_TIME)
+    target = now_local.replace(hour=h, minute=m, second=0, microsecond=0)
+    return target <= now_local < target + timedelta(minutes=catchup_minutes)
+
+
+# Called every 5 minutes by APScheduler in main.py. The morning_sent_date guard
+# (keyed to the user's local date) makes extra invocations harmless, so the old
+# hourly Heroku Scheduler job can stay on as a redundant backup or be removed.
 def send_morning_messages():
     from sms_util import send_sms
-    today = date_type.today().isoformat()
 
     for phone in get_all_phones():
-        profile = get_profile(phone)
-        if not profile.get("morning_onboarded"):
-            continue
-        if profile.get("morning_sent_date") == today:
-            continue  # already sent today
-        tz = profile.get("timezone")
-        if not tz:
-            city = profile.get("city")
-            if not city:
-                # Try to recover city from morning topics (e.g. "Kirkwood, MO weather")
-                city = _infer_city_from_topics(profile.get("morning_topics") or [])
-                if city:
-                    upsert_profile(phone, {"city": city})
-            if city:
-                tz = _derive_timezone(city)
-                if tz:
-                    upsert_profile(phone, {"timezone": tz})
-        if not tz or not _is_morning_local(tz):
-            continue  # skip if timezone still unknown or not currently 6-10am local
         try:
+            profile = get_profile(phone)
+            if not profile.get("morning_onboarded"):
+                continue
+
+            tz = profile.get("timezone")
+            if not tz:
+                city = profile.get("city")
+                if not city:
+                    # Try to recover city from morning topics (e.g. "Kirkwood, MO weather")
+                    city = _infer_city_from_topics(profile.get("morning_topics") or [])
+                    if city:
+                        upsert_profile(phone, {"city": city})
+                if city:
+                    tz = _derive_timezone(city)
+                    if tz:
+                        upsert_profile(phone, {"timezone": tz})
+            if not tz:
+                continue
+
+            try:
+                now_local = _local_now(tz)
+            except Exception:
+                print(f"Invalid timezone {tz!r} for {phone} — skipping")
+                continue
+
+            today_local = now_local.date().isoformat()
+            if profile.get("morning_sent_date") == today_local:
+                continue  # already sent today (user's local day)
+            if not _in_send_window(now_local, profile.get("morning_time")):
+                continue
+
             message = generate_morning(phone)
             parts = _split_message(message)
+            sent = False
             for part in parts:
-                send_sms(phone, part)
-            save_message(phone, "assistant", message)
-            upsert_profile(phone, {"morning_sent_date": today})
-            print(f"Sent to {phone} ({len(parts)} part(s)): {message}")
+                if send_sms(phone, part) and not sent:
+                    sent = True
+                    # Mark immediately after the first accepted part so a crash
+                    # mid-send can't double-send tomorrow's window.
+                    upsert_profile(phone, {"morning_sent_date": today_local})
+            if sent:
+                save_message(phone, "assistant", message)
+                print(f"Morning sent to {phone} ({len(parts)} part(s)): {message[:100]}")
+            else:
+                print(f"Morning send rejected by Twilio for {phone} — will retry next tick")
         except Exception as e:
-            print(f"Failed for {phone}: {e}")
+            # No morning_sent_date written, so the next 5-minute tick retries
+            # (until the catch-up window closes).
+            print(f"Morning update failed for {phone}: {e}")

@@ -47,7 +47,7 @@ Palmer is dry, quick, and observant. It's not an assistant and it's not a brand 
 | Crypto prices | CoinGecko |
 | Stock prices | yfinance |
 | GIFs | Giphy |
-| Background jobs | APScheduler (reminders 1min, watches + alerts 30min) |
+| Background jobs | APScheduler (reminders 1min, mornings 5min, watches 30min) |
 | Database | Heroku Postgres |
 
 ---
@@ -107,7 +107,7 @@ git push heroku main
 Set your Twilio SMS webhook to `https://<your-app>.herokuapp.com/sms` (POST).  
 Set your Twilio status callback to `https://<your-app>.herokuapp.com/sms-status` (POST).
 
-**Heroku Scheduler:** add `python send_morning.py` on an hourly interval. The function guards against double-sends and only fires in each user's 6–9am local window.
+**Morning briefings** are sent by APScheduler inside the web dyno (checked every 5 minutes) at each user's chosen local time — 8:30am by default, changeable by texting Palmer. No Heroku Scheduler job is required; if one exists running `python send_morning.py`, it's a harmless redundant backup (the per-user sent-date guard prevents double-sends).
 
 ---
 
@@ -115,7 +115,6 @@ Set your Twilio status callback to `https://<your-app>.herokuapp.com/sms-status`
 
 ```
 GET /preview?phone=+15551234567         # generate morning briefing without sending
-GET /preview/hourly?phone=+15551234567  # run hourly weather/sports/deals checks
 ```
 
 ---
@@ -124,7 +123,7 @@ GET /preview/hourly?phone=+15551234567  # run hourly weather/sports/deals checks
 
 - `WEB_CONCURRENCY=1` is required. In-memory phone locks and APScheduler only work correctly in a single process.
 - Per-phone `threading.Lock` serializes inbound messages so conversation history never interleaves under concurrent requests from the same number.
-- Watches and alert checks both run every 30 minutes via APScheduler. Watches enforce a per-watch cooldown (default 4 hours) to prevent repeat alerts on slow-moving stories.
+- Watches run every 30 minutes via APScheduler but only alert on major breaking developments — dated results from the last 12 hours, a strict criticality gate, per-watch cooldown (default 4 hours), and dedup against the last alerted event.
 - Reminder delivery uses `FOR UPDATE SKIP LOCKED` on Postgres — safe for multiple scheduler ticks, no double-sends.
 - Twilio webhook signatures (HMAC-SHA1) validated on every inbound request. All DB queries parameterized and scoped to phone number.
 - Tool routing is hard: `get_weather` → OWM only, `get_price` → CoinGecko/yfinance only, web search → Tavily news mode. No overlap, no hallucinated data.

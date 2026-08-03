@@ -10,10 +10,9 @@ from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 from apscheduler.schedulers.background import BackgroundScheduler
 from agent import get_reply, save_assistant_turn, shorten_message, _sms_clean
-from morning import generate_morning, extract_morning_prefs
+from morning import generate_morning, extract_morning_prefs, send_morning_messages
 from db import get_profile, upsert_profile, save_message, get_history, HISTORY_LIMIT
 from send_reminders import send_due_reminders
-from alerts import run_alert_checks
 from watches import run_watches
 from sms_util import ensure_sms, send_sms, FALLBACK_SMS
 
@@ -27,7 +26,7 @@ app = FastAPI()
 
 _scheduler = BackgroundScheduler()
 _scheduler.add_job(send_due_reminders, "interval", minutes=1)
-_scheduler.add_job(run_alert_checks, "interval", minutes=30)
+_scheduler.add_job(send_morning_messages, "interval", minutes=5)
 _scheduler.add_job(run_watches, "interval", minutes=30)
 _scheduler.start()
 
@@ -127,9 +126,17 @@ def _handle_sms_inner(from_number: str, body: str, media_url: str | None) -> boo
         upsert_profile(from_number, {"morning_onboarded": True, "morning_prefs_received": True})
         if topics:
             topic_str = ", ".join(topics)
-            confirmation = _sms_clean(f"got it — tracking {topic_str} every morning.")
-            send_sms(from_number, confirmation)
-            save_message(from_number, "assistant", confirmation)
+            confirmation = _sms_clean(
+                f"got it — weather plus {topic_str}, every morning at 8:30. "
+                "text me if you want a different time."
+            )
+        else:
+            confirmation = _sms_clean(
+                "got it — I'll send your local weather every morning at 8:30. "
+                "text me anytime to add topics or change the time."
+            )
+        send_sms(from_number, confirmation)
+        save_message(from_number, "assistant", confirmation)
 
     return reply_sent
 
@@ -207,18 +214,3 @@ async def sms_status_webhook(
 async def preview_morning(phone: str):
     message = generate_morning(phone)
     return PlainTextResponse(message)
-
-
-@app.get("/preview/hourly")
-async def preview_hourly(phone: str):
-    from hourly import _check_weather, _check_sports, _check_deals
-    profile = get_profile(phone)
-    lines = []
-    for checker in [_check_weather, _check_sports, _check_deals]:
-        try:
-            result = checker(profile)
-            label = checker.__name__.replace("_check_", "").upper()
-            lines.append(f"[{label}] {result or 'NO_ALERT'}")
-        except Exception as e:
-            lines.append(f"[{checker.__name__}] ERROR: {e}")
-    return PlainTextResponse("\n\n".join(lines))
