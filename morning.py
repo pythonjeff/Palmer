@@ -164,11 +164,16 @@ def generate_morning(phone: str) -> str:
 
     prefs = profile.get("morning_prefs") or {}
     avoid_list = prefs.get("avoid") or []
-    avoid_rule = (
-        f"- Silently skip any item that involves: {', '.join(avoid_list)}. "
-        "Do NOT mention that you're skipping it — just omit it and move on.\n"
-        if avoid_list else ""
-    )
+    # always_include overrides avoid — defaults to weather/safety, customizable per user
+    always_include = prefs.get("always_include") or ["weather", "severe weather alerts", "safety alerts"]
+    if avoid_list:
+        always_note = f" Exception: always include {', '.join(always_include)}." if always_include else ""
+        avoid_rule = (
+            f"- Silently skip any item that involves: {', '.join(avoid_list)}.{always_note} "
+            "Do NOT mention that you're skipping it — just omit it and move on.\n"
+        )
+    else:
+        avoid_rule = ""
 
     prompt = f"""Today is {today}. Write this person's morning text using only the data below.
 

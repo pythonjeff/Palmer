@@ -1,7 +1,6 @@
-import json
 from datetime import datetime, timezone, timedelta, date as _date
 
-from agent import client, _search, _sms_clean, HAIKU_MODEL, SONNET_MODEL
+from agent import client, _search_raw, _sms_clean, HAIKU_MODEL
 from db import get_active_watches, update_watch_alerted, get_messages_after
 
 DAILY_ALERT_MAX = 4
@@ -59,21 +58,13 @@ Reply YES or NO."""}],
     return response.content[0].text.strip().upper().startswith("YES")
 
 
-def _draft_watch_alert(results: str, description: str) -> str:
-    """Draft a brief SMS alert for a triggered watch."""
-    response = client.messages.create(
-        model=SONNET_MODEL,
-        max_tokens=200,
-        messages=[{"role": "user", "content": f"""You're Palmer, a concise AI texting assistant.
-
-The user asked you to watch for: "{description}"
-
-Here's what just came up in the news:
-{results[:2000]}
-
-Write a 1-2 sentence SMS telling them what happened. Be specific — name the event, not just "something happened." Plain ASCII only, no emoji, no markdown."""}],
-    )
-    return _sms_clean(response.content[0].text.strip())
+def _format_alert(result: dict) -> str:
+    """Format a raw search result as a headline + link SMS."""
+    title = (result.get("title") or "").strip()
+    url = (result.get("url") or "").strip()
+    if title and url:
+        return _sms_clean(f"{title}\n{url}")
+    return _sms_clean(title or url)
 
 
 def run_watches():
@@ -98,30 +89,41 @@ def run_watches():
             if not _daily_ok(watch):
                 continue
 
-            # Search — only dated results from the last 12 hours
-            all_results = []
+            # Collect raw results across all queries, deduped by URL
+            all_raw: list[dict] = []
+            seen_urls: set[str] = set()
             for query in watch["queries"]:
-                results = _search(query, days=1, require_date=True, max_age_hours=12)
-                if results and results != "No results found.":
-                    all_results.append(results)
+                for r in _search_raw(query, days=1, max_age_hours=12):
+                    url = r.get("url", "")
+                    if url not in seen_urls:
+                        seen_urls.add(url)
+                        all_raw.append(r)
 
-            if not all_results:
+            if not all_raw:
                 continue
 
-            combined = "\n\n".join(all_results)
+            # Build combined text for hit-check (Haiku reads title + snippet, not full content)
+            combined = "\n\n".join(
+                f"{r['title']}\nPublished: {r.get('published_date', 'unknown')}\n{r.get('content', '')[:300]}"
+                for r in all_raw
+            )
 
-            # Adaptive threshold: lower bar if user replied after the last alert
             engaged = _user_engaged(watch)
             if not _check_watch_hit(combined, watch["description"], watch["recent_summaries"], engaged):
                 continue
 
-            alert = _draft_watch_alert(combined, watch["description"])
+            # Send the top result as headline + link — no Sonnet summarization
+            alert = _format_alert(all_raw[0])
+            if not alert:
+                continue
+
             send_sms(watch["phone"], alert)
             save_message(watch["phone"], "assistant", alert)
 
-            # Keep last 3 summaries for contextual dedup on future checks
-            recent = (watch["recent_summaries"] + [alert])[-3:]
-            update_watch_alerted(watch["id"], alert, recent)
+            # Use title for dedup context (shorter than full alert with URL)
+            title = (all_raw[0].get("title") or alert)[:120]
+            recent = (watch["recent_summaries"] + [title])[-3:]
+            update_watch_alerted(watch["id"], title, recent)
             print(f"Watch {watch['id']} triggered for {watch['phone']} (engaged={engaged}): {alert[:80]}")
 
         except Exception as e:

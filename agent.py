@@ -346,6 +346,24 @@ def _parse_published(value) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+def _search_raw(query: str, days: int = 1, max_age_hours: float = 12) -> list[dict]:
+    """Return raw Tavily result dicts filtered by recency. Each has title, url, content, published_date."""
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(_tavily.search, query, topic="news", days=days, max_results=5)
+            response = future.result(timeout=15)
+        results = response.get("results", [])
+        now = datetime.now(timezone.utc)
+        kept = []
+        for r in results:
+            pub = _parse_published(r.get("published_date"))
+            if pub and now - pub <= timedelta(hours=max_age_hours):
+                kept.append(r)
+        return kept
+    except Exception:
+        return []
+
+
 def _search(query: str, days: int = 7, require_date: bool = False,
             max_age_hours: float | None = None) -> str:
     try:
