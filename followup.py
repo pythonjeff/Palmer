@@ -1,9 +1,8 @@
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from agent import client, _build_system, _sms_clean, HAIKU_MODEL, SONNET_MODEL
 from db import get_all_phones, get_profile, upsert_profile, save_message, get_history
-from morning import _local_today
+from morning import _local_now, _local_today
 
 
 def _should_send_followup(profile: dict) -> bool:
@@ -14,7 +13,7 @@ def _should_send_followup(profile: dict) -> bool:
     if not tz:
         return False
     try:
-        local_now = datetime.now(ZoneInfo(tz))
+        local_now = _local_now(tz)
     except Exception:
         return False
     if not (13 <= local_now.hour < 19):  # 1pm–7pm local only

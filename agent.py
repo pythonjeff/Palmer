@@ -1002,12 +1002,14 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 if "enabled" in b.input:
                     updates["morning_enabled"] = b.input["enabled"]
                 upsert_profile(phone_number, updates)
-                if updates.get("morning_enabled") is False:
-                    result = f"Morning briefing paused. Topics saved: {', '.join(topics) if topics else 'none'}. Say 'resume my morning' to turn it back on."
-                elif updates.get("morning_enabled") is True:
-                    result = f"Morning briefing resumed. Current topics: {', '.join(topics) if topics else 'none set'}."
+                topic_str = ", ".join(topics) if topics else "none"
+                enabled = updates.get("morning_enabled")
+                if enabled is False:
+                    result = f"Morning briefing paused. Topics saved: {topic_str}. Say 'resume my morning' to turn it back on."
+                elif enabled is True:
+                    result = f"Morning briefing resumed. Topics: {topic_str}."
                 else:
-                    result = f"Morning briefing updated. Current topics: {', '.join(topics) if topics else 'none set'}."
+                    result = f"Morning briefing updated. Topics: {topic_str}."
             elif b.name == "set_morning_time":
                 normalized = _normalize_hhmm(b.input.get("time", ""))
                 if normalized:

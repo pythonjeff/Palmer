@@ -45,7 +45,7 @@ def send_sms(to: str, body: str, *, add_status_callback: bool = True, media_url:
         if body:
             yield body
             if len(body) > 320:
-                yield shorten_message(body)  # lazy: only called if full body fails
+                yield shorten_message(body)
                 yield body[:320]
         yield FALLBACK_SMS
 
