@@ -1,7 +1,7 @@
 import re
 from datetime import datetime, date as date_type, timedelta
 from agent import (
-    client, _build_system, _sms_clean, _search, _get_weather, _get_price,
+    client, _build_system, _sms_clean, _search, _weather_report, _get_price,
     _parse_json, _derive_timezone, _CRYPTO_IDS, HAIKU_MODEL, SONNET_MODEL,
 )
 from db import get_profile, upsert_profile, get_all_phones, save_message
@@ -101,7 +101,14 @@ def _gather_morning_data(profile: dict) -> list[str]:
     sections = []
     city = profile.get("city") or ""
     if city:
-        sections.append(f"Local weather:\n{_get_weather(city, 'today')}")
+        try:
+            sections.append(f"Local weather:\n{_weather_report(city, 'today')}")
+        except Exception as e:
+            # Skip the weather section rather than feeding a failure message to
+            # the drafting model (which used to produce "weather tool failed"
+            # texts). If weather was the whole briefing, generate_morning raises
+            # and the 5-minute scheduler retries within the catch-up window.
+            print(f"Morning weather unavailable for {city!r}: {e}")
 
     topics = [
         t for t in (profile.get("morning_topics") or [])
