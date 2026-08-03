@@ -107,9 +107,7 @@ def _handle_sms_inner(from_number: str, body: str, media_url: str | None) -> boo
                     reply = f"> {snippet}\n{reply}"
 
                 reply_sent = ensure_sms(from_number, reply)
-                if not reply_sent:
-                    reply_sent = ensure_sms(from_number, FALLBACK_SMS)
-                else:
+                if reply_sent:
                     if gif_url:
                         _send_gif_outbound(from_number, gif_url)
                     try:

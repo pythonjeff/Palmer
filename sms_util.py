@@ -41,16 +41,16 @@ def send_sms(to: str, body: str, *, add_status_callback: bool = True, media_url:
         for part in parts:
             _twilio.messages.create(body=part, **kwargs)
 
-    candidates = []
-    if body:
-        candidates.append(body)
-        if len(body) > 320:
-            candidates.append(shorten_message(body))
-            candidates.append(body[:320])
-    candidates.append(FALLBACK_SMS)
+    def _candidates():
+        if body:
+            yield body
+            if len(body) > 320:
+                yield shorten_message(body)  # lazy: only called if full body fails
+                yield body[:320]
+        yield FALLBACK_SMS
 
     seen: set[str] = set()
-    for attempt in candidates:
+    for attempt in _candidates():
         attempt = _sms_clean((attempt or FALLBACK_SMS).strip())
         if not attempt or attempt in seen:
             continue
