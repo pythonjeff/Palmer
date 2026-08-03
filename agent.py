@@ -4,6 +4,7 @@ import re
 import time
 import base64
 import random
+import threading
 import concurrent.futures
 from collections import Counter
 from datetime import datetime, timezone, date as _date, timedelta
@@ -99,6 +100,9 @@ When someone is new, let them find out what you can do through conversation — 
 
 MEMORY
 Use what you know about them the way friends do: casually, without citation. "how'd the presentation go" — never "I remember you mentioned a presentation." Don't recite their life back to them. One well-placed callback beats five references.
+
+PROFILE QUESTIONS
+If they ask what you know or remember about them, give a casual 2-3 sentence summary — like how you'd describe a friend to someone else. Don't list fields, don't sound like a database. Mention 2-3 things that feel most defining. If something in your profile seems wrong, invite them to correct it.
 
 NEVER
 - "Great question" / "I'm here for you" / "That sounds really tough" / anything that could appear in a customer service macro
@@ -216,12 +220,13 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "update_morning_briefing",
-        "description": "Add or remove topics from the user's daily morning briefing. Use when the user asks to track something every morning (e.g. 'add Bitcoin to my morning', 'put weather in my daily update', 'stop sending me sports'). This is different from set_reminder — morning topics repeat every day.",
+        "description": "Add or remove topics from the user's daily morning briefing, or pause/resume it entirely. Use when the user asks to track something every morning (e.g. 'add Bitcoin to my morning', 'stop sending me sports'), or says 'stop my morning' / 'pause mornings' (enabled=false) / 'resume my morning' (enabled=true). Topics are preserved when paused. This is different from set_reminder — morning topics repeat every day.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "add": {"type": "array", "items": {"type": "string"}, "description": "Topics to add, e.g. ['Bitcoin price', 'St. Louis weather']"},
                 "remove": {"type": "array", "items": {"type": "string"}, "description": "Topics to remove"},
+                "enabled": {"type": "boolean", "description": "Set false to pause morning briefings, true to resume. Topics are preserved."},
             },
             "required": [],
         },
@@ -770,6 +775,7 @@ Canonical key names:
 - "relationships" (dict or list: partner, kids, pets, close friends, coworkers they mention)
 - "life_context" (short string: what's going on in their life right now)
 - "communication_style" (how they text: brief, emoji-heavy, formal, etc.)
+- "ongoing_threads" (list of open topics that have a natural follow-up — things they're dealing with, waiting on, or planning, e.g. ["waiting on job offer", "planning Chicago trip"])
 
 If nothing new, return {{}}."""
 
@@ -897,12 +903,8 @@ def _build_system(phone: str, include_recent: bool = False) -> str:
     return system
 
 
-def save_assistant_turn(phone_number: str, user_msg: str, reply: str):
-    """Persist the assistant reply and update profile. Call after user message is already saved."""
-    save_message(phone_number, "assistant", reply)
-    # Capture suggestion before _update_profile runs (it may read it to skip topic tracking)
-    pre_profile = get_profile(phone_number)
-    shown_suggestion = pre_profile.get("pending_morning_suggestion")
+def _profile_and_consolidate(phone_number: str, user_msg: str, reply: str, shown_suggestion: str | None):
+    """Background: extract profile updates, clear any shown suggestion, consolidate history."""
     _update_profile(phone_number, user_msg, reply)
     # One shot: clear the suggestion Palmer just had a chance to raise. Also reset
     # the topic count so we don't immediately re-trigger. If user said yes the
@@ -918,6 +920,19 @@ def save_assistant_turn(phone_number: str, user_msg: str, reply: str):
             "conversation_topics": cleaned_topics,
         })
     _consolidate_history(phone_number)
+
+
+def save_assistant_turn(phone_number: str, user_msg: str, reply: str):
+    """Persist the assistant reply and kick off profile updates in the background."""
+    save_message(phone_number, "assistant", reply)
+    # Capture suggestion before the background thread runs (it reads the pre-update profile)
+    pre_profile = get_profile(phone_number)
+    shown_suggestion = pre_profile.get("pending_morning_suggestion")
+    threading.Thread(
+        target=_profile_and_consolidate,
+        args=(phone_number, user_msg, reply, shown_suggestion),
+        daemon=True,
+    ).start()
 
 
 def get_reply(phone_number: str, message: str, media_url: str = None, history: list[dict] | None = None) -> tuple[str, str | None]:
@@ -983,8 +998,16 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                         topics.append(item)
                 for item in (b.input.get("remove") or []):
                     topics = [t for t in topics if item.lower() not in t.lower()]
-                upsert_profile(phone_number, {"morning_topics": topics})
-                result = f"Morning briefing updated. Current topics: {', '.join(topics) if topics else 'none set'}."
+                updates: dict = {"morning_topics": topics}
+                if "enabled" in b.input:
+                    updates["morning_enabled"] = b.input["enabled"]
+                upsert_profile(phone_number, updates)
+                if updates.get("morning_enabled") is False:
+                    result = f"Morning briefing paused. Topics saved: {', '.join(topics) if topics else 'none'}. Say 'resume my morning' to turn it back on."
+                elif updates.get("morning_enabled") is True:
+                    result = f"Morning briefing resumed. Current topics: {', '.join(topics) if topics else 'none set'}."
+                else:
+                    result = f"Morning briefing updated. Current topics: {', '.join(topics) if topics else 'none set'}."
             elif b.name == "set_morning_time":
                 normalized = _normalize_hhmm(b.input.get("time", ""))
                 if normalized:

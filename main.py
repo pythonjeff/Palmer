@@ -10,7 +10,9 @@ from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 from apscheduler.schedulers.background import BackgroundScheduler
 from agent import get_reply, save_assistant_turn, shorten_message, _sms_clean
-from morning import generate_morning, extract_morning_prefs, send_morning_messages
+from morning import generate_morning, extract_morning_prefs, send_morning_messages, _format_morning_time
+from alerts import run_alert_checks
+from followup import run_followups
 from db import get_profile, upsert_profile, save_message, get_history, HISTORY_LIMIT
 from send_reminders import send_due_reminders
 from watches import run_watches
@@ -28,6 +30,8 @@ _scheduler = BackgroundScheduler()
 _scheduler.add_job(send_due_reminders, "interval", minutes=1)
 _scheduler.add_job(send_morning_messages, "interval", minutes=5)
 _scheduler.add_job(run_watches, "interval", minutes=30)
+_scheduler.add_job(run_alert_checks, "interval", minutes=60)
+_scheduler.add_job(run_followups, "interval", hours=4)
 _scheduler.start()
 
 _in_flight: dict[str, set] = defaultdict(set)
@@ -124,15 +128,17 @@ def _handle_sms_inner(from_number: str, body: str, media_url: str | None) -> boo
     elif is_preference_reply:
         topics = extract_morning_prefs(from_number, body)
         upsert_profile(from_number, {"morning_onboarded": True, "morning_prefs_received": True})
+        updated_profile = get_profile(from_number)
+        time_str = _format_morning_time(updated_profile.get("morning_time"))
         if topics:
             topic_str = ", ".join(topics)
             confirmation = _sms_clean(
-                f"got it — weather plus {topic_str}, every morning at 8:30. "
+                f"got it — weather plus {topic_str}, every morning at {time_str}. "
                 "text me if you want a different time."
             )
         else:
             confirmation = _sms_clean(
-                "got it — I'll send your local weather every morning at 8:30. "
+                f"got it — I'll send your local weather every morning at {time_str}. "
                 "text me anytime to add topics or change the time."
             )
         send_sms(from_number, confirmation)
