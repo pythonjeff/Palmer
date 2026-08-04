@@ -180,7 +180,7 @@ def generate_morning(phone: str) -> str:
 {data}{context_block}
 
 Rules:
-- Lead with the weather if it's included.
+- Vary the entry point. Don't always open with weather — sometimes the most interesting topic is a better lead, sometimes a personal thread fits the opener. Check the recent messages in your context to see how you opened recently and find a different angle today.
 - Only report what's in the data above. If a topic's results are empty or look stale, skip that topic entirely — never fill in from memory or paraphrase old news.
 - One or two sentences per item. Keep the whole thing under 700 characters.
 {avoid_rule}- If there's an open thread above that has a natural check-in moment (something time-sensitive, emotional, or where progress is expected), weave in one brief mention — like a friend who remembered. Skip it if nothing fits naturally.

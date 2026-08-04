@@ -93,7 +93,14 @@ def _draft_alert(phone: str, summary: str) -> str:
             model=SONNET_MODEL,
             max_tokens=150,
             system=system,
-            messages=[{"role": "user", "content": f"Send a short unprompted text about this news. Palmer's voice — casual, like you just saw it and thought of them. No opener, no ceremony, just the news and why it matters.\n\nNews: {summary}"}],
+            messages=[{"role": "user", "content": (
+                f"Send a short unprompted text about this breaking news. Palmer's voice — "
+                "like you just saw it and immediately thought of them. No opener, no ceremony. "
+                "Lead with what happened and why it matters to them specifically. "
+                "Vary the framing: sometimes a quick observation, sometimes just the fact with a sharp aside, "
+                "sometimes a question if the stakes are genuinely unclear. Don't always frame it the same way.\n\n"
+                f"News: {summary}"
+            )}],
         )
         return _sms_clean(response.content[0].text.strip())
     except Exception:

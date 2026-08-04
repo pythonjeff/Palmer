@@ -74,7 +74,10 @@ def _draft_followup(phone: str, thread: str) -> str:
             system=system,
             messages=[{"role": "user", "content": (
                 f"Send a brief, casual check-in about this open thread: {thread}. "
-                "One sentence. No opener, no ceremony — just like a friend who thought of them. Palmer's voice."
+                "One sentence, no opener, no ceremony. Make it specific and alive — "
+                "an observation, a pointed question only if you actually need the answer, or a statement that just shows you remembered. "
+                "Not a generic 'hey how did that go' — something that sounds like a real person had a real thought. "
+                "Check recent messages to make sure you're not using the same shape as the last check-in. Palmer's voice."
             )}],
         )
         return _sms_clean(response.content[0].text.strip())
