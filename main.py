@@ -10,7 +10,7 @@ from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 from apscheduler.schedulers.background import BackgroundScheduler
 from agent import get_reply, save_assistant_turn, shorten_message, _sms_clean
-from morning import generate_morning, extract_morning_prefs, send_morning_messages, _format_morning_time
+from morning import generate_morning, extract_morning_prefs, send_morning_messages, send_missing_data_asks, _format_morning_time
 from alerts import run_alert_checks
 from followup import run_followups
 from db import get_profile, upsert_profile, save_message, get_history, HISTORY_LIMIT
@@ -31,6 +31,7 @@ _scheduler.add_job(send_due_reminders, "interval", minutes=1)
 _scheduler.add_job(send_morning_messages, "interval", minutes=5)
 _scheduler.add_job(run_watches, "interval", minutes=30)
 _scheduler.add_job(run_alert_checks, "interval", minutes=60)
+_scheduler.add_job(send_missing_data_asks, "interval", minutes=60)
 _scheduler.add_job(run_followups, "interval", hours=4)
 _scheduler.start()
 

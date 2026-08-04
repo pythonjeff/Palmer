@@ -1,5 +1,6 @@
+import os
 import re
-from datetime import datetime, date as date_type, timedelta
+from datetime import datetime, date as date_type, timedelta, timezone
 from agent import (
     client, _build_system, _sms_clean, _search, _weather_report, _get_price,
     _parse_json, _derive_timezone, _normalize_hhmm, _CRYPTO_IDS, HAIKU_MODEL, SONNET_MODEL,
@@ -338,3 +339,106 @@ def send_morning_messages():
             # No morning_sent_date written, so the next 5-minute tick retries
             # (until the catch-up window closes).
             print(f"Morning update failed for {phone}: {e}")
+
+
+# Missing-data outreach. When a user finishes onboarding without giving us
+# a city, mornings can't fire (no local time to target). Palmer proactively
+# texts to ask, so the gap fills itself instead of the user just never hearing
+# from us at 8:30am.
+
+DATA_ASK_COOLDOWN_DAYS = 7
+# Safe UTC window when it's daytime across US zones. 16:00-22:00 UTC = 11am-5pm ET,
+# 8am-2pm PT, 6am-noon HT. Not perfect for HT/AK but acceptable — we don't know
+# the user's local time (that's the whole reason we're asking).
+DATA_ASK_UTC_START_HOUR = 16
+DATA_ASK_UTC_END_HOUR = 22
+
+
+def _needs_city_ask(profile: dict) -> bool:
+    """User completed onboarding but we have no way to determine their location.
+    Without city or timezone, mornings can't fire at the right local time."""
+    if not profile.get("morning_onboarded"):
+        return False
+    if profile.get("morning_enabled") is False:
+        return False
+    if profile.get("city") or profile.get("timezone"):
+        return False
+    last_ask = profile.get("city_ask_sent_date")
+    if last_ask:
+        try:
+            last = datetime.fromisoformat(last_ask).date()
+            if (date_type.today() - last).days < DATA_ASK_COOLDOWN_DAYS:
+                return False
+        except Exception:
+            pass
+    return True
+
+
+def _in_data_ask_window() -> bool:
+    hour = datetime.now(timezone.utc).hour
+    return DATA_ASK_UTC_START_HOUR <= hour < DATA_ASK_UTC_END_HOUR
+
+
+def _draft_city_ask(phone: str) -> str:
+    """One or two-sentence ask in Palmer's voice, explaining why he needs the city."""
+    from agent import _build_system
+    system = _build_system(phone, include_recent=True)
+    try:
+        response = client.messages.create(
+            model=SONNET_MODEL,
+            max_tokens=100,
+            system=system,
+            messages=[{"role": "user", "content": (
+                "Text them out of the blue for one reason: you don't have their city "
+                "on file, so you can't get their morning briefing sent at the right "
+                "local time. Ask for their city naturally in Palmer's voice — one or "
+                "two sentences. Mention WHY you need it (morning timing) so they know "
+                "what this is about. No opener, no apology, no ceremony. Warm, not needy."
+            )}],
+        )
+        return _sms_clean(response.content[0].text.strip())
+    except Exception:
+        return _sms_clean(
+            "quick one — I don't have your city on file, so I can't get your "
+            "morning sent at the right time. where are you?"
+        )
+
+
+def send_missing_data_asks():
+    """Ask users with critical missing profile data. Runs hourly; uses a broad
+    UTC window since we don't know the user's local time.
+
+    Set DATA_ASK_DRY_RUN=1 to log matches + drafted messages without sending
+    or writing cooldown state — useful for verifying who'd be contacted before
+    turning it loose."""
+    from sms_util import send_sms
+
+    dry_run = os.environ.get("DATA_ASK_DRY_RUN") == "1"
+
+    if not _in_data_ask_window():
+        if dry_run:
+            print(f"[dry-run] outside window (UTC hour {datetime.now(timezone.utc).hour})")
+        return
+
+    matched = 0
+    for phone in get_all_phones():
+        try:
+            profile = get_profile(phone)
+            if not _needs_city_ask(profile):
+                continue
+            matched += 1
+            message = _draft_city_ask(phone)
+            if dry_run:
+                print(f"[dry-run] would text {phone}: {message}")
+                continue
+            if send_sms(phone, message):
+                save_message(phone, "assistant", message)
+                upsert_profile(phone, {"city_ask_sent_date": date_type.today().isoformat()})
+                print(f"City ask sent to {phone}: {message[:80]}")
+            else:
+                print(f"City ask send rejected by Twilio for {phone}")
+        except Exception as e:
+            print(f"City ask failed for {phone}: {e}")
+
+    if dry_run:
+        print(f"[dry-run] {matched} user(s) matched")
