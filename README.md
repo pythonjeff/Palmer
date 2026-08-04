@@ -23,8 +23,17 @@ Natural-language reminders that arrive when you need them. "Remind me Friday mor
 ### Sends alerts
 When something massive breaks in an area you care about, Palmer texts you before you'd think to check. Score threshold is high — it texts when it's actually worth knowing, not for every update.
 
+### Follows up
+If you mentioned an interview, a doctor's visit, a rough week — Palmer notices. It circles back a day or two later to ask how it went. Not scripted check-ins; it picks the thread worth pulling on.
+
+### Sees photos
+Send Palmer a picture and it'll actually respond to what's in it — a menu, a whiteboard, a receipt, a dog. It's using vision, not guessing from a filename.
+
 ### Answers anything
 Crypto prices, stock quotes, weather forecasts, sports scores, current events — all through the same text thread, no switching apps.
+
+### Stays out of the way
+Tell Palmer to pause the morning texts, drop a topic, forget a fact about you, or change when it sends — all by texting. No settings screen.
 
 ---
 
@@ -47,7 +56,7 @@ Palmer is dry, quick, and observant. It's not an assistant and it's not a brand 
 | Crypto prices | CoinGecko |
 | Stock prices | yfinance |
 | GIFs | Giphy |
-| Background jobs | APScheduler (reminders 1min, mornings 5min, watches 30min) |
+| Background jobs | APScheduler (reminders 1m · mornings 5m · watches 30m · alerts 60m · missing-data asks 60m · follow-ups 4h) |
 | Database | Heroku Postgres |
 
 ---
@@ -124,6 +133,7 @@ GET /preview?phone=+15551234567         # generate morning briefing without send
 - `WEB_CONCURRENCY=1` is required. In-memory phone locks and APScheduler only work correctly in a single process.
 - Per-phone `threading.Lock` serializes inbound messages so conversation history never interleaves under concurrent requests from the same number.
 - Watches run every 30 minutes via APScheduler but only alert on major breaking developments — dated results from the last 12 hours, a strict criticality gate, per-watch cooldown (default 4 hours), and dedup against the last alerted event.
+- Proactive outbound is scheduled: **mornings** at each user's local time (5-min tick, catch-up window, per-day guard), **breaking-news alerts** every 60 min (score ≥ 8, 1–9pm local send window), **follow-ups** every 4h (Haiku picks one ongoing thread, Sonnet drafts, 1–7pm window, 3-day gap guard), and **missing-data asks** every 60 min for users onboarded without a city so mornings can target them (7-day cooldown, US-daytime UTC window; `DATA_ASK_DRY_RUN=1` to preview).
 - Reminder delivery uses `FOR UPDATE SKIP LOCKED` on Postgres — safe for multiple scheduler ticks, no double-sends.
 - Twilio webhook signatures (HMAC-SHA1) validated on every inbound request. All DB queries parameterized and scoped to phone number.
 - Tool routing is hard: `get_weather` → OWM only, `get_price` → CoinGecko/yfinance only, web search → Tavily news mode. No overlap, no hallucinated data.
