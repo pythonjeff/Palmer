@@ -3,7 +3,7 @@ import re
 from datetime import datetime, date as date_type, timedelta, timezone
 from agent import (
     client, _build_system, _sms_clean, _search, _weather_report, _get_price,
-    _parse_json, _derive_timezone, _normalize_hhmm, _CRYPTO_IDS, HAIKU_MODEL, SONNET_MODEL,
+    _derive_timezone, _CRYPTO_IDS, HAIKU_MODEL, SONNET_MODEL,
 )
 from db import get_profile, upsert_profile, get_all_phones, save_message, get_history
 
@@ -12,58 +12,6 @@ DEFAULT_MORNING_TIME = "08:30"
 # or a transient generation failure) before giving up for the day.
 CATCHUP_WINDOW_MINUTES = 120
 MAX_TOPICS = 3
-
-
-def extract_morning_prefs(phone: str, pref_text: str) -> list[str]:
-    """Extract morning topics and profile fields from onboarding reply. Returns extracted topics."""
-    try:
-        profile = get_profile(phone)
-        city = profile.get("city") or ""
-        response = client.messages.create(
-            model=HAIKU_MODEL,
-            max_tokens=300,
-            messages=[{"role": "user", "content": f"""Someone just replied to "What city are you in, and what should I be tracking for you?"
-
-Their reply: "{pref_text}"
-Their city (if already known): "{city}"
-
-Extract everything worth saving:
-1. morning_topics — specific searchable topics for daily briefing (include city where relevant). Examples: "Chicago weather", "Bitcoin price", "Cardinals game score"
-2. city — if they mention where they live
-3. name — if they introduce themselves
-4. interests, sports_teams — anything else they mention caring about
-5. morning_time — if they mention a preferred send time (e.g. "7am", "9:30"), return in 24-hour HH:MM format
-
-Return JSON only:
-{{"morning_topics": ["..."], "city": "...", "name": "...", "interests": ["..."], "morning_time": "HH:MM"}}
-Omit keys with no value. morning_topics can be []."""}],
-        )
-        data = _parse_json(response.content[0].text)
-        if isinstance(data, dict):
-            updates = {k: v for k, v in data.items() if v}
-            topics = updates.pop("morning_topics", [])
-            raw_time = updates.pop("morning_time", None)
-            if raw_time:
-                normalized = _normalize_hhmm(raw_time)
-                if normalized:
-                    upsert_profile(phone, {"morning_time": normalized})
-            if updates:
-                if updates.get("city") and not profile.get("timezone"):
-                    tz = _derive_timezone(updates["city"])
-                    if tz:
-                        updates["timezone"] = tz
-                upsert_profile(phone, updates)
-            if topics:
-                existing = profile.get("morning_topics") or []
-                merged = list(existing)
-                for t in topics:
-                    if not any(t.lower() in e.lower() or e.lower() in t.lower() for e in merged):
-                        merged.append(t)
-                upsert_profile(phone, {"morning_topics": merged})
-                return topics
-    except Exception as e:
-        print(f"extract_morning_prefs failed for {phone}: {e}")
-    return []
 
 
 def _infer_city_from_topics(topics: list[str]) -> str | None:
@@ -261,14 +209,6 @@ def _parse_morning_time(value) -> tuple[int, int]:
     except Exception:
         pass
     return (8, 30)
-
-
-def _format_morning_time(value) -> str:
-    """Format a morning_time profile value as human-readable 12-hour time, e.g. '8:30am'."""
-    h, m = _parse_morning_time(value)
-    period = "am" if h < 12 else "pm"
-    display_h = h % 12 or 12
-    return f"{display_h}:{m:02d}{period}"
 
 
 def _in_send_window(now_local: datetime, morning_time: str | None,

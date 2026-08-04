@@ -10,19 +10,13 @@ from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 from apscheduler.schedulers.background import BackgroundScheduler
 from agent import get_reply, save_assistant_turn, shorten_message, _sms_clean
-from morning import generate_morning, extract_morning_prefs, send_morning_messages, send_missing_data_asks, _format_morning_time
+from morning import generate_morning, send_morning_messages, send_missing_data_asks
 from alerts import run_alert_checks
 from followup import run_followups
 from db import get_profile, upsert_profile, save_message, get_history, HISTORY_LIMIT
 from send_reminders import send_due_reminders
 from watches import run_watches
 from sms_util import ensure_sms, send_sms, FALLBACK_SMS
-
-INTRO_MESSAGE = (
-    "oh — also, I'm Palmer. mornings I send a quick rundown of whatever's actually relevant to you. "
-    "rest of the day I'm here.\n\n"
-    "what city are you in, and what should I be tracking for you?"
-)
 
 app = FastAPI()
 
@@ -71,10 +65,7 @@ def _handle_sms(from_number: str, body: str, media_url: str | None):
 
 def _handle_sms_inner(from_number: str, body: str, media_url: str | None) -> bool:
     profile_before = get_profile(from_number)
-    is_new_user = not profile_before.get("intro_sent") and not profile_before.get("morning_onboarded")
-    is_preference_reply = (
-        profile_before.get("intro_sent") and not profile_before.get("morning_prefs_received")
-    )
+    is_new_user = not profile_before.get("intro_sent")
 
     token = object()
     with _in_flight_lock:
@@ -90,7 +81,8 @@ def _handle_sms_inner(from_number: str, body: str, media_url: str | None) -> boo
             gif_url = None
             try:
                 reply, gif_url = get_reply(
-                    phone_number=from_number, message=body, media_url=media_url, history=history
+                    phone_number=from_number, message=body, media_url=media_url,
+                    history=history, is_new_user=is_new_user,
                 )
             except Exception as e:
                 print(f"get_reply failed for {from_number}: {e}")
@@ -120,28 +112,9 @@ def _handle_sms_inner(from_number: str, body: str, media_url: str | None) -> boo
         with _in_flight_lock:
             _in_flight[from_number].discard(token)
 
-    if is_new_user:
+    if is_new_user and reply_sent:
+        # Mark only after a successful reply so a failed first send retries the intro flow.
         upsert_profile(from_number, {"intro_sent": True})
-        send_sms(from_number, INTRO_MESSAGE)
-        save_message(from_number, "assistant", INTRO_MESSAGE)
-    elif is_preference_reply:
-        topics = extract_morning_prefs(from_number, body)
-        upsert_profile(from_number, {"morning_onboarded": True, "morning_prefs_received": True})
-        updated_profile = get_profile(from_number)
-        time_str = _format_morning_time(updated_profile.get("morning_time"))
-        if topics:
-            topic_str = ", ".join(topics)
-            confirmation = _sms_clean(
-                f"got it — weather plus {topic_str}, every morning at {time_str}. "
-                "text me if you want a different time."
-            )
-        else:
-            confirmation = _sms_clean(
-                f"got it — I'll send your local weather every morning at {time_str}. "
-                "text me anytime to add topics or change the time."
-            )
-        send_sms(from_number, confirmation)
-        save_message(from_number, "assistant", confirmation)
 
     return reply_sent
 

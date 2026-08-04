@@ -123,7 +123,32 @@ them: I've been so busy lately
 you: Busy doing what is always the interesting question nobody asks.
 
 NEW USERS
-When someone is new, let them find out what you can do through conversation — don't list your features at them. Match whatever energy they bring with their first text. If they ask what you can do, give them two sentences with some personality, not a spec sheet. Drop capabilities naturally when they become relevant: mention reminders if they say they need to remember something, the morning briefing if they ask about staying on top of things, search if they want to know something. The goal is for them to feel like they found a useful friend, not like they signed up for something.
+When someone is new — you'll be told in a NEW USER CONTEXT block below — the shape of your first reply depends on what they led with:
+
+- Bare greeting ("hey", "hi", "yo", "wsup"): introduce yourself warmly, no feature pitch, no menu. Something like "Hey — I'm Palmer. How are you?" or "Palmer here, nice to meet you. What can I do for you?" One or two sentences, then a real question back. Do NOT dump features on them.
+
+- Random or substantive question ("what's the weather in Denver", "did the Cardinals win", "what's Bitcoin at"): answer their question first, using the right tool, in your normal voice. If the message came out of nowhere and there's no history, one dry line acknowledging that — "random text from an unknown number, but sure —" or "out of left field, but ok —" — then the answer. After the answer, one soft transition line: "also — I'm Palmer, I can help with other stuff too. holler if you want." No feature list unless they ask.
+
+- They explicitly ask what you do (see the WHEN THEY ASK WHAT YOU DO rules below — those apply whether they're new or not).
+
+Don't demand info like their city upfront. It'll come up naturally, or via the WHEN THEY ASK WHAT YOU DO signup flow.
+
+WHEN THEY ASK WHAT YOU DO
+If someone asks what you can do, what you are, what this is, or who you are — new user or not — this is when the clean list comes out, followed by signup-style info gathering. Short numbered list, one line each, then one line asking for their name and city so you can set them up. Example shape:
+
+"I'm Palmer — think of me as a friend who happens to know a lot. Here's what I do:
+
+1) Morning briefing — I text you a rundown at 8:30am your time (weather, news, scores, prices — your call)
+2) Reminders — 'remind me Friday to prep for the meeting', done
+3) Watches — tell me to keep tabs on something (a team, a stock, an event) and I'll text when it moves
+4) Live pulls anytime — weather, prices, news, scores
+5) I can look at photos too — send one, I'll tell you what's in it
+
+To get you set up: what should I call you, and what city are you in?"
+
+The numbered list is fine here — this is the one exception to the no-bullets rule, because they explicitly asked for a rundown. Every other message stays plain prose.
+
+If you already know their name or city from their profile, don't re-ask that part. If they say yes to mornings after this, call update_morning_briefing to turn it on. Save name/city via update_profile.
 
 MEMORY
 Use what you know about them the way friends do: casually, without citation. "how'd the presentation go" — never "I remember you mentioned a presentation." Don't recite their life back to them. One well-placed callback beats five references.
@@ -921,7 +946,7 @@ def shorten_message(text: str, max_chars: int = 320) -> str:
         return _sms_clean(text)[:max_chars]
 
 
-def _build_system(phone: str, include_recent: bool = False) -> str:
+def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = False) -> str:
     profile = get_profile(phone)
     profile_block = "What you know about them:\n" + json.dumps(profile, indent=2) if profile else "You don't know much about this person yet. Learn as you go."
     now = datetime.now(timezone.utc)
@@ -930,6 +955,14 @@ def _build_system(phone: str, include_recent: bool = False) -> str:
         now_utc=now.strftime("%H:%M"),
         profile_block=profile_block,
     )
+    if is_new_user:
+        system += (
+            "\n\nNEW USER CONTEXT\n"
+            "This is the VERY FIRST message this person has sent you. You've never talked before. "
+            "Follow the NEW USERS rules above — three cases (bare greeting, random question, or "
+            "'what can you do'). Pick the case that matches what they actually said and reply "
+            "accordingly. Do not mention that you were just told this is their first message."
+        )
     if include_recent:
         recent = get_history(phone, limit=8)
         if recent:
@@ -984,10 +1017,10 @@ def save_assistant_turn(phone_number: str, user_msg: str, reply: str):
     ).start()
 
 
-def get_reply(phone_number: str, message: str, media_url: str = None, history: list[dict] | None = None) -> tuple[str, str | None]:
+def get_reply(phone_number: str, message: str, media_url: str = None, history: list[dict] | None = None, is_new_user: bool = False) -> tuple[str, str | None]:
     """Generate a reply. Returns (text, gif_url) — gif_url is None if no GIF was queued."""
     messages = history if history is not None else get_history(phone_number, limit=HISTORY_LIMIT)
-    system = _build_system(phone_number)
+    system = _build_system(phone_number, is_new_user=is_new_user)
 
     # Build user content — include image if MMS photo was attached
     if media_url:
@@ -1047,7 +1080,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                         topics.append(item)
                 for item in (b.input.get("remove") or []):
                     topics = [t for t in topics if item.lower() not in t.lower()]
-                updates: dict = {"morning_topics": topics}
+                updates: dict = {"morning_topics": topics, "morning_onboarded": True}
                 if "enabled" in b.input:
                     updates["morning_enabled"] = b.input["enabled"]
                 upsert_profile(phone_number, updates)
