@@ -4,7 +4,7 @@ from agent import (
     client, _build_system, _sms_clean, _search, _weather_report, _get_price,
     _parse_json, _derive_timezone, _normalize_hhmm, _CRYPTO_IDS, HAIKU_MODEL, SONNET_MODEL,
 )
-from db import get_profile, upsert_profile, get_all_phones, save_message
+from db import get_profile, upsert_profile, get_all_phones, save_message, get_history
 
 DEFAULT_MORNING_TIME = "08:30"
 # How long after the target time we'll still send (covers missed scheduler ticks
@@ -129,6 +129,16 @@ def _gather_morning_data(profile: dict) -> list[str]:
     return sections
 
 
+def _recent_assistant_texts(phone: str, n: int = 4) -> list[str]:
+    """Full-text of the last N assistant messages, oldest→newest. Used in the
+    morning prompt for anti-repetition: the 250-char truncation in
+    _build_system cuts off the personal engagement question at the end of prior
+    mornings, so the drafting model can't otherwise see what it asked yesterday."""
+    history = get_history(phone, limit=25)
+    texts = [m["content"] for m in history if m["role"] == "assistant"]
+    return texts[-n:]
+
+
 _META_COMMENTARY_PHRASES = [
     "not sending", "won't send", "can't include", "skipping this",
     "this one falls", "this one's right", "avoid zone", "dark content zone",
@@ -162,6 +172,17 @@ def generate_morning(phone: str) -> str:
         context_lines.append(f"Life context: {life_ctx}")
     context_block = ("\n\n" + "\n".join(context_lines)) if context_lines else ""
 
+    recent_msgs = _recent_assistant_texts(phone, n=4)
+    if recent_msgs:
+        joined = "\n---\n".join(recent_msgs)
+        recent_block = (
+            "\n\nRecent messages you sent them (do NOT reuse the opener, "
+            "phrasing, or engagement question from any of these — pick a "
+            "different angle today):\n" + joined
+        )
+    else:
+        recent_block = ""
+
     prefs = profile.get("morning_prefs") or {}
     avoid_list = prefs.get("avoid") or []
     # always_include overrides avoid — defaults to weather/safety, customizable per user
@@ -177,13 +198,17 @@ def generate_morning(phone: str) -> str:
 
     prompt = f"""Today is {today}. Write this person's morning text using only the data below.
 
-{data}{context_block}
+{data}{context_block}{recent_block}
 
 Rules:
-- Vary the entry point. Don't always open with weather — sometimes the most interesting topic is a better lead, sometimes a personal thread fits the opener. Check the recent messages in your context to see how you opened recently and find a different angle today.
-- Only report what's in the data above. If a topic's results are empty or look stale, skip that topic entirely — never fill in from memory or paraphrase old news.
-- One or two sentences per item. Keep the whole thing under 700 characters.
-{avoid_rule}- If there's an open thread above that has a natural check-in moment (something time-sensitive, emotional, or where progress is expected), weave in one brief mention — like a friend who remembered. Skip it if nothing fits naturally.
+- ONLY include weather (when provided) and the topics they explicitly asked to track. Never add outside news, world commentary, unrelated events, or your own opinions on things they didn't ask about. If a topic's results are empty, off-topic, or clearly stale, silently skip that topic — no filler, no paraphrasing old news, no inventing.
+- Vary the entry point. Sometimes weather leads, sometimes the most interesting topic, sometimes a quick personal note. Different angle than what you sent yesterday.
+- One or two sentences per topic. Whole message under 700 characters.
+{avoid_rule}- End with ONE personal touch — a single sentence in Palmer's voice that shows you actually thought about THEM today. Rotate the type so it's genuinely different from your recent mornings above:
+  * a real check-in tied to something specific in their profile (an ongoing thread, someone they've mentioned, a decision they're weighing, their job, their kids/partner/pet)
+  * a curious or thought-provoking question they'd enjoy chewing on with coffee — tied to their world when possible
+  * a brief fun fact connected to their city, team, work, or one of their interests
+Just one. Never all three. Never generic ("how's your week going" is banned). It has to land like a best friend who thought of them, not a bot doing a bit.
 - Palmer's voice — no bullet points, no headers, no "good morning". Just the message.
 - Plain ASCII text only. No emoji, no special characters, no dashes longer than a hyphen."""
 
@@ -280,6 +305,7 @@ def send_morning_messages():
                     if tz:
                         upsert_profile(phone, {"timezone": tz})
             if not tz:
+                print(f"Morning skipped for {phone}: no timezone (profile needs city)")
                 continue
 
             try:
