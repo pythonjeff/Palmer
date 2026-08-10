@@ -1,11 +1,60 @@
+import json
 import urllib.request
 import urllib.error
+from pathlib import Path
+from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta, date as _date
 
 from agent import client, _search_raw, _sms_clean, HAIKU_MODEL
 from db import get_active_watches, update_watch_alerted, get_messages_after
 
 DAILY_ALERT_MAX = 4
+
+
+def _load_trusted_sources() -> tuple[set[str], set[str]]:
+    with open(Path(__file__).parent / "trusted_sources.json") as f:
+        data = json.load(f)
+    tier1 = {d["domain"] for d in data["domains"] if d["tier"] == 1}
+    tier2 = {d["domain"] for d in data["domains"] if d["tier"] == 2}
+    return tier1, tier2
+
+
+_TIER1_DOMAINS, _TIER2_DOMAINS = _load_trusted_sources()
+
+
+def _canonical_domain(url: str) -> str:
+    """Collapse subdomains to a canonical form for corroboration counting.
+    Prefers a known trusted domain if the host matches; otherwise last two labels."""
+    try:
+        host = (urlparse(url).hostname or "").lower().lstrip(".")
+    except Exception:
+        return ""
+    if not host:
+        return ""
+    for d in _TIER1_DOMAINS | _TIER2_DOMAINS:
+        if host == d or host.endswith("." + d):
+            return d
+    parts = host.split(".")
+    if len(parts) >= 2:
+        return ".".join(parts[-2:])
+    return host
+
+
+def _source_tier(url: str) -> int:
+    """1 = premier newsroom or official (.gov/.edu), 2 = mainstream, 3 = other."""
+    try:
+        host = (urlparse(url).hostname or "").lower().lstrip(".")
+    except Exception:
+        return 3
+    if not host:
+        return 3
+    if any(host == d or host.endswith("." + d) for d in _TIER1_DOMAINS):
+        return 1
+    if host.endswith(".gov") or host.endswith(".edu"):
+        return 1
+    if any(host == d or host.endswith("." + d) for d in _TIER2_DOMAINS):
+        return 2
+    return 3
 
 
 def _daily_ok(watch: dict) -> bool:
@@ -75,8 +124,13 @@ def _url_reachable(url: str, timeout: int = 4) -> bool:
 
 
 def _best_result(results: list[dict]) -> dict | None:
-    """Return the highest-scoring result with a reachable URL, or None if all fail."""
-    for r in results:  # already sorted best-first by score
+    """Return the highest-trust reachable result. Ranks by (tier, -score) so a
+    tier-1 newsroom beats a higher-scoring blog."""
+    ranked = sorted(
+        results,
+        key=lambda r: (_source_tier(r.get("url", "")), -(r.get("score") or 0)),
+    )
+    for r in ranked:
         url = r.get("url", "")
         if url and _url_reachable(url):
             return r
@@ -125,6 +179,15 @@ def run_watches():
                         all_raw.append(r)
 
             if not all_raw:
+                continue
+
+            # Corroboration gate: require >= 2 distinct sources OR >= 1 tier-1 source.
+            # Single unknown-domain hits are how rumor/spam/fake alerts leak through.
+            domains = {_canonical_domain(r.get("url", "")) for r in all_raw}
+            domains.discard("")
+            has_tier1 = any(_source_tier(r.get("url", "")) == 1 for r in all_raw)
+            if len(domains) < 2 and not has_tier1:
+                print(f"Watch {watch['id']}: no corroboration ({len(domains)} domain(s), no tier-1), skipping")
                 continue
 
             # Build combined text for hit-check (Haiku reads title + snippet, not full content)
