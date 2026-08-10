@@ -980,8 +980,15 @@ def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = 
         )
     watches = get_user_watches(phone)
     if watches:
-        watch_lines = "\n".join(f"- [{w['id']}] {w['description']}" for w in watches)
-        system += f"\n\nActive watches (background news checks you're running for them):\n{watch_lines}"
+        watch_lines = "\n".join(
+            f"- [{w['id']}] {w['description']} — checked every 30 min, alerts at most every {w['cooldown_hours']}h"
+            for w in watches
+        )
+        system += (
+            f"\n\nActive watches (background news checks you're running for them):\n{watch_lines}"
+            f"\n\nIf they ask what you're tracking, list the descriptions naturally in your voice — not as a bulleted list. "
+            f"Mention the alert frequency only if they ask how often."
+        )
     return system
 
 
