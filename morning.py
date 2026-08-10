@@ -6,6 +6,7 @@ from agent import (
     _derive_timezone, _CRYPTO_IDS, HAIKU_MODEL, SONNET_MODEL,
 )
 from db import get_profile, upsert_profile, get_all_phones, save_message, get_history
+from traffic import get_city_traffic
 
 DEFAULT_MORNING_TIME = "08:30"
 # How long after the target time we'll still send (covers missed scheduler ticks
@@ -33,6 +34,7 @@ def _infer_city_from_topics(topics: list[str]) -> str | None:
 
 
 _WEATHER_KEYWORDS = ("weather", "forecast", "temperature", "rain", "snow", "wind", "humidity")
+_TRAFFIC_KEYWORDS = ("traffic", "commute", "highway", "roads")
 _PRICE_KEYWORDS = ("price", "stock", "shares", "ticker", "crypto")
 
 
@@ -64,10 +66,17 @@ def _gather_morning_data(profile: dict) -> list[str]:
             # texts). If weather was the whole briefing, generate_morning raises
             # and the 5-minute scheduler retries within the catch-up window.
             print(f"Morning weather unavailable for {city!r}: {e}")
+        try:
+            traffic_line = get_city_traffic(city)
+            if traffic_line:
+                sections.append(f"Local traffic:\n{traffic_line}")
+        except Exception as e:
+            print(f"Morning traffic unavailable for {city!r}: {e}")
 
+    _auto_covered = _WEATHER_KEYWORDS + _TRAFFIC_KEYWORDS
     topics = [
         t for t in (profile.get("morning_topics") or [])
-        if t and not any(w in t.lower() for w in _WEATHER_KEYWORDS)  # weather already covered
+        if t and not any(w in t.lower() for w in _auto_covered)  # weather + traffic already covered
     ]
     for topic in topics[:MAX_TOPICS]:
         asset = _price_asset_for_topic(topic)
@@ -135,7 +144,7 @@ def generate_morning(phone: str) -> str:
     prefs = profile.get("morning_prefs") or {}
     avoid_list = prefs.get("avoid") or []
     # always_include overrides avoid — defaults to weather/safety, customizable per user
-    always_include = prefs.get("always_include") or ["weather", "severe weather alerts", "safety alerts"]
+    always_include = prefs.get("always_include") or ["weather", "traffic", "severe weather alerts", "safety alerts"]
     if avoid_list:
         always_note = f" Exception: always include {', '.join(always_include)}." if always_include else ""
         avoid_rule = (
@@ -150,8 +159,9 @@ def generate_morning(phone: str) -> str:
 {data}{context_block}{recent_block}
 
 Rules:
-- ONLY include weather (when provided) and the topics they explicitly asked to track. Never add outside news, world commentary, unrelated events, or your own opinions on things they didn't ask about. If a topic's results are empty, off-topic, or clearly stale, silently skip that topic — no filler, no paraphrasing old news, no inventing.
-- Vary the entry point. Sometimes weather leads, sometimes the most interesting topic, sometimes a quick personal note. Different angle than what you sent yesterday.
+- ONLY include weather and traffic (when provided) and the topics they explicitly asked to track. Never add outside news, world commentary, unrelated events, or your own opinions on things they didn't ask about. If a topic's results are empty, off-topic, or clearly stale, silently skip that topic — no filler, no paraphrasing old news, no inventing.
+- Traffic: keep it to the one line provided in the data. Don't expand, embellish, or invent street/exit names beyond what's given. If traffic is normal, one short sentence is enough.
+- Vary the entry point. Sometimes weather leads, sometimes traffic, sometimes the most interesting topic, sometimes a quick personal note. Different angle than what you sent yesterday.
 - One or two sentences per topic. Whole message under 700 characters.
 {avoid_rule}- End with ONE personal touch — a single sentence in Palmer's voice that shows you actually thought about THEM today. Rotate the type so it's genuinely different from your recent mornings above:
   * a real check-in tied to something specific in their profile (an ongoing thread, someone they've mentioned, a decision they're weighing, their job, their kids/partner/pet)

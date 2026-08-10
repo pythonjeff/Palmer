@@ -330,6 +330,18 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
             "required": [],
         },
     },
+    {
+        "name": "get_travel_time",
+        "description": "Get driving time between two addresses using live traffic. Call this whenever the user asks how long a drive takes, when to leave, or ETA to a place ('how long to Fenway?', 'when should I leave for the airport?', 'time to my sister's from here?'). Both origin and destination must be concrete addresses or well-known places — do NOT guess or fabricate them. If the user names a destination but not an origin (or vice versa), ask them conversationally for the missing one in your own voice BEFORE calling this tool. We don't store addresses; ask fresh each time unless the user provides both in the same message.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "origin": {"type": "string", "description": "The starting address or place (e.g. '123 Beacon St, Boston MA' or 'Boston Logan Airport'). Must come from the user, not a guess."},
+                "destination": {"type": "string", "description": "The ending address or place (e.g. 'Fenway Park' or '45 Main St, Cambridge MA'). Must come from the user, not a guess."},
+            },
+            "required": ["origin", "destination"],
+        },
+    },
 ]
 
 
@@ -1115,6 +1127,9 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
             elif b.name == "cancel_watch":
                 count = cancel_watches(phone_number, b.input.get("text_match"))
                 result = f"Cancelled {count} watch(es)."
+            elif b.name == "get_travel_time":
+                from traffic import get_travel_time
+                result = get_travel_time(b.input["origin"], b.input["destination"])
             else:
                 result = "Unknown tool."
             tool_results.append({"type": "tool_result", "tool_use_id": b.id, "content": result})
