@@ -333,12 +333,12 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "get_travel_time",
-        "description": "Get driving time between two addresses using live traffic. Call this whenever the user asks how long a drive takes, when to leave, or ETA to a place ('how long to Fenway?', 'when should I leave for the airport?', 'time to my sister's from here?'). Both origin and destination must be concrete addresses or well-known places — do NOT guess or fabricate them. If the user names a destination but not an origin (or vice versa), ask them conversationally for the missing one in your own voice BEFORE calling this tool. We don't store addresses; ask fresh each time unless the user provides both in the same message.",
+        "description": "Get driving time between two addresses using live traffic. Call this whenever the user asks how long a drive takes, when to leave, or ETA to a place ('how long to Fenway?', 'when should I leave for the airport?', 'time to my sister's from here?'). If the user names a destination but not an origin (or vice versa), ask them conversationally for the missing one in your own voice BEFORE calling this tool. We don't store addresses; ask fresh each time unless the user provides both in the same message.\n\nCRITICAL: Our geocoder is a mapping service, not a search engine — it does NOT reliably resolve famous landmarks, monuments, or business names. If the user gives a landmark, POI, monument, park, stadium, airport, or well-known building (e.g. 'The White House', 'Fenway Park', 'LAX', 'Times Square', 'the Golden Gate Bridge', 'Central Park', 'Wrigley Field'), YOU must convert it to the actual street address using your world knowledge before calling — pass '1600 Pennsylvania Ave NW, Washington DC 20500' not 'The White House'; pass '4 Jersey St, Boston MA 02215' not 'Fenway Park'; pass '1 World Way, Los Angeles CA 90045' not 'LAX'. Only pass raw landmark names as a last resort when you genuinely don't know the address (in which case ask the user for one). Never guess an address you don't actually know.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "origin": {"type": "string", "description": "The starting address or place (e.g. '123 Beacon St, Boston MA' or 'Boston Logan Airport'). Must come from the user, not a guess."},
-                "destination": {"type": "string", "description": "The ending address or place (e.g. 'Fenway Park' or '45 Main St, Cambridge MA'). Must come from the user, not a guess."},
+                "origin": {"type": "string", "description": "Starting street address. Convert landmarks to street addresses first (see tool description). Example: '123 Beacon St, Boston MA 02116'."},
+                "destination": {"type": "string", "description": "Ending street address. Convert landmarks to street addresses first (see tool description). Example: '1600 Pennsylvania Ave NW, Washington DC 20500'."},
             },
             "required": ["origin", "destination"],
         },
