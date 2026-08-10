@@ -343,6 +343,17 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
             "required": ["origin", "destination"],
         },
     },
+    {
+        "name": "get_city_traffic",
+        "description": "Get a general traffic snapshot for a city — overall flow plus notable incidents (accidents, jams, closures). Call this whenever the user asks about traffic in a place without giving a specific route ('how's traffic in Culver City?', 'roads bad around Boston right now?', 'any accidents downtown?'). If the user says 'here', 'my city', or doesn't specify a place, use their saved city from their profile. This is different from get_travel_time — use that only when the user has (or wants to give) both an origin and destination.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "City name (e.g. 'St. Louis, MO', 'Culver City, CA'). Include state/country when helpful for disambiguation."},
+            },
+            "required": ["city"],
+        },
+    },
 ]
 
 
@@ -1131,6 +1142,10 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
             elif b.name == "get_travel_time":
                 from traffic import get_travel_time
                 result = get_travel_time(b.input["origin"], b.input["destination"])
+            elif b.name == "get_city_traffic":
+                from traffic import get_city_traffic
+                line = get_city_traffic(b.input["city"])
+                result = line if line else f"No live traffic data available for {b.input['city']!r} right now."
             else:
                 result = "Unknown tool."
             tool_results.append({"type": "tool_result", "tool_use_id": b.id, "content": result})
