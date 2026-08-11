@@ -16,6 +16,7 @@ from followup import run_followups
 from db import get_profile, upsert_profile, save_message, get_history, HISTORY_LIMIT
 from send_reminders import send_due_reminders
 from watches import run_watches
+from shopping import run_price_watches
 from sms_util import ensure_sms, send_sms, FALLBACK_SMS
 
 app = FastAPI()
@@ -27,6 +28,9 @@ _scheduler.add_job(run_watches, "interval", minutes=30)
 _scheduler.add_job(run_alert_checks, "interval", minutes=60)
 _scheduler.add_job(send_missing_data_asks, "interval", minutes=60)
 _scheduler.add_job(run_followups, "interval", hours=4)
+# SerpAPI: at ~4 checks/watch/day and 5000 searches/mo on the starter plan,
+# 6h supports ~40 concurrent watches before we outgrow it.
+_scheduler.add_job(run_price_watches, "interval", hours=6)
 _scheduler.start()
 
 _in_flight: dict[str, set] = defaultdict(set)

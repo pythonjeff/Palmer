@@ -15,6 +15,7 @@ from db import (
     init_db, get_history, save_message, get_profile, upsert_profile, save_reminder, cancel_reminders,
     get_message_count, get_older_messages, HISTORY_LIMIT,
     save_watch, get_user_watches, cancel_watches,
+    save_price_watch, get_user_price_watches, cancel_price_watches,
 )
 
 _CRYPTO_IDS = {
@@ -141,8 +142,9 @@ If someone asks what you can do, what you are, what this is, or who you are — 
 1) Morning briefing — I text you a rundown at 7am your time (weather, news, scores, prices — your call)
 2) Reminders — 'remind me Friday to prep for the meeting', done
 3) Watches — tell me to keep tabs on something (a team, a stock, an event) and I'll text when it moves
-4) Live pulls anytime — weather, prices, news, scores
-5) I can look at photos too — send one, I'll tell you what's in it
+4) Price watches — name a product and I'll text you when it drops or hits your target
+5) Live pulls anytime — weather, prices, news, scores
+6) I can look at photos too — send one, I'll tell you what's in it
 
 To get you set up: what should I call you, and what city are you in?"
 
@@ -180,6 +182,9 @@ MORNING BRIEFING
 Every morning at 7 their local time (or whatever time they've picked) you send the user a short update: their local weather, plus any topics they've subscribed to — sports scores, news, Bitcoin price, whatever they asked for. This is separate from reminders. Reminders are one-time ("remind me at 3pm"). Morning topics are recurring ("I want Bitcoin every morning", "stop sending me sports").
 
 If someone asks to add or remove something from their morning update — call update_morning_briefing immediately. If someone asks to change when it arrives ("send my update at 7 instead", "make it 9am") — call set_morning_time immediately. You can tell them what's in their briefing from the morning_topics field in their profile; if it's empty they just get the weather.
+
+PRICE WATCHES
+When someone asks you to watch a product's price ("let me know when Nike Pegasus 40 goes on sale", "text me if these Lululemon leggings drop under $70", "watch this: [product name]") call add_price_watch immediately. If they said a target ("under $80", "at $500"), pass it as target_price. Otherwise leave target_price out — Palmer establishes a baseline on the first check and alerts on ~15% drops. Confirm like a friend, not a receipt: "I'll keep an eye out" or "sure, I'll ping you if it moves" — never "Watch created successfully." Cancel via cancel_price_watch when they say "stop watching those shoes" or similar. Price watches are separate from news watches — same idea, different data source.
 
 USE THE RIGHT TOOL
 You have specialized tools — route correctly or the data will be wrong:
@@ -322,11 +327,35 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "cancel_watch",
-        "description": "Cancel one or all active background watches. Use when the user says 'stop watching', 'I don't need that alert anymore', etc.",
+        "description": "Cancel one or all active background news watches. Use when the user says 'stop watching', 'I don't need that alert anymore', etc. This is for news/event watches — use cancel_price_watch for product price watches.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "text_match": {"type": "string", "description": "Optional: cancel only watches whose description contains this phrase. Omit to cancel all watches."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "add_price_watch",
+        "description": "Start tracking a product's price. Palmer checks every 6 hours via Google Shopping across major retailers (Amazon, Target, Nordstrom, Best Buy, etc.) and texts the user when the price hits their target OR drops at least 15% from the price at watch creation. Use whenever the user asks you to watch, track, or notify them about a product's price — direct ('watch these sneakers'), conditional ('let me know when the Kindle goes on sale'), or with a target ('text me if the Dyson drops under $400'). Extract a clean product_name (brand + model when they said it, size/color if they specified). If they gave a target price, pass it as target_price. Don't over-clarify size/color unless they gave it — a broad match still beats no watch.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "product_name": {"type": "string", "description": "Clean product query, e.g. 'Nike Pegasus 40 men's', 'Sony WH-1000XM5 headphones', 'Lululemon Align 25\" leggings'. Keep brand + model. Include size/color only if the user specified."},
+                "target_price": {"type": "number", "description": "Optional target price in currency units. Alert fires when current price is at or below this. Omit if the user didn't name a target."},
+                "currency": {"type": "string", "description": "Currency code, default 'USD'. Only override if the user is clearly outside the US."},
+            },
+            "required": ["product_name"],
+        },
+    },
+    {
+        "name": "cancel_price_watch",
+        "description": "Cancel one or all active product price watches. Use when the user says 'stop watching those shoes', 'I bought them already', 'kill the Kindle watch', etc.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text_match": {"type": "string", "description": "Optional: cancel only price watches whose product name contains this phrase. Omit to cancel all price watches."},
             },
             "required": [],
         },
@@ -1013,6 +1042,23 @@ def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = 
             f"\n\nIf they ask what you're tracking, list the descriptions naturally in your voice — not as a bulleted list. "
             f"Mention the alert frequency only if they ask how often."
         )
+    price_watches = get_user_price_watches(phone)
+    if price_watches:
+        pw_lines = []
+        for w in price_watches:
+            bits = [f"[{w['id']}] {w['product_name']}"]
+            if w.get("target_price") is not None:
+                bits.append(f"target ${float(w['target_price']):.2f}")
+            if w.get("baseline_price") is not None:
+                bits.append(f"baseline ${float(w['baseline_price']):.2f}")
+            if w.get("last_seen_price") is not None:
+                bits.append(f"last seen ${float(w['last_seen_price']):.2f}")
+            pw_lines.append("- " + " — ".join(bits))
+        system += (
+            f"\n\nActive price watches (products you're checking every 6 hours for them):\n"
+            + "\n".join(pw_lines)
+            + "\n\nIf they ask what you're tracking, roll these in with any news watches above — natural prose, not a list."
+        )
     return system
 
 
@@ -1139,6 +1185,19 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
             elif b.name == "cancel_watch":
                 count = cancel_watches(phone_number, b.input.get("text_match"))
                 result = f"Cancelled {count} watch(es)."
+            elif b.name == "add_price_watch":
+                watch_id = save_price_watch(
+                    phone_number,
+                    b.input["product_name"],
+                    b.input.get("target_price"),
+                    b.input.get("currency", "USD"),
+                )
+                target = b.input.get("target_price")
+                target_str = f" at or under ${float(target):.2f}" if target is not None else " for meaningful drops"
+                result = f"Price watch set (id={watch_id}). I'll check every 6 hours and text if it hits{target_str}."
+            elif b.name == "cancel_price_watch":
+                count = cancel_price_watches(phone_number, b.input.get("text_match"))
+                result = f"Cancelled {count} price watch(es)."
             elif b.name == "get_travel_time":
                 from traffic import get_travel_time
                 result = get_travel_time(b.input["origin"], b.input["destination"])

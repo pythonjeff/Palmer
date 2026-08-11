@@ -54,10 +54,11 @@ Palmer is dry, quick, and observant. It's not an assistant and it's not a brand 
 | News + web search | Tavily |
 | Weather | OpenWeatherMap |
 | Traffic + routing | TomTom (Traffic Flow, Traffic Incidents, Routing, Search geocoding) |
+| Product prices + sale watches | SerpAPI Google Shopping |
 | Crypto prices | CoinGecko |
 | Stock prices | yfinance |
 | GIFs | Giphy |
-| Background jobs | APScheduler (reminders 1m · mornings 5m · watches 30m · alerts 60m · missing-data asks 60m · follow-ups 4h) |
+| Background jobs | APScheduler (reminders 1m · mornings 5m · watches 30m · alerts 60m · missing-data asks 60m · follow-ups 4h · price watches 6h) |
 | Database | Heroku Postgres |
 
 ---
@@ -88,6 +89,7 @@ cp .env.example .env
 | `GIPHY_API_KEY` | developers.giphy.com (free) |
 | `OWM_API_KEY` | openweathermap.org (free tier) |
 | `TOMTOM_API_KEY` | developer.tomtom.com (free tier, ~2,500 requests/day) |
+| `SERPAPI_KEY` | serpapi.com (100 free searches/mo, $50/mo for 5,000) |
 | `APP_URL` | Your deployed app URL (for Twilio status callbacks) |
 | `DATABASE_URL` | Postgres connection string (auto-set by Heroku) |
 
@@ -137,7 +139,8 @@ GET /preview?phone=+15551234567         # generate morning briefing without send
 - Per-phone `threading.Lock` serializes inbound messages so conversation history never interleaves under concurrent requests from the same number.
 - Watches run every 30 minutes via APScheduler but only alert on major breaking developments — dated results from the last 12 hours, a strict criticality gate, per-watch cooldown (default 4 hours), and dedup against the last alerted event. Two source-quality gates keep bad links out: a curated trusted-domains file (`trusted_sources.json`, tier 1 = AP/Reuters/BBC/NYT/WSJ/Bloomberg/ESPN etc., tier 2 = mainstream, plus `.gov`/`.edu` at tier 1) ranks which URL to send, and a corroboration check requires ≥ 2 distinct domains OR ≥ 1 tier-1 source before firing.
 - Traffic uses TomTom. Morning briefings auto-include a short city snapshot (`get_city_traffic`): geocode → parallel Traffic Flow + Traffic Incidents in a city bounding box → Haiku drafts one natural line, or skips silently on failure. On demand, users can ask for city conditions or point-to-point drive times (`get_travel_time`, live traffic vs. free-flow). Landmark destinations (White House, Fenway, LAX) get resolved to street addresses by Sonnet before geocoding — TomTom's geocoder is a mapping API, not a search engine, and mis-ranks landmark names.
+- Price watches use SerpAPI Google Shopping (`shopping.py`): user texts "watch these sneakers under $80" → `add_price_watch` tool saves to `price_watches` → `run_price_watches` job runs every 6h. Each tick: SerpAPI Google Shopping query on the product name, Haiku picks the cheapest genuine match from the top candidates (guards against firing on unrelated accessories/refurbs), first successful check establishes a baseline silently, subsequent checks alert when the target is hit or the price drops ≥ 15% from baseline. Cooldown defaults to 12h. Fails silently on any SerpAPI error — never surfaces "shopping tool failed" to the user.
 - Proactive outbound is scheduled: **mornings** at each user's local time (5-min tick, catch-up window, per-day guard), **breaking-news alerts** every 60 min (score ≥ 8, 1–9pm local send window), **follow-ups** every 4h (Haiku picks one ongoing thread, Sonnet drafts, 1–7pm window, 3-day gap guard), and **missing-data asks** every 60 min for users onboarded without a city so mornings can target them (7-day cooldown, US-daytime UTC window; `DATA_ASK_DRY_RUN=1` to preview).
 - Reminder delivery uses `FOR UPDATE SKIP LOCKED` on Postgres — safe for multiple scheduler ticks, no double-sends.
 - Twilio webhook signatures (HMAC-SHA1) validated on every inbound request. All DB queries parameterized and scoped to phone number.
-- Tool routing is hard: `get_weather` → OWM only, `get_price` → CoinGecko/yfinance only, traffic tools → TomTom only, web search → Tavily news mode. No overlap, no hallucinated data.
+- Tool routing is hard: `get_weather` → OWM only, `get_price` → CoinGecko/yfinance only, traffic tools → TomTom only, product price watches → SerpAPI only, web search → Tavily news mode. No overlap, no hallucinated data.

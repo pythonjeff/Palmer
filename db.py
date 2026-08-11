@@ -66,6 +66,24 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS price_watches (
+            id {ID_COL},
+            phone TEXT NOT NULL,
+            product_name TEXT NOT NULL,
+            target_price REAL,
+            currency TEXT NOT NULL DEFAULT 'USD',
+            baseline_price REAL,
+            last_seen_price REAL,
+            last_seen_url TEXT,
+            last_seen_merchant TEXT,
+            cooldown_hours INTEGER NOT NULL DEFAULT 12,
+            last_alerted TEXT,
+            last_alert_summary TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     # Migrations for columns added after initial deploy
     new_cols = [
         "last_alert_summary TEXT",
@@ -342,3 +360,118 @@ def cancel_watches(phone: str, text_match: str = None) -> int:
     conn.commit()
     conn.close()
     return count
+
+
+def save_price_watch(phone: str, product_name: str, target_price: float | None = None,
+                     currency: str = "USD", cooldown_hours: int = 12) -> int:
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"INSERT INTO price_watches (phone, product_name, target_price, currency, cooldown_hours) "
+        f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH})",
+        (phone, product_name, target_price, currency, cooldown_hours),
+    )
+    watch_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return watch_id
+
+
+def get_active_price_watches() -> list[dict]:
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, phone, product_name, target_price, currency, baseline_price, "
+        "last_seen_price, last_seen_url, last_seen_merchant, cooldown_hours, "
+        "last_alerted, last_alert_summary "
+        "FROM price_watches WHERE active = 1"
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [
+        {
+            "id": r["id"],
+            "phone": r["phone"],
+            "product_name": r["product_name"],
+            "target_price": r["target_price"],
+            "currency": r["currency"],
+            "baseline_price": r["baseline_price"],
+            "last_seen_price": r["last_seen_price"],
+            "last_seen_url": r["last_seen_url"],
+            "last_seen_merchant": r["last_seen_merchant"],
+            "cooldown_hours": r["cooldown_hours"],
+            "last_alerted": r["last_alerted"],
+            "last_alert_summary": r["last_alert_summary"],
+        }
+        for r in rows
+    ]
+
+
+def get_user_price_watches(phone: str) -> list[dict]:
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT id, product_name, target_price, currency, baseline_price, last_seen_price, "
+        f"cooldown_hours, last_alerted FROM price_watches WHERE phone = {PH} AND active = 1",
+        (phone,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [
+        {
+            "id": r["id"],
+            "product_name": r["product_name"],
+            "target_price": r["target_price"],
+            "currency": r["currency"],
+            "baseline_price": r["baseline_price"],
+            "last_seen_price": r["last_seen_price"],
+            "cooldown_hours": r["cooldown_hours"],
+            "last_alerted": r["last_alerted"],
+        }
+        for r in rows
+    ]
+
+
+def cancel_price_watches(phone: str, text_match: str = None) -> int:
+    conn = _conn()
+    cur = conn.cursor()
+    if text_match:
+        pattern = f"%{text_match.lower().strip()}%"
+        cur.execute(
+            f"UPDATE price_watches SET active = 0 WHERE phone = {PH} AND LOWER(product_name) LIKE {PH} AND active = 1",
+            (phone, pattern),
+        )
+    else:
+        cur.execute(f"UPDATE price_watches SET active = 0 WHERE phone = {PH} AND active = 1", (phone,))
+    count = cur.rowcount
+    conn.commit()
+    conn.close()
+    return count
+
+
+def set_price_watch_baseline(watch_id: int, price: float, url: str, merchant: str):
+    """Called on the first successful check for a watch. Records the reference price
+    without firing an alert."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"UPDATE price_watches SET baseline_price = {PH}, last_seen_price = {PH}, "
+        f"last_seen_url = {PH}, last_seen_merchant = {PH} WHERE id = {PH}",
+        (price, price, url, merchant, watch_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_price_watch_alerted(watch_id: int, price: float, url: str, merchant: str, summary: str):
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"UPDATE price_watches SET last_alerted = {PH}, last_alert_summary = {PH}, "
+        f"last_seen_price = {PH}, last_seen_url = {PH}, last_seen_merchant = {PH} "
+        f"WHERE id = {PH}",
+        (now, summary, price, url, merchant, watch_id),
+    )
+    conn.commit()
+    conn.close()
