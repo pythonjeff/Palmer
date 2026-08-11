@@ -5,7 +5,7 @@ load_dotenv()
 
 from datetime import datetime, timezone, timedelta
 
-from shopping import _cooldown_ok, _should_alert, DROP_THRESHOLD, _filter_and_sort
+from shopping import _cooldown_ok, _should_alert, DROP_THRESHOLD, _filter_and_sort, _shorten_url
 
 
 def _watch(**kwargs) -> dict:
@@ -115,6 +115,17 @@ class TestFilterAndSort:
 
     def test_empty_input(self):
         assert _filter_and_sort([], None, None, 5) == []
+
+
+class TestShortenUrl:
+    def test_empty_string_passes_through(self):
+        assert _shorten_url("") == ""
+
+    def test_non_http_scheme_passes_through(self):
+        # Guards against feeding TinyURL a garbage string; also protects against
+        # accidentally shortening tel:/mailto: etc.
+        assert _shorten_url("not-a-url") == "not-a-url"
+        assert _shorten_url("ftp://example.com/x") == "ftp://example.com/x"
 
 
 class TestBaselineWorkflow:

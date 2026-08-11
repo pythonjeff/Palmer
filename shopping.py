@@ -14,6 +14,7 @@ as traffic.py).
 """
 import os
 import json
+import concurrent.futures
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -23,7 +24,31 @@ from agent import client, _sms_clean, HAIKU_MODEL
 SERP_API_KEY = os.environ.get("SERP_API_KEY", "")
 _SERPAPI_BASE = "https://serpapi.com/search.json"
 _SERPAPI_TIMEOUT = 12
+_TINYURL_ENDPOINT = "https://tinyurl.com/api-create.php"
+_TINYURL_TIMEOUT = 5
 DROP_THRESHOLD = 0.85  # alert when current <= baseline * DROP_THRESHOLD (i.e. >=15% off)
+
+
+def _shorten_url(url: str) -> str:
+    """Return a TinyURL-shortened link, or the original URL on any failure.
+    Raw retail URLs run 200-500 chars with tracking params — too long for a
+    friendly SMS. If TinyURL rate-limits us down the line, is.gd is the
+    no-auth backup."""
+    if not url or not url.startswith(("http://", "https://")):
+        return url
+    try:
+        params = urllib.parse.urlencode({"url": url})
+        req = urllib.request.Request(
+            f"{_TINYURL_ENDPOINT}?{params}",
+            headers={"User-Agent": "Palmer/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=_TINYURL_TIMEOUT) as resp:
+            short = resp.read().decode().strip()
+        if short.startswith("http"):
+            return short
+    except Exception as e:
+        print(f"TinyURL failed for {url[:60]}: {e}")
+    return url
 
 
 def _http_get_json(url: str) -> dict | None:
@@ -143,10 +168,16 @@ def search_shopping(query: str, max_price: float | None = None,
         elif min_price is not None:
             bound = f" over ${float(min_price):.0f}"
         return f"No matches for {query!r}{bound}."
-    lines = [
-        f"${r['price']:.2f} - {r['title'][:80]} ({r['merchant'] or 'unknown seller'})"
-        for r in matches
-    ]
+    # Shorten URLs in parallel so a 5-result search costs one round-trip, not five.
+    urls = [r.get("url", "") for r in matches]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(urls) or 1) as pool:
+        shortened = list(pool.map(_shorten_url, urls))
+    lines = []
+    for r, short in zip(matches, shortened):
+        base = f"${r['price']:.2f} - {r['title'][:80]} ({r['merchant'] or 'unknown seller'})"
+        if short:
+            base += f" | {short}"
+        lines.append(base)
     return "\n".join(lines)
 
 
