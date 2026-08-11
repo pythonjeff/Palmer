@@ -12,7 +12,7 @@ Palmer is a personal AI delivered entirely over SMS. No app to download, no inte
 Every exchange teaches Palmer something new. Your city, your job, your teams, your interests — it builds a picture of you and uses it the way a real friend would: casually, in context, without citation. The longer you text, the sharper it gets.
 
 ### Sends your morning
-Each morning Palmer texts you a short, personalized briefing on what you actually care about — weather, markets, sports, news. Not a newsletter. One text, just the things that matter, from today.
+Each morning Palmer texts you a short, personalized briefing on what you actually care about — weather, local traffic, markets, sports, news. Not a newsletter. One text, just the things that matter, from today.
 
 ### Watches for things
 Tell Palmer to watch for something — a geopolitical event, a company move, an athlete's health update, anything — and it runs that in the background. When it hits, you get a text. No feed to check.
@@ -30,7 +30,7 @@ If you mentioned an interview, a doctor's visit, a rough week — Palmer notices
 Send Palmer a picture and it'll actually respond to what's in it — a menu, a whiteboard, a receipt, a dog. It's using vision, not guessing from a filename.
 
 ### Answers anything
-Crypto prices, stock quotes, weather forecasts, sports scores, current events — all through the same text thread, no switching apps.
+Crypto prices, stock quotes, weather forecasts, sports scores, current events, city traffic, drive times with live traffic — all through the same text thread, no switching apps.
 
 ### Stays out of the way
 Tell Palmer to pause the morning texts, drop a topic, forget a fact about you, or change when it sends — all by texting. No settings screen.
@@ -53,6 +53,7 @@ Palmer is dry, quick, and observant. It's not an assistant and it's not a brand 
 | Web server | FastAPI on Heroku |
 | News + web search | Tavily |
 | Weather | OpenWeatherMap |
+| Traffic + routing | TomTom (Traffic Flow, Traffic Incidents, Routing, Search geocoding) |
 | Crypto prices | CoinGecko |
 | Stock prices | yfinance |
 | GIFs | Giphy |
@@ -86,6 +87,7 @@ cp .env.example .env
 | `TAVILY_API_KEY` | app.tavily.com |
 | `GIPHY_API_KEY` | developers.giphy.com (free) |
 | `OWM_API_KEY` | openweathermap.org (free tier) |
+| `TOMTOM_API_KEY` | developer.tomtom.com (free tier, ~2,500 requests/day) |
 | `APP_URL` | Your deployed app URL (for Twilio status callbacks) |
 | `DATABASE_URL` | Postgres connection string (auto-set by Heroku) |
 
@@ -108,7 +110,8 @@ ngrok http 8000
 heroku create
 heroku addons:create heroku-postgresql:essential-0
 heroku config:set ANTHROPIC_API_KEY=... TWILIO_ACCOUNT_SID=... TWILIO_AUTH_TOKEN=... \
-  TWILIO_PHONE_NUMBER=... TAVILY_API_KEY=... GIPHY_API_KEY=... OWM_API_KEY=... APP_URL=...
+  TWILIO_PHONE_NUMBER=... TAVILY_API_KEY=... GIPHY_API_KEY=... OWM_API_KEY=... \
+  TOMTOM_API_KEY=... APP_URL=...
 heroku config:set WEB_CONCURRENCY=1
 git push heroku main
 ```
@@ -132,8 +135,9 @@ GET /preview?phone=+15551234567         # generate morning briefing without send
 
 - `WEB_CONCURRENCY=1` is required. In-memory phone locks and APScheduler only work correctly in a single process.
 - Per-phone `threading.Lock` serializes inbound messages so conversation history never interleaves under concurrent requests from the same number.
-- Watches run every 30 minutes via APScheduler but only alert on major breaking developments — dated results from the last 12 hours, a strict criticality gate, per-watch cooldown (default 4 hours), and dedup against the last alerted event.
+- Watches run every 30 minutes via APScheduler but only alert on major breaking developments — dated results from the last 12 hours, a strict criticality gate, per-watch cooldown (default 4 hours), and dedup against the last alerted event. Two source-quality gates keep bad links out: a curated trusted-domains file (`trusted_sources.json`, tier 1 = AP/Reuters/BBC/NYT/WSJ/Bloomberg/ESPN etc., tier 2 = mainstream, plus `.gov`/`.edu` at tier 1) ranks which URL to send, and a corroboration check requires ≥ 2 distinct domains OR ≥ 1 tier-1 source before firing.
+- Traffic uses TomTom. Morning briefings auto-include a short city snapshot (`get_city_traffic`): geocode → parallel Traffic Flow + Traffic Incidents in a city bounding box → Haiku drafts one natural line, or skips silently on failure. On demand, users can ask for city conditions or point-to-point drive times (`get_travel_time`, live traffic vs. free-flow). Landmark destinations (White House, Fenway, LAX) get resolved to street addresses by Sonnet before geocoding — TomTom's geocoder is a mapping API, not a search engine, and mis-ranks landmark names.
 - Proactive outbound is scheduled: **mornings** at each user's local time (5-min tick, catch-up window, per-day guard), **breaking-news alerts** every 60 min (score ≥ 8, 1–9pm local send window), **follow-ups** every 4h (Haiku picks one ongoing thread, Sonnet drafts, 1–7pm window, 3-day gap guard), and **missing-data asks** every 60 min for users onboarded without a city so mornings can target them (7-day cooldown, US-daytime UTC window; `DATA_ASK_DRY_RUN=1` to preview).
 - Reminder delivery uses `FOR UPDATE SKIP LOCKED` on Postgres — safe for multiple scheduler ticks, no double-sends.
 - Twilio webhook signatures (HMAC-SHA1) validated on every inbound request. All DB queries parameterized and scoped to phone number.
-- Tool routing is hard: `get_weather` → OWM only, `get_price` → CoinGecko/yfinance only, web search → Tavily news mode. No overlap, no hallucinated data.
+- Tool routing is hard: `get_weather` → OWM only, `get_price` → CoinGecko/yfinance only, traffic tools → TomTom only, web search → Tavily news mode. No overlap, no hallucinated data.
