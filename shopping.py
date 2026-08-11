@@ -14,7 +14,6 @@ as traffic.py).
 """
 import os
 import json
-import concurrent.futures
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -26,15 +25,18 @@ _SERPAPI_BASE = "https://serpapi.com/search.json"
 _SERPAPI_TIMEOUT = 12
 _TINYURL_ENDPOINT = "https://tinyurl.com/api-create.php"
 _TINYURL_TIMEOUT = 5
+_SHORTEN_THRESHOLD_CHARS = 120  # URLs shorter than this go out raw (no shortener redirect)
 DROP_THRESHOLD = 0.85  # alert when current <= baseline * DROP_THRESHOLD (i.e. >=15% off)
 
 
 def _shorten_url(url: str) -> str:
-    """Return a TinyURL-shortened link, or the original URL on any failure.
-    Raw retail URLs run 200-500 chars with tracking params — too long for a
-    friendly SMS. If TinyURL rate-limits us down the line, is.gd is the
-    no-auth backup."""
+    """Return an SMS-friendly URL. Short direct URLs pass through unchanged
+    (users don't want a redirect through TinyURL/viglink when the raw URL fits
+    in a text). Long URLs get TinyURL-shortened; on failure we truncate-free
+    fall back to the original."""
     if not url or not url.startswith(("http://", "https://")):
+        return url
+    if len(url) <= _SHORTEN_THRESHOLD_CHARS:
         return url
     try:
         params = urllib.parse.urlencode({"url": url})
@@ -86,8 +88,38 @@ def _serpapi_search(query: str) -> list[dict]:
             "price": float(price),
             "merchant": item.get("source") or "",
             "url": item.get("link") or item.get("product_link") or "",
+            "page_token": item.get("immersive_product_page_token") or "",
         })
     return results
+
+
+def _resolve_merchant_url(page_token: str) -> str | None:
+    """Hit SerpAPI's google_immersive_product engine and return the direct
+    merchant URL (e.g. madewell.com/...) from product_results.stores[].link.
+
+    Google Shopping's per-result `link` field is now empty on modern responses,
+    and Google retired the standalone google_product engine — google_immersive
+    _product is SerpAPI's replacement. This is one level deeper than the
+    aggregator page and gives a cleaner buy-now experience (and avoids
+    TinyURL's safety interstitial on Google tracking URLs).
+    """
+    if not page_token or not SERP_API_KEY:
+        return None
+    params = {
+        "engine": "google_immersive_product",
+        "page_token": page_token,
+        "api_key": SERP_API_KEY,
+    }
+    url = f"{_SERPAPI_BASE}?{urllib.parse.urlencode(params)}"
+    data = _http_get_json(url)
+    if not data:
+        return None
+    stores = (data.get("product_results") or {}).get("stores") or []
+    for store in stores:
+        link = store.get("link")
+        if link and link.startswith("http"):
+            return link
+    return None
 
 
 def _pick_best_match(product_name: str, results: list[dict]) -> dict | None:
@@ -146,15 +178,28 @@ def _filter_and_sort(results: list[dict], max_price: float | None,
 
 
 def search_shopping(query: str, max_price: float | None = None,
-                    min_price: float | None = None, limit: int = 5) -> str:
+                    min_price: float | None = None, limit: int = 5,
+                    include_link: bool = False) -> str:
     """One-shot Google Shopping search. Returns a readable summary Sonnet can
     weave into prose. Distinct from add_price_watch (persistent monitoring):
     this is a right-now browse answer, no watch created.
 
-    Never raises; returns a plain message on any failure so tool dispatch stays clean.
+    include_link=False (default): pure browse. Cheap — 1 SerpAPI call, no URL
+    work. Result lines contain price, title, and merchant only.
+
+    include_link=True: link mode. Forces limit=1 and resolves the direct
+    merchant URL via SerpAPI's google_product engine (bypassing Google's
+    aggregator page), then shortens with TinyURL. Costs 1 shopping call + 1
+    product call + 1 TinyURL call. Use when the user has explicitly asked to
+    buy or for a link to a specific product.
+
+    Never raises; returns a plain message on any failure so tool dispatch
+    stays clean.
     """
     if not SERP_API_KEY:
         return "Shopping search is unavailable right now."
+    if include_link:
+        limit = 1  # link mode always returns exactly one row
     results = _serpapi_search(query)
     if not results:
         return f"No shopping results found for {query!r}."
@@ -168,15 +213,15 @@ def search_shopping(query: str, max_price: float | None = None,
         elif min_price is not None:
             bound = f" over ${float(min_price):.0f}"
         return f"No matches for {query!r}{bound}."
-    # Shorten URLs in parallel so a 5-result search costs one round-trip, not five.
-    urls = [r.get("url", "") for r in matches]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(urls) or 1) as pool:
-        shortened = list(pool.map(_shorten_url, urls))
     lines = []
-    for r, short in zip(matches, shortened):
+    for r in matches:
         base = f"${r['price']:.2f} - {r['title'][:80]} ({r['merchant'] or 'unknown seller'})"
-        if short:
-            base += f" | {short}"
+        if include_link:
+            merchant_url = _resolve_merchant_url(r.get("page_token", ""))
+            if merchant_url:
+                base += f" | {_shorten_url(merchant_url)}"
+            else:
+                base += " | (direct link unavailable — try the merchant site)"
         lines.append(base)
     return "\n".join(lines)
 

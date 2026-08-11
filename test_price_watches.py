@@ -127,6 +127,11 @@ class TestShortenUrl:
         assert _shorten_url("not-a-url") == "not-a-url"
         assert _shorten_url("ftp://example.com/x") == "ftp://example.com/x"
 
+    def test_short_urls_pass_through_no_shortening(self):
+        # Under threshold — return raw so user doesn't get a redirect hop
+        url = "https://www.madewell.com/p/the-rockaway-tee/OA219/"
+        assert _shorten_url(url) == url
+
 
 class TestBaselineWorkflow:
     """The baseline-then-alert two-phase flow: first check silently records,
