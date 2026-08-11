@@ -23,34 +23,7 @@ from agent import client, _sms_clean, HAIKU_MODEL
 SERP_API_KEY = os.environ.get("SERP_API_KEY", "")
 _SERPAPI_BASE = "https://serpapi.com/search.json"
 _SERPAPI_TIMEOUT = 12
-_TINYURL_ENDPOINT = "https://tinyurl.com/api-create.php"
-_TINYURL_TIMEOUT = 5
-_SHORTEN_THRESHOLD_CHARS = 120  # URLs shorter than this go out raw (no shortener redirect)
 DROP_THRESHOLD = 0.85  # alert when current <= baseline * DROP_THRESHOLD (i.e. >=15% off)
-
-
-def _shorten_url(url: str) -> str:
-    """Return an SMS-friendly URL. Short direct URLs pass through unchanged
-    (users don't want a redirect through TinyURL/viglink when the raw URL fits
-    in a text). Long URLs get TinyURL-shortened; on failure we truncate-free
-    fall back to the original."""
-    if not url or not url.startswith(("http://", "https://")):
-        return url
-    if len(url) <= _SHORTEN_THRESHOLD_CHARS:
-        return url
-    try:
-        params = urllib.parse.urlencode({"url": url})
-        req = urllib.request.Request(
-            f"{_TINYURL_ENDPOINT}?{params}",
-            headers={"User-Agent": "Palmer/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=_TINYURL_TIMEOUT) as resp:
-            short = resp.read().decode().strip()
-        if short.startswith("http"):
-            return short
-    except Exception as e:
-        print(f"TinyURL failed for {url[:60]}: {e}")
-    return url
 
 
 def _http_get_json(url: str) -> dict | None:
@@ -224,10 +197,10 @@ def search_shopping(query: str, max_price: float | None = None,
     work. Result lines contain price, title, and merchant only.
 
     include_link=True: link mode. Forces limit=1 and resolves the direct
-    merchant URL via SerpAPI's google_product engine (bypassing Google's
-    aggregator page), then shortens with TinyURL. Costs 1 shopping call + 1
-    product call + 1 TinyURL call. Use when the user has explicitly asked to
-    buy or for a link to a specific product.
+    merchant URL via SerpAPI's google_immersive_product engine (bypassing
+    Google's aggregator page). URL is returned raw — no shortener redirect.
+    Costs 1 shopping call + 1 product call. Use when the user has explicitly
+    asked to buy or for a link to a specific product.
 
     Never raises; returns a plain message on any failure so tool dispatch
     stays clean.
@@ -263,11 +236,99 @@ def search_shopping(query: str, max_price: float | None = None,
         if include_link:
             merchant_url = _resolve_merchant_url(r.get("page_token", ""), query=query)
             if merchant_url:
-                base += f" | {_shorten_url(merchant_url)}"
+                base += f" | {merchant_url}"
             else:
                 base += " | (direct link unavailable — try the merchant site)"
         lines.append(base)
     return "\n".join(lines)
+
+
+# Domains that dominate general search results but aren't the brand-site the
+# user wanted to open. Aggregators/social/roundup content — we skip them and
+# keep walking organic_results looking for the real store.
+_BROWSE_AGGREGATOR_HOSTS = {
+    "google.com", "shopping.google.com", "pinterest.com", "reddit.com",
+    "youtube.com", "buzzfeed.com", "pricegrabber.com", "shopzilla.com",
+    "nextag.com",
+}
+
+
+def _browse_result_ok(link: str) -> bool:
+    """Reject aggregator/social domains and Amazon search pages; keep everything
+    else including Amazon product pages (/dp/, /gp/product/)."""
+    if not link or not link.startswith(("http://", "https://")):
+        return False
+    try:
+        parsed = urllib.parse.urlparse(link)
+    except Exception:
+        return False
+    host = (parsed.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    for bad in _BROWSE_AGGREGATOR_HOSTS:
+        if host == bad or host.endswith("." + bad):
+            return False
+    if host.endswith("amazon.com") and parsed.path.startswith("/s"):
+        return False  # Amazon search results page, not a product/category
+    return True
+
+
+def _host_matches_tokens(link: str, tokens: list[str]) -> bool:
+    try:
+        host = urllib.parse.urlparse(link).netloc.lower()
+    except Exception:
+        return False
+    return any(t in host for t in tokens)
+
+
+def browse_shop(query: str) -> str:
+    """Return ONE clean URL for a brand or retailer page the user can open
+    themselves. Distinct from search_shopping: this is "take me to the store,"
+    not "pull specific products."
+
+    Hits SerpAPI's regular google engine (not google_shopping). Preference:
+      1. knowledge_graph.website when its host matches a brand token.
+      2. First organic result whose host matches a brand token.
+      3. First organic result that isn't an aggregator/social/search page.
+
+    URL is returned raw. Never raises."""
+    if not SERP_API_KEY:
+        return "Shopping search is unavailable right now."
+    if not query:
+        return "No browse result found."
+    params = {
+        "engine": "google",
+        "q": query,
+        "api_key": SERP_API_KEY,
+        "num": "10",
+        "hl": "en",
+        "gl": "us",
+    }
+    data = _http_get_json(f"{_SERPAPI_BASE}?{urllib.parse.urlencode(params)}")
+    if not data:
+        return f"No browse result found for {query!r}."
+
+    tokens = _brand_tokens(query)
+
+    kg = data.get("knowledge_graph") or {}
+    kg_site = kg.get("website") or ""
+    if tokens and _browse_result_ok(kg_site) and _host_matches_tokens(kg_site, tokens):
+        title = kg.get("title") or query
+        return f"{title} — {kg_site}"
+
+    organics = data.get("organic_results") or []
+    valid = [r for r in organics if _browse_result_ok(r.get("link") or "")]
+
+    if tokens:
+        for r in valid:
+            if _host_matches_tokens(r["link"], tokens):
+                return f"{(r.get('title') or query)} — {r['link']}"
+
+    if valid:
+        r = valid[0]
+        return f"{(r.get('title') or query)} — {r['link']}"
+
+    return f"No browse result found for {query!r}."
 
 
 def _cooldown_ok(watch: dict, now: datetime | None = None) -> bool:

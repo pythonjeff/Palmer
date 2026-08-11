@@ -5,9 +5,11 @@ load_dotenv()
 
 from datetime import datetime, timezone, timedelta
 
+from unittest.mock import patch
+
 from shopping import (
-    _cooldown_ok, _should_alert, DROP_THRESHOLD, _filter_and_sort, _shorten_url,
-    _is_marketplace_thirdparty, _brand_tokens,
+    _cooldown_ok, _should_alert, DROP_THRESHOLD, _filter_and_sort,
+    _is_marketplace_thirdparty, _brand_tokens, browse_shop,
 )
 
 
@@ -120,22 +122,6 @@ class TestFilterAndSort:
         assert _filter_and_sort([], None, None, 5) == []
 
 
-class TestShortenUrl:
-    def test_empty_string_passes_through(self):
-        assert _shorten_url("") == ""
-
-    def test_non_http_scheme_passes_through(self):
-        # Guards against feeding TinyURL a garbage string; also protects against
-        # accidentally shortening tel:/mailto: etc.
-        assert _shorten_url("not-a-url") == "not-a-url"
-        assert _shorten_url("ftp://example.com/x") == "ftp://example.com/x"
-
-    def test_short_urls_pass_through_no_shortening(self):
-        # Under threshold — return raw so user doesn't get a redirect hop
-        url = "https://www.madewell.com/p/the-rockaway-tee/OA219/"
-        assert _shorten_url(url) == url
-
-
 class TestMarketplaceThirdparty:
     def test_ebay_individual_seller_is_thirdparty(self):
         assert _is_marketplace_thirdparty("eBay - dabondo1")
@@ -202,3 +188,80 @@ class TestBaselineWorkflow:
         # After baseline at $200, tick 2 sees $195 → nope
         w = _watch(baseline_price=200.0)
         assert _should_alert(w, 195.0) == ""
+
+
+class TestBrowseShop:
+    """Pure-logic coverage for browse_shop's ranking + aggregator-skip rules.
+    _http_get_json is mocked so no network calls."""
+
+    def _serp(self, organic=None, knowledge_graph=None) -> dict:
+        return {
+            "organic_results": organic or [],
+            "knowledge_graph": knowledge_graph or {},
+        }
+
+    def test_knowledge_graph_wins_when_brand_matches(self):
+        payload = self._serp(
+            organic=[{"title": "Buzzfeed roundup", "link": "https://www.buzzfeed.com/best-tees"}],
+            knowledge_graph={"title": "Madewell", "website": "https://www.madewell.com"},
+        )
+        with patch("shopping._http_get_json", return_value=payload):
+            out = browse_shop("Madewell mens tee shirts")
+        assert "madewell.com" in out
+
+    def test_brand_organic_beats_top_ranked_listicle(self):
+        payload = self._serp(organic=[
+            {"title": "Best T-Shirts 2026", "link": "https://www.buzzfeed.com/tees"},
+            {"title": "Men's T-Shirts | Madewell", "link": "https://www.madewell.com/mens/tshirts"},
+        ])
+        with patch("shopping._http_get_json", return_value=payload):
+            out = browse_shop("Madewell mens tee shirts")
+        assert "madewell.com/mens/tshirts" in out
+        assert "buzzfeed" not in out
+
+    def test_aggregators_skipped(self):
+        # No brand token match; walk past pinterest/reddit/google to real store
+        payload = self._serp(organic=[
+            {"title": "Pinterest pins", "link": "https://www.pinterest.com/x"},
+            {"title": "Reddit thread", "link": "https://www.reddit.com/r/malefashionadvice/x"},
+            {"title": "Actual store", "link": "https://www.uniqlo.com/us/en/men/tops/t-shirts"},
+        ])
+        with patch("shopping._http_get_json", return_value=payload):
+            out = browse_shop("mens tee shirts")
+        assert "uniqlo.com" in out
+        assert "pinterest" not in out
+        assert "reddit" not in out
+
+    def test_amazon_search_page_skipped_product_page_allowed(self):
+        search_page = self._serp(organic=[
+            {"title": "Amazon search", "link": "https://www.amazon.com/s?k=wool+coat"},
+            {"title": "Wool coat", "link": "https://www.amazon.com/dp/B0XXXX"},
+        ])
+        with patch("shopping._http_get_json", return_value=search_page):
+            out = browse_shop("wool coat")
+        assert "/dp/B0XXXX" in out
+        assert "/s?k=" not in out
+
+    def test_falls_back_to_top_valid_organic_when_no_brand_match(self):
+        payload = self._serp(organic=[
+            {"title": "Random shop", "link": "https://www.someshop.com/x"},
+            {"title": "Another shop", "link": "https://www.othershop.com/y"},
+        ])
+        with patch("shopping._http_get_json", return_value=payload):
+            out = browse_shop("wool coat")
+        assert "someshop.com" in out
+
+    def test_empty_organic_returns_no_result_string(self):
+        with patch("shopping._http_get_json", return_value=self._serp()):
+            out = browse_shop("Madewell tees")
+        assert out.startswith("No browse result found")
+
+    def test_serpapi_failure_returns_no_result_string(self):
+        with patch("shopping._http_get_json", return_value=None):
+            out = browse_shop("Madewell tees")
+        assert out.startswith("No browse result found")
+
+    def test_missing_api_key_returns_unavailable(self):
+        with patch("shopping.SERP_API_KEY", ""):
+            out = browse_shop("Madewell tees")
+        assert "unavailable" in out.lower()

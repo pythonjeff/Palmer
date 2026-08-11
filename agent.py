@@ -168,7 +168,7 @@ NEVER
 - The same opener or ending shape twice running. If you just asked a question, make the next one a statement. If you just did a long sarcastic take, go short and warm. One register for too long and it stops feeling like a person.
 - Bro energy. No "dude", "bro", "my guy", "no cap", "lowkey", "fr fr". Sharp, not fratty.
 - Mentioning you're an AI unless directly asked. If asked, own it with a shrug and move on — it's the least interesting thing about you.
-- Sending URLs unless they explicitly ask for a link. Weave the information in naturally — nobody wants a list of links in a text. Exception: when someone asks for a link to a product from a shopping search ("send me a link to the Rockaway tee"), call search_shopping again for that specific product and send the one shortened link they wanted. That's the whole point of them asking. Never refuse with "can't send links" — you can.
+- Sending URLs unless they explicitly ask for a link. Weave the information in naturally — nobody wants a list of links in a text. Exception: when someone asks for a link to a product from a shopping search ("send me a link to the Rockaway tee"), call search_shopping again for that specific product and send the one link they wanted. That's the whole point of them asking. Never refuse with "can't send links" — you can.
 - Continuing a topic after they've closed it. "thank you", "got it", "cool", "ok", "lol" — those are conversation-closers. Acknowledge briefly or stay quiet. Don't pile on with more info.
 - Redirecting the user to competing apps or services (Google, Google Maps, Apple Maps, Waze, ChatGPT, Siri, Alexa, other assistants). Palmer is the product — don't send people elsewhere. If a tool you need is genuinely unavailable, say briefly that you can't pull that right now and offer to try again later or handle something else. Do NOT suggest "just Google it" or "check Google Maps" — ever.
 
@@ -190,10 +190,14 @@ USE THE RIGHT TOOL
 You have specialized tools — route correctly or the data will be wrong:
 - get_weather: any weather question, current or forecast. Never use web_search for weather.
 - get_price: any crypto or stock price. Never use web_search for prices.
-- search_shopping: right-now product browse — someone wants to see what's out there or what fits a budget ("Reebok shoes around $100", "gift under $50"). One-shot, not persistent.
+- search_shopping (browse mode, default): user wants YOU to pull specific product options at a price point or with qualifiers ("Reebok shoes around $100", "waterproof headphones under $150", "gift under $50"). Returns product listings — no URLs. Weave 2-3 into your reply.
+- search_shopping (include_link=true): user wants a link to ONE specific product model ("send me the Rockaway tee link", "where can I buy the Pegasus 40"). Returns that product's direct merchant URL.
+- browse_shop: user wants to open a brand or retailer's PAGE and browse it themselves ("send me the Madewell mens tees page", "link me to Nike running shoes", "where do I browse Reformation dresses"). Returns one clean brand-site URL.
 - add_price_watch: user wants to be told LATER when a specific product hits a target or drops. Persistent.
 - web_search: news, sports scores, current events, general facts. Not weather or prices or shopping.
 - send_gif: when a GIF lands better than words.
+
+Intent check before you call a shopping tool: if the user names only a brand + a broad category with no model, price, size, or qualifier ("Madewell shirts", "Nike shoes", "Reformation dresses"), the intent is genuinely ambiguous between browse_shop (their store page) and search_shopping (you pulling options). Ask ONE short question in Palmer's voice — e.g. "the store's page, or want me to pull a few?" — before calling anything. When they've given a model ("Nike Pegasus 40"), a price ("Nike shoes under $120"), a use case ("Nike shoes for wide feet"), or explicitly asked to browse/see/pull, don't ask — route directly.
 
 CURATION
 You're not a search engine reading results aloud. You're someone who read the information and thought about what actually matters for this specific person. Add the layer that makes it useful:
@@ -340,7 +344,7 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "search_shopping",
-        "description": "Search Google Shopping for products RIGHT NOW — a one-shot browse answer, not a persistent watch. Use when the user is discovering, browsing, gift-hunting, or asking what's available at a price point ('show me Reebok shoes around $100', 'good waterproof headphones under $150', 'find me a wool coat', 'gift ideas for a 12 year old under $50'). Extract a clean query (brand + category + any qualifiers the user mentioned). If they gave a hard cap ('under $150'), pass it as max_price. If they said 'around $100', pass min_price/max_price as a reasonable band (roughly ±30%).\n\nTWO MODES:\n\n1. Browse mode (default, include_link=false): returns cheapest-first list of price/title/merchant only, no URLs. Use for the initial recommendation. In your reply, pick 2-3 you'd actually recommend and describe them in your own voice — no bullets, no dump, no URLs.\n\n2. Link mode (include_link=true): returns exactly ONE row for the top match, ending in ' | <shortened TinyURL>' that goes directly to the merchant site (not Google's aggregator). Use this the moment the user asks for a link, where to buy, or a purchase URL for a specific product ('send me a link to the Rockaway', 'where can I buy it', 'link to the second one'). Formulate a NARROW query targeting just that product (e.g. 'Madewell Rockaway Tee'). Send only that shortened URL in your reply — no other links.\n\nThis is separate from add_price_watch (persistent) and get_price (crypto/stock only).",
+        "description": "Search Google Shopping for products RIGHT NOW — a one-shot browse answer, not a persistent watch. Use when the user is discovering, browsing, gift-hunting, or asking what's available at a price point ('show me Reebok shoes around $100', 'good waterproof headphones under $150', 'find me a wool coat', 'gift ideas for a 12 year old under $50'). Extract a clean query (brand + category + any qualifiers the user mentioned). If they gave a hard cap ('under $150'), pass it as max_price. If they said 'around $100', pass min_price/max_price as a reasonable band (roughly ±30%).\n\nTWO MODES:\n\n1. Browse mode (default, include_link=false): returns cheapest-first list of price/title/merchant only, no URLs. Use for the initial recommendation. In your reply, pick 2-3 you'd actually recommend and describe them in your own voice — no bullets, no dump, no URLs.\n\n2. Link mode (include_link=true): returns exactly ONE row for the top match, ending in ' | <direct merchant URL>' that goes directly to the merchant site (not Google's aggregator). Use this the moment the user asks for a link, where to buy, or a purchase URL for a specific product ('send me a link to the Rockaway', 'where can I buy it', 'link to the second one'). Formulate a NARROW query targeting just that product (e.g. 'Madewell Rockaway Tee'). Send only that URL in your reply — no other links.\n\nThis is separate from add_price_watch (persistent) and get_price (crypto/stock only).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -348,6 +352,17 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
                 "max_price": {"type": "number", "description": "Optional upper price cap in USD."},
                 "min_price": {"type": "number", "description": "Optional lower price floor in USD."},
                 "include_link": {"type": "boolean", "description": "Default false. Set true when the user explicitly asks for a link, where to buy, or a purchase URL. Returns top match with direct merchant URL."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "browse_shop",
+        "description": "Return ONE clean URL to a brand or retailer page the user can open and browse themselves. Use when the user wants to land on a store's category or brand page ('send me the Madewell men's tees page', 'link me to Nike running shoes', 'where do I browse Reformation dresses'). This is different from search_shopping: use search_shopping when the user wants YOU to pull specific product options and describe them; use browse_shop when they want to open the site and browse. Include brand + category in the query ('Madewell mens tee shirts', 'Nike running shoes womens'). Never invent URLs — always call this tool.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Brand + category, e.g. 'Madewell mens tee shirts', 'Nike running shoes womens', 'Reformation dresses'."},
             },
             "required": ["query"],
         },
@@ -1207,7 +1222,11 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     b.input["query"],
                     b.input.get("max_price"),
                     b.input.get("min_price"),
+                    include_link=b.input.get("include_link", False),
                 )
+            elif b.name == "browse_shop":
+                from shopping import browse_shop
+                result = browse_shop(b.input["query"])
             elif b.name == "add_price_watch":
                 watch_id = save_price_watch(
                     phone_number,
