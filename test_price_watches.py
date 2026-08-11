@@ -5,7 +5,7 @@ load_dotenv()
 
 from datetime import datetime, timezone, timedelta
 
-from shopping import _cooldown_ok, _should_alert, DROP_THRESHOLD
+from shopping import _cooldown_ok, _should_alert, DROP_THRESHOLD, _filter_and_sort
 
 
 def _watch(**kwargs) -> dict:
@@ -77,6 +77,44 @@ class TestCooldownOk:
     def test_z_suffix_iso_parses(self):
         past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
         assert not _cooldown_ok(_watch(last_alerted=past, cooldown_hours=12))
+
+
+class TestFilterAndSort:
+    def _sample(self) -> list[dict]:
+        return [
+            {"title": "Reebok Classic Leather", "price": 92.0, "merchant": "Zappos", "url": ""},
+            {"title": "Reebok Nano X4", "price": 140.0, "merchant": "reebok.com", "url": ""},
+            {"title": "Reebok Club C 85", "price": 75.0, "merchant": "Amazon", "url": ""},
+            {"title": "Reebok Floatride", "price": 180.0, "merchant": "Nordstrom", "url": ""},
+            {"title": "Reebok kids shoe", "price": 35.0, "merchant": "Target", "url": ""},
+        ]
+
+    def test_sorts_cheapest_first(self):
+        out = _filter_and_sort(self._sample(), None, None, 10)
+        prices = [r["price"] for r in out]
+        assert prices == sorted(prices)
+
+    def test_max_price_filter(self):
+        out = _filter_and_sort(self._sample(), max_price=100.0, min_price=None, limit=10)
+        assert all(r["price"] <= 100.0 for r in out)
+        assert len(out) == 3  # 35, 75, 92
+
+    def test_min_price_filter(self):
+        out = _filter_and_sort(self._sample(), max_price=None, min_price=100.0, limit=10)
+        assert all(r["price"] >= 100.0 for r in out)
+        assert len(out) == 2  # 140, 180
+
+    def test_band_filter(self):
+        out = _filter_and_sort(self._sample(), max_price=150.0, min_price=70.0, limit=10)
+        assert [r["price"] for r in out] == [75.0, 92.0, 140.0]
+
+    def test_limit_caps_results(self):
+        out = _filter_and_sort(self._sample(), None, None, 2)
+        assert len(out) == 2
+        assert [r["price"] for r in out] == [35.0, 75.0]
+
+    def test_empty_input(self):
+        assert _filter_and_sort([], None, None, 5) == []
 
 
 class TestBaselineWorkflow:

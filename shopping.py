@@ -109,6 +109,47 @@ def check_price(product_name: str) -> dict | None:
     return _pick_best_match(product_name, results)
 
 
+def _filter_and_sort(results: list[dict], max_price: float | None,
+                     min_price: float | None, limit: int) -> list[dict]:
+    filtered = [
+        r for r in results
+        if (max_price is None or r["price"] <= float(max_price))
+        and (min_price is None or r["price"] >= float(min_price))
+    ]
+    filtered.sort(key=lambda r: r["price"])
+    return filtered[:limit]
+
+
+def search_shopping(query: str, max_price: float | None = None,
+                    min_price: float | None = None, limit: int = 5) -> str:
+    """One-shot Google Shopping search. Returns a readable summary Sonnet can
+    weave into prose. Distinct from add_price_watch (persistent monitoring):
+    this is a right-now browse answer, no watch created.
+
+    Never raises; returns a plain message on any failure so tool dispatch stays clean.
+    """
+    if not SERPAPI_KEY:
+        return "Shopping search is unavailable right now."
+    results = _serpapi_search(query)
+    if not results:
+        return f"No shopping results found for {query!r}."
+    matches = _filter_and_sort(results, max_price, min_price, limit)
+    if not matches:
+        bound = ""
+        if max_price is not None and min_price is not None:
+            bound = f" between ${float(min_price):.0f} and ${float(max_price):.0f}"
+        elif max_price is not None:
+            bound = f" under ${float(max_price):.0f}"
+        elif min_price is not None:
+            bound = f" over ${float(min_price):.0f}"
+        return f"No matches for {query!r}{bound}."
+    lines = [
+        f"${r['price']:.2f} - {r['title'][:80]} ({r['merchant'] or 'unknown seller'})"
+        for r in matches
+    ]
+    return "\n".join(lines)
+
+
 def _cooldown_ok(watch: dict, now: datetime | None = None) -> bool:
     """True if enough time has passed since the last alert on this watch."""
     last = watch.get("last_alerted")

@@ -190,7 +190,9 @@ USE THE RIGHT TOOL
 You have specialized tools — route correctly or the data will be wrong:
 - get_weather: any weather question, current or forecast. Never use web_search for weather.
 - get_price: any crypto or stock price. Never use web_search for prices.
-- web_search: news, sports scores, current events, general facts. Not weather or prices.
+- search_shopping: right-now product browse — someone wants to see what's out there or what fits a budget ("Reebok shoes around $100", "gift under $50"). One-shot, not persistent.
+- add_price_watch: user wants to be told LATER when a specific product hits a target or drops. Persistent.
+- web_search: news, sports scores, current events, general facts. Not weather or prices or shopping.
 - send_gif: when a GIF lands better than words.
 
 CURATION
@@ -334,6 +336,19 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
                 "text_match": {"type": "string", "description": "Optional: cancel only watches whose description contains this phrase. Omit to cancel all watches."},
             },
             "required": [],
+        },
+    },
+    {
+        "name": "search_shopping",
+        "description": "Search Google Shopping for products RIGHT NOW — a one-shot browse answer, not a persistent watch. Use when the user is discovering, browsing, gift-hunting, or asking what's available at a price point ('show me Reebok shoes around $100', 'good waterproof headphones under $150', 'find me a wool coat', 'gift ideas for a 12 year old under $50'). Extract a clean query (brand + category + any qualifiers the user mentioned). If they gave a hard cap ('under $150'), pass it as max_price. If they said 'around $100', pass min_price/max_price as a reasonable band (roughly ±30%). Results come back cheapest-first as one line per product. In your reply, pick 2-3 you'd actually recommend and describe them briefly in your own voice — do NOT dump the full list, do NOT use bullet points, do NOT include URLs. This is separate from add_price_watch (which persists) and from get_price (which is crypto/stock only).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Clean product query. e.g. 'Reebok mens running shoes', 'waterproof over-ear headphones', 'merino wool sweater womens'."},
+                "max_price": {"type": "number", "description": "Optional upper price cap in USD."},
+                "min_price": {"type": "number", "description": "Optional lower price floor in USD."},
+            },
+            "required": ["query"],
         },
     },
     {
@@ -1185,6 +1200,13 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
             elif b.name == "cancel_watch":
                 count = cancel_watches(phone_number, b.input.get("text_match"))
                 result = f"Cancelled {count} watch(es)."
+            elif b.name == "search_shopping":
+                from shopping import search_shopping
+                result = search_shopping(
+                    b.input["query"],
+                    b.input.get("max_price"),
+                    b.input.get("min_price"),
+                )
             elif b.name == "add_price_watch":
                 watch_id = save_price_watch(
                     phone_number,
