@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 from agent import client, _sms_clean, HAIKU_MODEL
 
-SERPAPI_KEY = os.environ.get("SERPAPI_KEY", "")
+SERP_API_KEY = os.environ.get("SERP_API_KEY", "")
 _SERPAPI_BASE = "https://serpapi.com/search.json"
 _SERPAPI_TIMEOUT = 12
 DROP_THRESHOLD = 0.85  # alert when current <= baseline * DROP_THRESHOLD (i.e. >=15% off)
@@ -37,12 +37,12 @@ def _http_get_json(url: str) -> dict | None:
 
 
 def _serpapi_search(query: str) -> list[dict]:
-    if not SERPAPI_KEY or not query:
+    if not SERP_API_KEY or not query:
         return []
     params = {
         "engine": "google_shopping",
         "q": query,
-        "api_key": SERPAPI_KEY,
+        "api_key": SERP_API_KEY,
         "num": "20",
         "hl": "en",
         "gl": "us",
@@ -128,7 +128,7 @@ def search_shopping(query: str, max_price: float | None = None,
 
     Never raises; returns a plain message on any failure so tool dispatch stays clean.
     """
-    if not SERPAPI_KEY:
+    if not SERP_API_KEY:
         return "Shopping search is unavailable right now."
     results = _serpapi_search(query)
     if not results:

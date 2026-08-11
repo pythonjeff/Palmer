@@ -89,7 +89,7 @@ cp .env.example .env
 | `GIPHY_API_KEY` | developers.giphy.com (free) |
 | `OWM_API_KEY` | openweathermap.org (free tier) |
 | `TOMTOM_API_KEY` | developer.tomtom.com (free tier, ~2,500 requests/day) |
-| `SERPAPI_KEY` | serpapi.com (100 free searches/mo, $50/mo for 5,000) |
+| `SERP_API_KEY` | serpapi.com (100 free searches/mo, $50/mo for 5,000) |
 | `APP_URL` | Your deployed app URL (for Twilio status callbacks) |
 | `DATABASE_URL` | Postgres connection string (auto-set by Heroku) |
 
