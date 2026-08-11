@@ -15,15 +15,15 @@ def _dt(hour, minute, tz="America/Chicago"):
 
 class TestParseMorningTime:
     def test_default(self):
-        assert _parse_morning_time(DEFAULT_MORNING_TIME) == (8, 30)
+        assert _parse_morning_time(DEFAULT_MORNING_TIME) == (7, 0)
 
     def test_custom(self):
-        assert _parse_morning_time("07:00") == (7, 0)
+        assert _parse_morning_time("08:30") == (8, 30)
         assert _parse_morning_time("21:15") == (21, 15)
 
     def test_invalid_falls_back_to_default(self):
-        for bad in (None, "", "notatime", "25:00", "08:99", "8", 830):
-            assert _parse_morning_time(bad) == (8, 30), bad
+        for bad in (None, "", "notatime", "25:00", "08:99", "8", 700):
+            assert _parse_morning_time(bad) == (7, 0), bad
 
 
 class TestSendWindow:
@@ -42,8 +42,8 @@ class TestSendWindow:
         assert not _in_send_window(_dt(21, 0), "08:30")
 
     def test_none_uses_default(self):
-        assert _in_send_window(_dt(8, 30), None)
-        assert not _in_send_window(_dt(8, 0), None)
+        assert _in_send_window(_dt(7, 0), None)
+        assert not _in_send_window(_dt(6, 30), None)
 
     def test_custom_time(self):
         assert _in_send_window(_dt(7, 0), "07:00")
@@ -53,9 +53,9 @@ class TestSendWindow:
     def test_other_timezone(self):
         assert _in_send_window(_dt(8, 35, tz="America/New_York"), "08:30")
 
-    def test_invalid_pref_falls_back_to_830(self):
-        assert _in_send_window(_dt(8, 30), "garbage")
-        assert not _in_send_window(_dt(7, 0), "garbage")
+    def test_invalid_pref_falls_back_to_default(self):
+        assert _in_send_window(_dt(7, 0), "garbage")
+        assert not _in_send_window(_dt(6, 30), "garbage")
 
 
 class TestLocalToday:

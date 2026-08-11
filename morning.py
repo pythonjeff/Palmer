@@ -8,7 +8,7 @@ from agent import (
 from db import get_profile, upsert_profile, get_all_phones, save_message, get_history
 from traffic import get_city_traffic
 
-DEFAULT_MORNING_TIME = "08:30"
+DEFAULT_MORNING_TIME = "07:00"
 # How long after the target time we'll still send (covers missed scheduler ticks
 # or a transient generation failure) before giving up for the day.
 CATCHUP_WINDOW_MINUTES = 120
@@ -210,7 +210,7 @@ def _local_today(tz_name: str | None) -> date_type:
 
 
 def _parse_morning_time(value) -> tuple[int, int]:
-    """Parse an 'HH:MM' preference; fall back to the 8:30 default on anything invalid."""
+    """Parse an 'HH:MM' preference; fall back to the 7:00 default on anything invalid."""
     try:
         h, m = str(value).strip().split(":")
         h, m = int(h), int(m)
@@ -218,7 +218,7 @@ def _parse_morning_time(value) -> tuple[int, int]:
             return h, m
     except Exception:
         pass
-    return (8, 30)
+    return (7, 0)
 
 
 def _in_send_window(now_local: datetime, morning_time: str | None,
@@ -294,7 +294,7 @@ def send_morning_messages():
 # Missing-data outreach. When a user finishes onboarding without giving us
 # a city, mornings can't fire (no local time to target). Palmer proactively
 # texts to ask, so the gap fills itself instead of the user just never hearing
-# from us at 8:30am.
+# from us at 7am.
 
 DATA_ASK_COOLDOWN_DAYS = 7
 # Safe UTC window when it's daytime across US zones. 16:00-22:00 UTC = 11am-5pm ET,
