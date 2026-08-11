@@ -5,7 +5,10 @@ load_dotenv()
 
 from datetime import datetime, timezone, timedelta
 
-from shopping import _cooldown_ok, _should_alert, DROP_THRESHOLD, _filter_and_sort, _shorten_url
+from shopping import (
+    _cooldown_ok, _should_alert, DROP_THRESHOLD, _filter_and_sort, _shorten_url,
+    _is_marketplace_thirdparty, _brand_tokens,
+)
 
 
 def _watch(**kwargs) -> dict:
@@ -131,6 +134,54 @@ class TestShortenUrl:
         # Under threshold — return raw so user doesn't get a redirect hop
         url = "https://www.madewell.com/p/the-rockaway-tee/OA219/"
         assert _shorten_url(url) == url
+
+
+class TestMarketplaceThirdparty:
+    def test_ebay_individual_seller_is_thirdparty(self):
+        assert _is_marketplace_thirdparty("eBay - dabondo1")
+        assert _is_marketplace_thirdparty("eBay - sli00uo0rtoi")
+
+    def test_named_marketplaces_are_thirdparty(self):
+        for m in ("Poshmark", "Mercari", "Depop", "Vinted", "Grailed"):
+            assert _is_marketplace_thirdparty(m), m
+
+    def test_real_retailers_not_thirdparty(self):
+        for m in ("Madewell", "Nordstrom Rack", "Zappos", "Amazon", "shopbop.com", "Allen Edmonds"):
+            assert not _is_marketplace_thirdparty(m), m
+
+    def test_link_mode_sort_pushes_thirdparty_last(self):
+        # Google-ordered results: cheap eBay listing shouldn't win link mode
+        results = [
+            {"merchant": "eBay - randomseller", "price": 100.0},
+            {"merchant": "Nordstrom Rack", "price": 180.0},
+            {"merchant": "shopbop.com", "price": 212.0},
+        ]
+        ranked = sorted(results, key=lambda r: _is_marketplace_thirdparty(r["merchant"]))
+        # Original order preserved for non-third-party; eBay falls to end
+        assert ranked[0]["merchant"] == "Nordstrom Rack"
+        assert ranked[-1]["merchant"].startswith("eBay - ")
+
+
+class TestBrandTokens:
+    def test_extracts_multi_word_brand(self):
+        assert "allen" in _brand_tokens("Allen Edmonds Newman Penny Loafer")
+        assert "edmonds" in _brand_tokens("Allen Edmonds Newman Penny Loafer")
+
+    def test_short_words_ignored(self):
+        # 'the', 'a', 'is' should not become tokens
+        tokens = _brand_tokens("the Nike Air")
+        assert "the" not in tokens
+        assert "nike" in tokens
+
+    def test_non_alpha_ignored(self):
+        tokens = _brand_tokens("WH-1000XM5 Sony headphones")
+        assert "sony" in tokens
+        assert "headphones" in tokens
+        # WH-1000XM5 contains non-alpha, should be dropped
+        assert not any("1000" in t for t in tokens)
+
+    def test_empty_query(self):
+        assert _brand_tokens("") == []
 
 
 class TestBaselineWorkflow:

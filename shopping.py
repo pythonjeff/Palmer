@@ -93,15 +93,36 @@ def _serpapi_search(query: str) -> list[dict]:
     return results
 
 
-def _resolve_merchant_url(page_token: str) -> str | None:
-    """Hit SerpAPI's google_immersive_product engine and return the direct
-    merchant URL (e.g. madewell.com/...) from product_results.stores[].link.
+def _is_marketplace_thirdparty(merchant: str) -> bool:
+    """True if the merchant string names a third-party marketplace listing
+    (individual sellers, resale sites). We deprioritize these in link mode
+    because 'buy it now' should land on a real retailer, not a random eBay
+    seller with 12 reviews."""
+    m = (merchant or "").lower().strip()
+    if m.startswith("ebay - "):  # "eBay - dabondo1" style individual sellers
+        return True
+    return m in {"poshmark", "mercari", "depop", "vinted", "grailed"}
 
-    Google Shopping's per-result `link` field is now empty on modern responses,
-    and Google retired the standalone google_product engine — google_immersive
-    _product is SerpAPI's replacement. This is one level deeper than the
-    aggregator page and gives a cleaner buy-now experience (and avoids
-    TinyURL's safety interstitial on Google tracking URLs).
+
+def _brand_tokens(query: str) -> list[str]:
+    """Extract likely brand words from a shopping query. Words >= 4 chars, alpha
+    only. Used to prefer the brand's own store when picking a merchant URL."""
+    return [t.lower() for t in query.split() if len(t) >= 4 and t.isalpha()]
+
+
+def _resolve_merchant_url(page_token: str, query: str = "") -> str | None:
+    """Hit SerpAPI's google_immersive_product engine and return a direct
+    merchant URL from product_results.stores[].link.
+
+    Preference order:
+      1. Store whose name or domain matches a brand token from query
+         (so 'Madewell Rockaway Tee' lands on madewell.com, not the first
+         reseller Google happens to rank).
+      2. First store with a real URL.
+
+    Google Shopping's per-result `link` field is empty on modern responses,
+    and Google retired the standalone google_product engine —
+    google_immersive_product is SerpAPI's replacement.
     """
     if not page_token or not SERP_API_KEY:
         return None
@@ -115,10 +136,25 @@ def _resolve_merchant_url(page_token: str) -> str | None:
     if not data:
         return None
     stores = (data.get("product_results") or {}).get("stores") or []
+    if not stores:
+        return None
+
+    def _has_url(store: dict) -> bool:
+        link = store.get("link") or ""
+        return isinstance(link, str) and link.startswith("http")
+
+    tokens = _brand_tokens(query)
+    if tokens:
+        for store in stores:
+            if not _has_url(store):
+                continue
+            name = (store.get("name") or "").lower()
+            link = (store.get("link") or "").lower()
+            if any(t in name or t in link for t in tokens):
+                return store["link"]
     for store in stores:
-        link = store.get("link")
-        if link and link.startswith("http"):
-            return link
+        if _has_url(store):
+            return store["link"]
     return None
 
 
@@ -203,7 +239,15 @@ def search_shopping(query: str, max_price: float | None = None,
     results = _serpapi_search(query)
     if not results:
         return f"No shopping results found for {query!r}."
-    matches = _filter_and_sort(results, max_price, min_price, limit)
+    if include_link:
+        # Respect Google's ranking (quality signal), but push third-party
+        # marketplace listings to the bottom. Sorting by price would pick a
+        # random eBay reseller over a real retailer just because it's a few
+        # bucks cheaper.
+        ranked = sorted(results, key=lambda r: _is_marketplace_thirdparty(r.get("merchant", "")))
+        matches = ranked[:1]
+    else:
+        matches = _filter_and_sort(results, max_price, min_price, limit)
     if not matches:
         bound = ""
         if max_price is not None and min_price is not None:
@@ -217,7 +261,7 @@ def search_shopping(query: str, max_price: float | None = None,
     for r in matches:
         base = f"${r['price']:.2f} - {r['title'][:80]} ({r['merchant'] or 'unknown seller'})"
         if include_link:
-            merchant_url = _resolve_merchant_url(r.get("page_token", ""))
+            merchant_url = _resolve_merchant_url(r.get("page_token", ""), query=query)
             if merchant_url:
                 base += f" | {_shorten_url(merchant_url)}"
             else:
