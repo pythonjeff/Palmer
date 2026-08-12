@@ -13,9 +13,8 @@ import os
 import json
 import concurrent.futures
 import urllib.parse
-import urllib.request
 
-from agent import client, HAIKU_MODEL
+from agent import client, _http_get_json, HAIKU_MODEL
 
 TOMTOM_API_KEY = os.environ.get("TOMTOM_API_KEY", "")
 _TOMTOM_BASE = "https://api.tomtom.com"
@@ -28,16 +27,6 @@ _NOTABLE_ICONS = {1, 6, 7, 8, 9, 14}  # accident, jam, lane closed, road closed,
 _city_geo_cache: dict[str, dict] = {}
 
 
-def _http_get_json(url: str) -> dict | None:
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Palmer/1.0"})
-        with urllib.request.urlopen(req, timeout=_TOMTOM_TIMEOUT) as resp:
-            return json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"TomTom request failed ({url.split('?')[0]}): {e}")
-        return None
-
-
 def _geocode_city(city: str) -> dict | None:
     """Return {lat, lng, min_lat, max_lat, min_lng, max_lng} or None."""
     key = city.strip().lower()
@@ -47,7 +36,7 @@ def _geocode_city(city: str) -> dict | None:
         return _city_geo_cache[key]
     q = urllib.parse.quote(city)
     url = f"{_TOMTOM_BASE}/search/2/geocode/{q}.json?limit=1&key={TOMTOM_API_KEY}"
-    data = _http_get_json(url)
+    data = _http_get_json(url, timeout=_TOMTOM_TIMEOUT)
     if not data or not data.get("results"):
         return None
     r = data["results"][0]
@@ -75,7 +64,7 @@ def _get_flow(lat: float, lng: float) -> dict | None:
         f"{_TOMTOM_BASE}/traffic/services/4/flowSegmentData/absolute/10/json"
         f"?point={lat},{lng}&key={TOMTOM_API_KEY}"
     )
-    data = _http_get_json(url)
+    data = _http_get_json(url, timeout=_TOMTOM_TIMEOUT)
     if not data:
         return None
     return data.get("flowSegmentData")
@@ -92,7 +81,7 @@ def _get_incidents(bbox: dict) -> list[dict]:
         f"{_TOMTOM_BASE}/traffic/services/5/incidentDetails"
         f"?bbox={bbox_str}&fields={urllib.parse.quote(fields)}&language=en-US&key={TOMTOM_API_KEY}"
     )
-    data = _http_get_json(url)
+    data = _http_get_json(url, timeout=_TOMTOM_TIMEOUT)
     if not data:
         return []
     return data.get("incidents", []) or []
@@ -197,7 +186,7 @@ def _geocode_address(address: str) -> tuple[float, float] | None:
         return None
     q = urllib.parse.quote(address)
     url = f"{_TOMTOM_BASE}/search/2/geocode/{q}.json?limit=1&key={TOMTOM_API_KEY}"
-    data = _http_get_json(url)
+    data = _http_get_json(url, timeout=_TOMTOM_TIMEOUT)
     if not data or not data.get("results"):
         return None
     pos = (data["results"][0].get("position") or {})
@@ -228,7 +217,7 @@ def get_travel_time(origin: str, destination: str) -> str:
         f"{_TOMTOM_BASE}/routing/1/calculateRoute/{locations}/json"
         f"?traffic=true&travelMode=car&computeTravelTimeFor=all&key={TOMTOM_API_KEY}"
     )
-    data = _http_get_json(url)
+    data = _http_get_json(url, timeout=_TOMTOM_TIMEOUT)
     if not data or not data.get("routes"):
         return f"Routing failed for {origin!r} → {destination!r}."
 

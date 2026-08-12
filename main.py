@@ -28,9 +28,10 @@ _scheduler.add_job(run_watches, "interval", minutes=30)
 _scheduler.add_job(run_alert_checks, "interval", minutes=60)
 _scheduler.add_job(send_missing_data_asks, "interval", minutes=60)
 _scheduler.add_job(run_followups, "interval", hours=4)
-# SerpAPI: at ~4 checks/watch/day and 5000 searches/mo on the starter plan,
-# 6h supports ~40 concurrent watches before we outgrow it.
-_scheduler.add_job(run_price_watches, "interval", hours=6)
+# SerpAPI: 12h cadence keeps the starter plan (5000 searches/mo) comfortable
+# while leaving headroom for Amazon watches (dual-source: Google Shopping +
+# amazon_product engine both go through this same tick).
+_scheduler.add_job(run_price_watches, "interval", hours=12)
 _scheduler.start()
 
 _in_flight: dict[str, set] = defaultdict(set)
@@ -42,19 +43,9 @@ _seen_sids_lock = threading.Lock()
 _SEEN_SIDS_MAX = 200
 
 
-_APP_URL = os.environ.get("APP_URL", "").rstrip("/")
-_STATUS_CALLBACK_URL = f"{_APP_URL}/sms-status" if _APP_URL else None
-
-
-
 def _send_gif_outbound(to: str, media_url: str):
-    from twilio.rest import Client as TwilioClient
-    try:
-        TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"]).messages.create(
-            from_=os.environ["TWILIO_PHONE_NUMBER"], to=to, media_url=[media_url]
-        )
-    except Exception as e:
-        print(f"GIF send failed for {to}: {e}")
+    if not send_sms(to, "", media_url=media_url, add_status_callback=False):
+        print(f"GIF send failed for {to}")
 
 
 def _handle_sms(from_number: str, body: str, media_url: str | None):

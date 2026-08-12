@@ -80,19 +80,20 @@ def init_db():
             cooldown_hours INTEGER NOT NULL DEFAULT 12,
             last_alerted TEXT,
             last_alert_summary TEXT,
+            source TEXT NOT NULL DEFAULT 'shopping',
+            asin TEXT,
             active INTEGER NOT NULL DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     # Migrations for columns added after initial deploy
-    new_cols = [
+    watches_new_cols = [
         "last_alert_summary TEXT",
         "daily_alert_count INTEGER DEFAULT 0",
         "daily_alert_date TEXT",
         "recent_summaries TEXT",
     ]
-    for col_def in new_cols:
-        col_name = col_def.split()[0]
+    for col_def in watches_new_cols:
         if _DATABASE_URL:
             cur.execute(f"ALTER TABLE watches ADD COLUMN IF NOT EXISTS {col_def}")
         else:
@@ -100,6 +101,20 @@ def init_db():
                 cur.execute(f"ALTER TABLE watches ADD COLUMN {col_def}")
             except Exception:
                 pass  # already exists
+
+    price_watches_new_cols = [
+        "source TEXT NOT NULL DEFAULT 'shopping'",
+        "asin TEXT",
+    ]
+    for col_def in price_watches_new_cols:
+        if _DATABASE_URL:
+            cur.execute(f"ALTER TABLE price_watches ADD COLUMN IF NOT EXISTS {col_def}")
+        else:
+            try:
+                cur.execute(f"ALTER TABLE price_watches ADD COLUMN {col_def}")
+            except Exception:
+                pass  # already exists
+
     conn.commit()
     conn.close()
 
@@ -363,13 +378,15 @@ def cancel_watches(phone: str, text_match: str = None) -> int:
 
 
 def save_price_watch(phone: str, product_name: str, target_price: float | None = None,
-                     currency: str = "USD", cooldown_hours: int = 12) -> int:
+                     currency: str = "USD", cooldown_hours: int = 12,
+                     source: str = "shopping", asin: str | None = None) -> int:
     conn = _conn()
     cur = conn.cursor()
     cur.execute(
-        f"INSERT INTO price_watches (phone, product_name, target_price, currency, cooldown_hours) "
-        f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH})",
-        (phone, product_name, target_price, currency, cooldown_hours),
+        f"INSERT INTO price_watches (phone, product_name, target_price, currency, "
+        f"cooldown_hours, source, asin) "
+        f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH})",
+        (phone, product_name, target_price, currency, cooldown_hours, source, asin),
     )
     watch_id = cur.lastrowid
     conn.commit()
@@ -383,7 +400,7 @@ def get_active_price_watches() -> list[dict]:
     cur.execute(
         "SELECT id, phone, product_name, target_price, currency, baseline_price, "
         "last_seen_price, last_seen_url, last_seen_merchant, cooldown_hours, "
-        "last_alerted, last_alert_summary "
+        "last_alerted, last_alert_summary, source, asin "
         "FROM price_watches WHERE active = 1"
     )
     rows = cur.fetchall()
@@ -402,6 +419,8 @@ def get_active_price_watches() -> list[dict]:
             "cooldown_hours": r["cooldown_hours"],
             "last_alerted": r["last_alerted"],
             "last_alert_summary": r["last_alert_summary"],
+            "source": r["source"] or "shopping",
+            "asin": r["asin"],
         }
         for r in rows
     ]

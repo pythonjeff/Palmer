@@ -1,3 +1,11 @@
+"""Palmer's central module: Claude client, system prompt, tool schemas, per-turn conversation loop.
+
+Underscore-prefixed helpers here (e.g. _sms_clean, _search, _weather_report, _get_price,
+_build_system, _http_get_json) are a convention meaning "internal to Palmer" — NOT "private
+to this module". They are imported by sibling modules (morning.py, alerts.py, followup.py,
+shopping.py, traffic.py, watches.py, sms_util.py, send_reminders.py, main.py). Grep before
+renaming any of them.
+"""
 import json
 import os
 import re
@@ -6,7 +14,7 @@ import base64
 import random
 import threading
 import concurrent.futures
-from collections import Counter
+import urllib.request
 from datetime import datetime, timezone, date as _date, timedelta
 import anthropic
 import requests as _requests
@@ -15,7 +23,7 @@ from db import (
     init_db, get_history, save_message, get_profile, upsert_profile, save_reminder, cancel_reminders,
     get_message_count, get_older_messages, HISTORY_LIMIT,
     save_watch, get_user_watches, cancel_watches,
-    save_price_watch, get_user_price_watches, cancel_price_watches,
+    save_price_watch, get_user_price_watches, cancel_price_watches, set_price_watch_baseline,
 )
 
 _CRYPTO_IDS = {
@@ -44,6 +52,18 @@ init_db()
 
 client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"], timeout=45.0)
 _tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+
+
+def _http_get_json(url: str, timeout: int = 10) -> dict | None:
+    """Shared HTTP GET → JSON. Returns None on any failure; used by shopping.py and traffic.py."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Palmer/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as e:
+        print(f"HTTP GET failed ({url.split('?')[0]}): {type(e).__name__}: {e}")
+        return None
+
 
 SYSTEM_PROMPT = """You are Palmer. You text like a sharp, funny friend — not an assistant, not a service, not a brand. Nobody screenshots texts from a brand.
 
@@ -150,7 +170,7 @@ To get you set up: what should I call you, and what city are you in?"
 
 The numbered list is fine here — this is the one exception to the no-bullets rule, because they explicitly asked for a rundown. Every other message stays plain prose.
 
-If you already know their name or city from their profile, don't re-ask that part. If they say yes to mornings after this, call update_morning_briefing to turn it on. Save name/city via update_profile.
+If you already know their name or city from their profile, don't re-ask that part. If they say yes to mornings after this, call update_morning_briefing to turn it on. You don't need to save name/city yourself — Palmer picks those up automatically from normal conversation.
 
 MEMORY
 Use what you know about them the way friends do: casually, without citation. "how'd the presentation go" — never "I remember you mentioned a presentation." Don't recite their life back to them. One well-placed callback beats five references.
@@ -186,6 +206,8 @@ If someone asks to add or remove something from their morning update — call up
 PRICE WATCHES
 When someone asks you to watch a product's price ("let me know when Nike Pegasus 40 goes on sale", "text me if these Lululemon leggings drop under $70", "watch this: [product name]") call add_price_watch immediately. If they said a target ("under $80", "at $500"), pass it as target_price. Otherwise leave target_price out — Palmer establishes a baseline on the first check and alerts on ~15% drops. Confirm like a friend, not a receipt: "I'll keep an eye out" or "sure, I'll ping you if it moves" — never "Watch created successfully." Cancel via cancel_price_watch when they say "stop watching those shoes" or similar. Price watches are separate from news watches — same idea, different data source.
 
+If the user is clearly asking about Amazon specifically — they said "on Amazon", mentioned Prime, or named a category where Amazon is the obvious channel (supplements, protein, coffee, paper goods, household staples that fluctuate a lot on Amazon) — use add_amazon_watch instead of add_price_watch. Amazon watches track ONE specific Amazon listing by ASIN, so alerts stay pinned to the exact seller/pack size the user meant. cancel_price_watch cancels both kinds.
+
 USE THE RIGHT TOOL
 You have specialized tools — route correctly or the data will be wrong:
 - get_weather: any weather question, current or forecast. Never use web_search for weather.
@@ -193,7 +215,8 @@ You have specialized tools — route correctly or the data will be wrong:
 - search_shopping (browse mode, default): user wants YOU to pull specific product options at a price point or with qualifiers ("Reebok shoes around $100", "waterproof headphones under $150", "gift under $50"). Returns product listings — no URLs. Weave 2-3 into your reply.
 - search_shopping (include_link=true): user wants a link to ONE specific product model ("send me the Rockaway tee link", "where can I buy the Pegasus 40"). Returns that product's direct merchant URL.
 - browse_shop: user wants to open a brand or retailer's PAGE and browse it themselves ("send me the Madewell mens tees page", "link me to Nike running shoes", "where do I browse Reformation dresses"). Returns one clean brand-site URL.
-- add_price_watch: user wants to be told LATER when a specific product hits a target or drops. Persistent.
+- add_price_watch: user wants to be told LATER when a specific product hits a target or drops. Persistent. Google Shopping (cheapest across merchants).
+- add_amazon_watch: same idea but for a SPECIFIC Amazon listing ("track this protein shake on Amazon", "watch these vitamins for me"). Palmer resolves the item to an Amazon ASIN and tracks that exact listing. Prefer this when the user is on Amazon or the product category swings a lot there (supplements, coffee, household staples).
 - web_search: news, sports scores, current events, general facts. Not weather or prices or shopping.
 - send_gif: when a GIF lands better than words.
 
@@ -369,7 +392,7 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "add_price_watch",
-        "description": "Start tracking a product's price. Palmer checks every 6 hours via Google Shopping across major retailers (Amazon, Target, Nordstrom, Best Buy, etc.) and texts the user when the price hits their target OR drops at least 15% from the price at watch creation. Use whenever the user asks you to watch, track, or notify them about a product's price — direct ('watch these sneakers'), conditional ('let me know when the Kindle goes on sale'), or with a target ('text me if the Dyson drops under $400'). Extract a clean product_name (brand + model when they said it, size/color if they specified). If they gave a target price, pass it as target_price. Don't over-clarify size/color unless they gave it — a broad match still beats no watch.",
+        "description": "Start tracking a product's price via Google Shopping (cheapest across merchants: Target, Nordstrom, Best Buy, etc.). Palmer checks every 12 hours and texts when the price hits the user's target OR drops at least 15% from the price at watch creation. Use for general product tracking. If the user is clearly on Amazon or names a category where Amazon is the obvious channel (supplements, protein, coffee, household staples), use add_amazon_watch instead. Extract a clean product_name (brand + model, size/color if they specified). If they gave a target price, pass it as target_price.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -381,8 +404,20 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
         },
     },
     {
+        "name": "add_amazon_watch",
+        "description": "Watch ONE specific Amazon listing for price drops. Use when the user says 'on Amazon', mentions Prime, or names a category where Amazon is the obvious channel (supplements, protein powder, coffee, paper goods, household staples that swing hard on Amazon). Palmer resolves the item to an Amazon ASIN and tracks that exact listing across ticks — so alerts stay pinned to the right seller and pack size. Palmer checks every 12 hours and texts when the price hits the user's target OR drops at least 15% from the baseline. Distinct from add_price_watch, which searches Google Shopping across many merchants. Cancel via cancel_price_watch — one id space.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "product_query": {"type": "string", "description": "The item description in the user's words — 'Optimum Nutrition Gold Standard whey chocolate 5lb', 'Kirkland fish oil 400 count', 'that protein shake I like'. Keep brand + variant/size/flavor when the user gave them."},
+                "target_price": {"type": "number", "description": "Optional target price in USD. Alert fires when current price is at or below this. Omit if the user didn't name a target."},
+            },
+            "required": ["product_query"],
+        },
+    },
+    {
         "name": "cancel_price_watch",
-        "description": "Cancel one or all active product price watches. Use when the user says 'stop watching those shoes', 'I bought them already', 'kill the Kindle watch', etc.",
+        "description": "Cancel one or all active product price watches (works for both Google Shopping and Amazon watches — one id space). Use when the user says 'stop watching those shoes', 'I bought them already', 'kill the Kindle watch', etc.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -546,10 +581,10 @@ _WMO_DESCRIPTIONS = {
 }
 
 
-def _http_get_json(url: str, params: dict, timeout: float, attempts: int = 3) -> dict:
+def _http_get_json_retry(url: str, params: dict, timeout: float, attempts: int = 3) -> dict:
     """GET with retries and backoff — Open-Meteo's free tier rate-limits shared
     Heroku IPs (429s) and transient timeouts are common, so one bare request
-    fails far too often."""
+    fails far too often. Raises on final failure (unlike _http_get_json, which returns None)."""
     last_err = None
     for i in range(attempts):
         try:
@@ -572,7 +607,7 @@ def _geocode(location: str) -> tuple[float, float, str]:
     key = location.strip().lower()
     if key in _geocode_cache:
         return _geocode_cache[key]
-    data = _http_get_json(
+    data = _http_get_json_retry(
         "https://geocoding-api.open-meteo.com/v1/search",
         params={"name": location, "count": 1, "language": "en", "format": "json"},
         timeout=8,
@@ -597,7 +632,7 @@ def _weather_report(location: str, when: str = "today") -> str:
 
     lat, lon, resolved = _geocode(location)
 
-    data = _http_get_json(
+    data = _http_get_json_retry(
         "https://api.open-meteo.com/v1/forecast",
         params={
             "latitude": lat, "longitude": lon,
@@ -1086,7 +1121,7 @@ def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = 
                 bits.append(f"last seen ${float(w['last_seen_price']):.2f}")
             pw_lines.append("- " + " — ".join(bits))
         system += (
-            f"\n\nActive price watches (products you're checking every 6 hours for them):\n"
+            f"\n\nActive price watches (products you're checking every 12 hours for them):\n"
             + "\n".join(pw_lines)
             + "\n\nIf they ask what you're tracking, roll these in with any news watches above — natural prose, not a list."
         )
@@ -1236,7 +1271,31 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 )
                 target = b.input.get("target_price")
                 target_str = f" at or under ${float(target):.2f}" if target is not None else " for meaningful drops"
-                result = f"Price watch set (id={watch_id}). I'll check every 6 hours and text if it hits{target_str}."
+                result = f"Price watch set (id={watch_id}). I'll check every 12 hours and text if it hits{target_str}."
+            elif b.name == "add_amazon_watch":
+                import amazon
+                query = b.input["product_query"]
+                target = b.input.get("target_price")
+                resolved = amazon.resolve_asin(query)
+                if not resolved:
+                    result = f"Couldn't find {query!r} on Amazon — ask the user for a more specific product name (brand + variant/size)."
+                else:
+                    watch_id = save_price_watch(
+                        phone_number,
+                        resolved["title"],
+                        target_price=target,
+                        source="amazon",
+                        asin=resolved["asin"],
+                    )
+                    # Seed the baseline from the resolve step so we don't waste
+                    # the first tick recording a baseline that's already stale.
+                    set_price_watch_baseline(watch_id, resolved["price"], resolved["url"], "Amazon")
+                    target_str = f" at or under ${float(target):.2f}" if target is not None else " for a meaningful drop"
+                    result = (
+                        f"Amazon watch set (id={watch_id}) for {resolved['title']}. "
+                        f"Currently ${resolved['price']:.2f}. I'll check every 12 hours and text if it hits{target_str}. "
+                        f"Link: {resolved['url']}"
+                    )
             elif b.name == "cancel_price_watch":
                 count = cancel_price_watches(phone_number, b.input.get("text_match"))
                 result = f"Cancelled {count} price watch(es)."

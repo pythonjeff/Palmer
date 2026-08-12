@@ -15,25 +15,14 @@ as traffic.py).
 import os
 import json
 import urllib.parse
-import urllib.request
 from datetime import datetime, timezone
 
-from agent import client, _sms_clean, HAIKU_MODEL
+from agent import client, _sms_clean, _http_get_json, HAIKU_MODEL
 
 SERP_API_KEY = os.environ.get("SERP_API_KEY", "")
 _SERPAPI_BASE = "https://serpapi.com/search.json"
 _SERPAPI_TIMEOUT = 12
 DROP_THRESHOLD = 0.85  # alert when current <= baseline * DROP_THRESHOLD (i.e. >=15% off)
-
-
-def _http_get_json(url: str) -> dict | None:
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Palmer/1.0"})
-        with urllib.request.urlopen(req, timeout=_SERPAPI_TIMEOUT) as resp:
-            return json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"SerpAPI request failed: {e}")
-        return None
 
 
 def _serpapi_search(query: str) -> list[dict]:
@@ -48,7 +37,7 @@ def _serpapi_search(query: str) -> list[dict]:
         "gl": "us",
     }
     url = f"{_SERPAPI_BASE}?{urllib.parse.urlencode(params)}"
-    data = _http_get_json(url)
+    data = _http_get_json(url, timeout=_SERPAPI_TIMEOUT)
     if not data:
         return []
     results = []
@@ -105,7 +94,7 @@ def _resolve_merchant_url(page_token: str, query: str = "") -> str | None:
         "api_key": SERP_API_KEY,
     }
     url = f"{_SERPAPI_BASE}?{urllib.parse.urlencode(params)}"
-    data = _http_get_json(url)
+    data = _http_get_json(url, timeout=_SERPAPI_TIMEOUT)
     if not data:
         return None
     stores = (data.get("product_results") or {}).get("stores") or []
@@ -304,7 +293,7 @@ def browse_shop(query: str) -> str:
         "hl": "en",
         "gl": "us",
     }
-    data = _http_get_json(f"{_SERPAPI_BASE}?{urllib.parse.urlencode(params)}")
+    data = _http_get_json(f"{_SERPAPI_BASE}?{urllib.parse.urlencode(params)}", timeout=_SERPAPI_TIMEOUT)
     if not data:
         return f"No browse result found for {query!r}."
 
@@ -392,17 +381,22 @@ def _draft_alert(product_name: str, current: dict, watch: dict, reason: str) -> 
 
 
 def run_price_watches():
-    """Scheduler job. Every 6h: check each active price watch, alert on target-hit
-    or >=15% drop from baseline. Silent-skip on any per-watch failure."""
+    """Scheduler job. Every 12h: check each active price watch, alert on target-hit
+    or >=15% drop from baseline. Silent-skip on any per-watch failure. Dispatches
+    to shopping (Google Shopping) or amazon (Amazon by ASIN) based on w['source']."""
     from db import get_active_price_watches, set_price_watch_baseline, update_price_watch_alerted
     from sms_util import ensure_sms
+    import amazon
 
     watches = get_active_price_watches()
     for w in watches:
         try:
             if not _cooldown_ok(w):
                 continue
-            current = check_price(w["product_name"])
+            if w.get("source") == "amazon":
+                current = amazon.check_price(w)
+            else:
+                current = check_price(w["product_name"])
             if not current:
                 continue
             if w.get("baseline_price") is None:
@@ -411,7 +405,10 @@ def run_price_watches():
             reason = _should_alert(w, current["price"])
             if not reason:
                 continue
-            body = _draft_alert(w["product_name"], current, w, reason)
+            if w.get("source") == "amazon":
+                body = amazon.draft_alert(w["product_name"], current, w, reason)
+            else:
+                body = _draft_alert(w["product_name"], current, w, reason)
             if ensure_sms(w["phone"], body):
                 update_price_watch_alerted(
                     w["id"], current["price"], current["url"], current["merchant"], body
