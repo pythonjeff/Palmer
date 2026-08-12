@@ -124,17 +124,67 @@ class TestPickBestMatch:
             assert amazon._pick_best_match("q", self._candidates()) is None
 
 
+class TestExtractAsin:
+    def test_empty_returns_none(self):
+        assert amazon._extract_asin("") is None
+        assert amazon._extract_asin(None) is None
+
+    def test_plain_text_returns_none(self):
+        assert amazon._extract_asin("protein shakes I like") is None
+
+    def test_bare_amazon_url_extracts(self):
+        assert amazon._extract_asin("https://www.amazon.com/dp/B0ABCDEFGH") == "B0ABCDEFGH"
+
+    def test_amazon_url_with_slug_extracts(self):
+        url = "https://www.amazon.com/Optimum-Nutrition-Standard-Whey-Chocolate/dp/B000QSNYGI/ref=xyz"
+        assert amazon._extract_asin(url) == "B000QSNYGI"
+
+    def test_gp_product_url_extracts(self):
+        assert amazon._extract_asin("https://www.amazon.com/gp/product/B01AABBCCD?psc=1") == "B01AABBCCD"
+
+    def test_url_embedded_in_text_extracts(self):
+        assert amazon._extract_asin("check this out https://www.amazon.com/dp/B0ZZ111111 pretty good") == "B0ZZ111111"
+
+    def test_lowercase_asin_does_not_match(self):
+        # Amazon ASINs are always uppercase; a lowercase 10-char string is not an ASIN.
+        assert amazon._extract_asin("https://www.amazon.com/dp/abcdefghij") is None
+
+    def test_a_co_short_url_follows_redirect(self):
+        # Simulate a.co redirecting to the canonical amazon.com/dp/… URL
+        with patch("amazon._resolve_short_url",
+                   return_value="https://www.amazon.com/dp/B0XYZ12345?ref=short"):
+            assert amazon._extract_asin("https://a.co/d/08q64W9B") == "B0XYZ12345"
+
+    def test_amzn_to_short_url_follows_redirect(self):
+        with patch("amazon._resolve_short_url",
+                   return_value="https://www.amazon.com/gp/product/B0AMZTOAAA"):
+            assert amazon._extract_asin("here: https://amzn.to/3abcXYZ") == "B0AMZTOAAA"
+
+    def test_short_url_redirect_failure_returns_none(self):
+        with patch("amazon._resolve_short_url", return_value=None):
+            assert amazon._extract_asin("https://a.co/d/broken") is None
+
+    def test_short_url_redirects_to_non_product_page(self):
+        # a.co could resolve to an amazon.com homepage / cart / list URL —
+        # if there's no /dp/<ASIN> in the final URL, return None.
+        with patch("amazon._resolve_short_url",
+                   return_value="https://www.amazon.com/hz/wishlist/ls/XYZ"):
+            assert amazon._extract_asin("https://a.co/d/anythg") is None
+
+
 class TestResolveAsin:
     def _search_result(self):
         return [{"asin": "B0ABC", "title": "thing", "price": 42.0, "url": "https://amazon.com/dp/B0ABC"}]
 
     def test_no_match_returns_none(self):
-        with patch("amazon._serpapi_search", return_value=[]), \
+        with patch("amazon._extract_asin", return_value=None), \
+             patch("amazon._serpapi_search", return_value=[]), \
              patch("amazon._pick_best_match", return_value=None):
             assert amazon.resolve_asin("nonsense") is None
 
     def test_pick_returns_watchable_dict(self):
-        with patch("amazon._serpapi_search", return_value=self._search_result()), \
+        with patch("amazon._extract_asin", return_value=None), \
+             patch("amazon._serpapi_search", return_value=self._search_result()), \
              patch("amazon._pick_best_match", return_value=self._search_result()[0]):
             out = amazon.resolve_asin("thing")
         assert out["asin"] == "B0ABC"
@@ -142,6 +192,36 @@ class TestResolveAsin:
         assert out["price"] == 42.0
         assert out["merchant"] == "Amazon"
         assert out["url"].endswith("B0ABC")
+
+    def test_url_fast_path_skips_search(self):
+        """When the user pastes an Amazon URL, resolve_asin extracts the ASIN
+        and hits amazon_product directly — no SerpAPI search, no Haiku pick."""
+        product = {"title": "Optimum Nutrition Gold Standard", "price": 54.0}
+        with patch("amazon._extract_asin", return_value="B000QSNYGI"), \
+             patch("amazon._amazon_product", return_value=product) as amp, \
+             patch("amazon._serpapi_search") as search, \
+             patch("amazon._pick_best_match") as pick:
+            out = amazon.resolve_asin("https://www.amazon.com/dp/B000QSNYGI")
+        assert out == {
+            "asin": "B000QSNYGI",
+            "title": "Optimum Nutrition Gold Standard",
+            "price": 54.0,
+            "url": "https://www.amazon.com/dp/B000QSNYGI",
+            "merchant": "Amazon",
+        }
+        amp.assert_called_once_with("B000QSNYGI")
+        search.assert_not_called()  # URL path skips search
+        pick.assert_not_called()
+
+    def test_url_fast_path_product_lookup_fails(self):
+        """If the URL parses but amazon_product returns None, don't silently
+        fall back to searching the URL string — return None so the caller can
+        tell the user something went wrong with this specific listing."""
+        with patch("amazon._extract_asin", return_value="B0DEADBEEF"), \
+             patch("amazon._amazon_product", return_value=None), \
+             patch("amazon._serpapi_search") as search:
+            assert amazon.resolve_asin("https://www.amazon.com/dp/B0DEADBEEF") is None
+        search.assert_not_called()
 
 
 class TestCheckPrice:

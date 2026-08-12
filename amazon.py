@@ -1,9 +1,11 @@
 """Amazon price watches — user-declared Amazon listings tracked via SerpAPI.
 
 Pipeline:
-  1. resolve_asin(query): one-time search + Haiku match at watch-creation time.
-     Returns {asin, title, price, url, merchant} or None if nothing plausibly
-     matches (guards against tracking an unrelated accessory / refill / case).
+  1. resolve_asin(query): two paths — if the query is (or contains) an Amazon
+     URL, extract the ASIN directly (following a.co / amzn.to shorteners via
+     HTTP redirect) and fetch the product; otherwise fall back to
+     search + Haiku match. Returns {asin, title, price, url, merchant} or
+     None if nothing plausibly matches.
   2. check_price(watch): every scheduler tick, look up the stored ASIN directly
      via the amazon_product engine (more reliable than re-searching the phrase
      — sellers and rankings drift over time).
@@ -15,7 +17,10 @@ Silent-skip on any API failure so the scheduler tick never surfaces
 "amazon tool failed" to the user (same discipline as shopping.py, traffic.py).
 """
 import os
+import re
 import urllib.parse
+
+import requests as _requests
 
 from agent import client, _sms_clean, _http_get_json, HAIKU_MODEL
 
@@ -23,9 +28,52 @@ SERP_API_KEY = os.environ.get("SERP_API_KEY", "")
 _SERPAPI_BASE = "https://serpapi.com/search.json"
 _SERPAPI_TIMEOUT = 12
 
+# /dp/<ASIN> and /gp/product/<ASIN> are the two canonical Amazon product paths.
+# ASINs are always 10 chars, uppercase alphanumeric.
+_ASIN_RE = re.compile(r"/(?:dp|gp/product)/([A-Z0-9]{10})")
+# Amazon short-URL hosts. These 301-redirect to the full amazon.com/dp/... URL,
+# so we resolve via HTTP before applying the ASIN regex.
+_SHORT_URL_RE = re.compile(r"https?://(?:a\.co|amzn\.to|amzn\.com)/\S+", re.IGNORECASE)
+
 
 def _amazon_url(asin: str) -> str:
     return f"https://www.amazon.com/dp/{asin}"
+
+
+def _resolve_short_url(url: str) -> str | None:
+    """Follow HTTP redirects on a.co / amzn.to short URLs and return the final
+    URL. Uses GET with stream=True so we don't download the product page body."""
+    try:
+        resp = _requests.get(
+            url, allow_redirects=True, timeout=6, stream=True,
+            headers={"User-Agent": "Palmer/1.0"},
+        )
+        final = resp.url
+        resp.close()
+        return final
+    except Exception as e:
+        print(f"amazon._resolve_short_url failed for {url}: {e}")
+        return None
+
+
+def _extract_asin(text: str) -> str | None:
+    """Pull an Amazon ASIN out of a message. Handles:
+      - Direct URLs: https://www.amazon.com/dp/B0XXXXXXXX (with any query/slug)
+      - Short URLs: https://a.co/d/… and https://amzn.to/… (via redirect)
+    Returns None if the message contains no Amazon URL."""
+    if not text:
+        return None
+    m = _ASIN_RE.search(text)
+    if m:
+        return m.group(1)
+    short = _SHORT_URL_RE.search(text)
+    if short:
+        final = _resolve_short_url(short.group(0))
+        if final:
+            m2 = _ASIN_RE.search(final)
+            if m2:
+                return m2.group(1)
+    return None
 
 
 def _extract_price(obj: dict) -> float | None:
@@ -113,26 +161,10 @@ def _pick_best_match(query: str, candidates: list[dict]) -> dict | None:
     return None
 
 
-def resolve_asin(query: str) -> dict | None:
-    """Return {asin, title, price, url, merchant} for the best Amazon match,
-    or None. Called once at watch-creation time; the returned price seeds the
-    baseline so the first scheduler tick already has a comparison point."""
-    picked = _pick_best_match(query, _serpapi_search(query))
-    if not picked:
-        return None
-    return {
-        "asin": picked["asin"],
-        "title": picked["title"],
-        "price": picked["price"],
-        "url": picked["url"] or _amazon_url(picked["asin"]),
-        "merchant": "Amazon",
-    }
-
-
-def check_price(watch: dict) -> dict | None:
-    """Return {price, title, merchant, url} for a stored watch by looking up its
-    ASIN directly via amazon_product. Called every scheduler tick."""
-    asin = watch.get("asin")
+def _amazon_product(asin: str) -> dict | None:
+    """Fetch {title, price} for an ASIN via SerpAPI amazon_product. Returns None
+    on any failure (missing key, HTTP error, no price found in either
+    product_results.extracted_price or buybox_winner)."""
     if not asin or not SERP_API_KEY:
         return None
     params = {
@@ -151,10 +183,54 @@ def check_price(watch: dict) -> dict | None:
         price = _extract_price(data.get("buybox_winner") or {})
     if price is None:
         return None
-    title = product.get("title") or watch.get("product_name") or ""
+    return {"title": product.get("title") or "", "price": price}
+
+
+def resolve_asin(query: str) -> dict | None:
+    """Return {asin, title, price, url, merchant} for the best Amazon match,
+    or None. Two paths:
+      1. If the query contains an Amazon URL (direct or a.co / amzn.to short),
+         extract the ASIN and fetch the product directly. No search needed.
+      2. Otherwise, SerpAPI search + Haiku match from the top candidates.
+    Called once at watch-creation time; the returned price seeds the baseline
+    so the first scheduler tick already has a comparison point."""
+    asin_from_url = _extract_asin(query)
+    if asin_from_url:
+        product = _amazon_product(asin_from_url)
+        if product:
+            return {
+                "asin": asin_from_url,
+                "title": product["title"] or "Amazon item",
+                "price": product["price"],
+                "url": _amazon_url(asin_from_url),
+                "merchant": "Amazon",
+            }
+        # URL parsed but the product lookup failed — don't fall back to search
+        # on the URL string, it'll return junk. Better to return None so the
+        # handler tells the user something went wrong with THIS specific item.
+        return None
+    picked = _pick_best_match(query, _serpapi_search(query))
+    if not picked:
+        return None
     return {
-        "price": price,
-        "title": title,
+        "asin": picked["asin"],
+        "title": picked["title"],
+        "price": picked["price"],
+        "url": picked["url"] or _amazon_url(picked["asin"]),
+        "merchant": "Amazon",
+    }
+
+
+def check_price(watch: dict) -> dict | None:
+    """Return {price, title, merchant, url} for a stored watch by looking up its
+    ASIN directly via amazon_product. Called every scheduler tick."""
+    asin = watch.get("asin")
+    product = _amazon_product(asin)
+    if not product:
+        return None
+    return {
+        "price": product["price"],
+        "title": product["title"] or watch.get("product_name") or "",
         "merchant": "Amazon",
         "url": _amazon_url(asin),
     }

@@ -409,7 +409,7 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
         "input_schema": {
             "type": "object",
             "properties": {
-                "product_query": {"type": "string", "description": "The item description in the user's words — 'Optimum Nutrition Gold Standard whey chocolate 5lb', 'Kirkland fish oil 400 count', 'that protein shake I like'. Keep brand + variant/size/flavor when the user gave them."},
+                "product_query": {"type": "string", "description": "The item description in the user's words ('Optimum Nutrition Gold Standard whey chocolate 5lb', 'Kirkland fish oil 400 count'), OR a raw Amazon URL (amazon.com/dp/… or a.co/d/… / amzn.to/… shortener) — Palmer will resolve URLs to the exact listing directly. Keep brand + variant/size/flavor when the user gave them."},
                 "target_price": {"type": "number", "description": "Optional target price in USD. Alert fires when current price is at or below this. Omit if the user didn't name a target."},
             },
             "required": ["product_query"],
