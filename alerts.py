@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timezone, date as date_type
 
 from agent import client, _build_system, _sms_clean, _all_interests, _search, _parse_json, HAIKU_MODEL, SONNET_MODEL
-from db import get_all_phones, get_profile, upsert_profile, save_message
+from db import get_all_phones, get_profile, upsert_profile, save_message, claim_daily_guard
 
 
 def _daily_alert_hour(phone: str) -> int:
@@ -120,9 +120,12 @@ def run_alert_checks():
             continue
         if not _in_alert_window(phone, profile):
             continue
+        if not claim_daily_guard(phone, "alert_sent_date", today):
+            continue
 
         queries = _get_alert_queries(profile)
         if not queries:
+            upsert_profile(phone, {"alert_sent_date": None})
             continue
 
         try:
@@ -133,9 +136,10 @@ def run_alert_checks():
                 message = _draft_alert(phone, summary)
                 send_sms(phone, message)
                 save_message(phone, "assistant", message)
-                upsert_profile(phone, {"alert_sent_date": today})
                 print(f"Alert sent to {phone} (score={score}): {message}")
             else:
+                upsert_profile(phone, {"alert_sent_date": None})
                 print(f"No alert for {phone} (score={score})")
         except Exception as e:
+            upsert_profile(phone, {"alert_sent_date": None})
             print(f"Alert check failed for {phone}: {e}")

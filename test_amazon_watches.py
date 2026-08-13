@@ -379,6 +379,7 @@ class TestRunPriceWatchesDispatch:
              patch("amazon.draft_alert", return_value="alert body https://www.amazon.com/dp/B0ABC") as amz_draft, \
              patch("shopping._draft_alert") as shop_draft, \
              patch("sms_util.ensure_sms", return_value=True), \
+             patch("db.claim_price_watch_alert", return_value=True), \
              patch("db.update_price_watch_alerted"):
             shopping.run_price_watches()
         amz_draft.assert_called_once()

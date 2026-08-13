@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from agent import client, _build_system, _sms_clean, HAIKU_MODEL, SONNET_MODEL
-from db import get_all_phones, get_profile, upsert_profile, save_message, get_history
+from db import get_all_phones, get_profile, upsert_profile, save_message, get_history, claim_daily_guard
 from morning import _local_now, _local_today
 
 
@@ -95,19 +95,25 @@ def run_followups():
             if not _should_send_followup(profile):
                 continue
 
+            today_str = _local_today(profile["timezone"]).isoformat()
+            if not claim_daily_guard(phone, "followup_sent_date", today_str):
+                continue
+
             history = get_history(phone, limit=10)
             thread = _pick_thread(profile, history)
             if not thread:
+                upsert_profile(phone, {"followup_sent_date": None})
                 continue
 
             message = _draft_followup(phone, thread)
             if not message:
+                upsert_profile(phone, {"followup_sent_date": None})
                 continue
 
             if send_sms(phone, message):
                 save_message(phone, "assistant", message)
-                today_str = _local_today(profile["timezone"]).isoformat()
-                upsert_profile(phone, {"followup_sent_date": today_str})
                 print(f"Follow-up sent to {phone}: {message[:80]}")
+            else:
+                upsert_profile(phone, {"followup_sent_date": None})
         except Exception as e:
             print(f"Follow-up check failed for {phone}: {e}")

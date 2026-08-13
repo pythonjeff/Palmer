@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta, date as _date
 
 from agent import client, _search_raw, _sms_clean, HAIKU_MODEL
-from db import get_active_watches, update_watch_alerted, get_messages_after
+from db import get_active_watches, update_watch_alerted, get_messages_after, claim_watch_alert
 
 DAILY_ALERT_MAX = 4
 
@@ -208,6 +208,10 @@ def run_watches():
 
             alert = _format_alert(top)
             if not alert:
+                continue
+
+            if not claim_watch_alert(watch["id"], watch["cooldown_hours"]):
+                print(f"Watch {watch['id']}: already claimed by another process, skipping")
                 continue
 
             send_sms(watch["phone"], alert)

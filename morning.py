@@ -5,7 +5,7 @@ from agent import (
     client, _build_system, _sms_clean, _search, _weather_report, _get_price,
     _derive_timezone, _CRYPTO_IDS, HAIKU_MODEL, SONNET_MODEL,
 )
-from db import get_profile, upsert_profile, get_all_phones, save_message, get_history
+from db import get_profile, upsert_profile, get_all_phones, save_message, get_history, claim_daily_guard
 from traffic import get_city_traffic
 
 DEFAULT_MORNING_TIME = "07:00"
@@ -270,25 +270,27 @@ def send_morning_messages():
                 continue  # already sent today (user's local day)
             if not _in_send_window(now_local, profile.get("morning_time")):
                 continue
+            if not claim_daily_guard(phone, "morning_sent_date", today_local):
+                continue  # another process/tick already claimed today's send
 
-            message = generate_morning(phone)
-            parts = _split_message(message)
-            sent = False
-            for part in parts:
-                if send_sms(phone, part) and not sent:
-                    sent = True
-                    # Mark immediately after the first accepted part so a crash
-                    # mid-send can't double-send tomorrow's window.
-                    upsert_profile(phone, {"morning_sent_date": today_local})
-            if sent:
-                save_message(phone, "assistant", message)
-                print(f"Morning sent to {phone} ({len(parts)} part(s)): {message[:100]}")
-            else:
-                print(f"Morning send rejected by Twilio for {phone} — will retry next tick")
+            try:
+                message = generate_morning(phone)
+                parts = _split_message(message)
+                sent = False
+                for part in parts:
+                    if send_sms(phone, part) and not sent:
+                        sent = True
+                if sent:
+                    save_message(phone, "assistant", message)
+                    print(f"Morning sent to {phone} ({len(parts)} part(s)): {message[:100]}")
+                else:
+                    upsert_profile(phone, {"morning_sent_date": None})  # release claim, retry next tick
+                    print(f"Morning send rejected by Twilio for {phone} — will retry next tick")
+            except Exception as e:
+                upsert_profile(phone, {"morning_sent_date": None})  # release claim, retry next tick
+                print(f"Morning update failed for {phone}: {e}")
         except Exception as e:
-            # No morning_sent_date written, so the next 5-minute tick retries
-            # (until the catch-up window closes).
-            print(f"Morning update failed for {phone}: {e}")
+            print(f"Morning check failed for {phone}: {e}")
 
 
 # Missing-data outreach. When a user finishes onboarding without giving us
@@ -377,13 +379,16 @@ def send_missing_data_asks():
             if not _needs_city_ask(profile):
                 continue
             matched += 1
-            message = _draft_city_ask(phone)
             if dry_run:
+                message = _draft_city_ask(phone)
                 print(f"[dry-run] would text {phone}: {message}")
                 continue
+            today_str = date_type.today().isoformat()
+            if not claim_daily_guard(phone, "city_ask_sent_date", today_str):
+                continue
+            message = _draft_city_ask(phone)
             if send_sms(phone, message):
                 save_message(phone, "assistant", message)
-                upsert_profile(phone, {"city_ask_sent_date": date_type.today().isoformat()})
                 print(f"City ask sent to {phone}: {message[:80]}")
             else:
                 print(f"City ask send rejected by Twilio for {phone}")

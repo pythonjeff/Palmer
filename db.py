@@ -1,6 +1,6 @@
 import os
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 _DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -204,6 +204,35 @@ def upsert_profile(phone: str, updates: dict):
     conn.close()
 
 
+def claim_daily_guard(phone: str, field: str, value: str) -> bool:
+    """Atomically claim a one-shot send guard on the user's profile. Returns True only
+    if this call transitions `field` away from `value` — i.e. this caller won the race
+    and should proceed. A concurrent caller trying to claim the same (phone, field, value)
+    blocks on the Postgres row lock, then sees the field already set and gets False.
+    Closes the check-then-act race in the recurring send jobs (e.g. two dynos briefly
+    overlapping during a Heroku deploy)."""
+    conn = _conn()
+    cur = conn.cursor()
+    if _DATABASE_URL:
+        cur.execute(f"SELECT profile FROM users WHERE phone = {PH} FOR UPDATE", (phone,))
+    else:
+        cur.execute(f"SELECT profile FROM users WHERE phone = {PH}", (phone,))
+    row = cur.fetchone()
+    profile = json.loads(row["profile"]) if row else {}
+    if profile.get(field) == value:
+        conn.close()
+        return False
+    profile[field] = value
+    cur.execute(
+        f"INSERT INTO users (phone, profile) VALUES ({PH}, {PH}) "
+        f"ON CONFLICT(phone) DO UPDATE SET profile = EXCLUDED.profile",
+        (phone, json.dumps(profile)),
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
 def save_reminder(phone: str, text: str, due_at: str):
     normalized = text.lower().strip().rstrip("!")
     conn = _conn()
@@ -326,6 +355,24 @@ def get_user_watches(phone: str) -> list[dict]:
     rows = cur.fetchall()
     conn.close()
     return [{"id": r["id"], "description": r["description"], "cooldown_hours": r["cooldown_hours"], "last_alerted": r["last_alerted"]} for r in rows]
+
+
+def claim_watch_alert(watch_id: int, cooldown_hours: float) -> bool:
+    """Atomically re-check cooldown and claim this watch for an alert send, closing the
+    race between the earlier get_active_watches() read and this write."""
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(hours=cooldown_hours)).isoformat()
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"""UPDATE watches SET last_alerted = {PH}
+            WHERE id = {PH} AND (last_alerted IS NULL OR last_alerted <= {PH})""",
+        (now.isoformat(), watch_id, cutoff),
+    )
+    claimed = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return claimed
 
 
 def update_watch_alerted(watch_id: int, summary: str, recent_summaries: list[str]):
@@ -478,6 +525,32 @@ def set_price_watch_baseline(watch_id: int, price: float, url: str, merchant: st
         f"last_seen_url = {PH}, last_seen_merchant = {PH} WHERE id = {PH}",
         (price, price, url, merchant, watch_id),
     )
+    conn.commit()
+    conn.close()
+
+
+def claim_price_watch_alert(watch_id: int, cooldown_hours: float) -> bool:
+    """Same as claim_watch_alert, for the price_watches table."""
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(hours=cooldown_hours)).isoformat()
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"""UPDATE price_watches SET last_alerted = {PH}
+            WHERE id = {PH} AND (last_alerted IS NULL OR last_alerted <= {PH})""",
+        (now.isoformat(), watch_id, cutoff),
+    )
+    claimed = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return claimed
+
+
+def release_price_watch_claim(watch_id: int):
+    """Reset last_alerted after a failed send so the next tick can retry."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE price_watches SET last_alerted = NULL WHERE id = {PH}", (watch_id,))
     conn.commit()
     conn.close()
 

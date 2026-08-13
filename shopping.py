@@ -384,7 +384,10 @@ def run_price_watches():
     """Scheduler job. Every 12h: check each active price watch, alert on target-hit
     or >=15% drop from baseline. Silent-skip on any per-watch failure. Dispatches
     to shopping (Google Shopping) or amazon (Amazon by ASIN) based on w['source']."""
-    from db import get_active_price_watches, set_price_watch_baseline, update_price_watch_alerted
+    from db import (
+        get_active_price_watches, set_price_watch_baseline, update_price_watch_alerted,
+        claim_price_watch_alert, release_price_watch_claim,
+    )
     from sms_util import ensure_sms
     import amazon
 
@@ -405,6 +408,9 @@ def run_price_watches():
             reason = _should_alert(w, current["price"])
             if not reason:
                 continue
+            if not claim_price_watch_alert(w["id"], w.get("cooldown_hours") or 12):
+                print(f"Price watch {w['id']}: already claimed by another process, skipping")
+                continue
             if w.get("source") == "amazon":
                 body = amazon.draft_alert(w["product_name"], current, w, reason)
             else:
@@ -414,5 +420,7 @@ def run_price_watches():
                     w["id"], current["price"], current["url"], current["merchant"], body
                 )
                 print(f"Price watch {w['id']} fired ({reason}) at ${current['price']:.2f}")
+            else:
+                release_price_watch_claim(w["id"])  # allow retry next tick
         except Exception as e:
             print(f"price watch {w.get('id')} failed: {e}")

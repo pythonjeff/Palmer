@@ -42,6 +42,9 @@ _seen_sids: list[str] = []
 _seen_sids_lock = threading.Lock()
 _SEEN_SIDS_MAX = 200
 
+_seen_status_sids: list[str] = []
+_seen_status_sids_lock = threading.Lock()
+
 
 def _send_gif_outbound(to: str, media_url: str):
     if not send_sms(to, "", media_url=media_url, add_status_callback=False):
@@ -152,9 +155,23 @@ async def sms_webhook(
 _RETRIABLE_ERRORS = {"30019", "21617"}  # content size errors fixable by shortening
 
 
+def _retry_shortened_send(to: str, message_sid: str):
+    print(f"Delivery failed for {to} (SID={message_sid}) — shortening and retrying")
+    try:
+        from twilio.rest import Client as TwilioClient
+        original = TwilioClient(
+            os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"]
+        ).messages(message_sid).fetch()
+        ensure_sms(to, shorten_message(original.body), add_status_callback=False)
+        print(f"Status-callback retry sent to {to}")
+    except Exception as e:
+        print(f"Status-callback retry failed for {to}: {e}")
+
+
 @app.post("/sms-status")
 async def sms_status_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     MessageSid: str = Form(...),
     MessageStatus: str = Form(...),
     ErrorCode: str = Form(default=""),
@@ -169,16 +186,14 @@ async def sms_status_webhook(
         raise HTTPException(status_code=403)
 
     if MessageStatus in ("failed", "undelivered") and ErrorCode in _RETRIABLE_ERRORS:
-        print(f"Delivery failed for {To} (SID={MessageSid}, error={ErrorCode}) — shortening and retrying")
-        try:
-            from twilio.rest import Client as TwilioClient
-            original = TwilioClient(
-                os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"]
-            ).messages(MessageSid).fetch()
-            ensure_sms(To, shorten_message(original.body), add_status_callback=False)
-            print(f"Status-callback retry sent to {To}")
-        except Exception as e:
-            print(f"Status-callback retry failed for {To}: {e}")
+        with _seen_status_sids_lock:
+            if MessageSid in _seen_status_sids:
+                print(f"Duplicate status retry for MessageSid {MessageSid} — dropping")
+                return Response(status_code=204)
+            _seen_status_sids.append(MessageSid)
+            if len(_seen_status_sids) > _SEEN_SIDS_MAX:
+                del _seen_status_sids[0]
+        background_tasks.add_task(_retry_shortened_send, To, MessageSid)
 
     return Response(status_code=204)
 
