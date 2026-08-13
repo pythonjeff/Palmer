@@ -163,6 +163,7 @@ Rules:
 - Traffic: keep it to the one line provided in the data. Don't expand, embellish, or invent street/exit names beyond what's given. If traffic is normal, one short sentence is enough.
 - Vary the entry point. Sometimes weather leads, sometimes traffic, sometimes the most interesting topic, sometimes a quick personal note. Different angle than what you sent yesterday.
 - One or two sentences per topic. Whole message under 700 characters.
+- Give each distinct subject (weather, traffic, each topic, the personal touch) its own line — a blank line between them — so it reads as separate, scannable items rather than one run-on paragraph. Still plain text, no bullet characters or numbering.
 {avoid_rule}- End with ONE personal touch — a single sentence in Palmer's voice that shows you actually thought about THEM today. Rotate the type so it's genuinely different from your recent mornings above:
   * a real check-in tied to something specific in their profile (an ongoing thread, someone they've mentioned, a decision they're weighing, their job, their kids/partner/pet)
   * a curious or thought-provoking question they'd enjoy chewing on with coffee — tied to their world when possible
@@ -182,16 +183,6 @@ Just one. Never all three. Never generic ("how's your week going" is banned). It
         raise ValueError(f"generate_morning produced suspiciously short output: {repr(result)}")
     _reject_meta_commentary(result)
     return result
-
-
-def _split_message(text: str, max_chars: int = 900) -> list[str]:
-    """Split at paragraph breaks; fall back to hard chunks if no breaks exist."""
-    if len(text) <= max_chars:
-        return [text]
-    parts = [p.strip() for p in text.split("\n\n") if p.strip()]
-    if len(parts) > 1:
-        return parts
-    return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
 
 
 def _local_now(tz_name: str) -> datetime:
@@ -275,14 +266,9 @@ def send_morning_messages():
 
             try:
                 message = generate_morning(phone)
-                parts = _split_message(message)
-                sent = False
-                for part in parts:
-                    if send_sms(phone, part) and not sent:
-                        sent = True
-                if sent:
+                if send_sms(phone, message):
                     save_message(phone, "assistant", message)
-                    print(f"Morning sent to {phone} ({len(parts)} part(s)): {message[:100]}")
+                    print(f"Morning sent to {phone}: {message[:100]}")
                 else:
                     upsert_profile(phone, {"morning_sent_date": None})  # release claim, retry next tick
                     print(f"Morning send rejected by Twilio for {phone} — will retry next tick")

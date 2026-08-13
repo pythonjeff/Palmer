@@ -462,11 +462,10 @@ _UNICODE_MAP = str.maketrans({
     '•': '-', ' ': ' ',   # bullet, non-breaking space
 })
 
-_SMS_HARD_LIMIT = 900  # GSM-7 safe across all US carriers (~6 segments)
-
-
 def _sms_clean(text: str) -> str:
-    """Normalize Unicode to ASCII and enforce character limit so messages deliver."""
+    """Normalize Unicode to ASCII and strip markdown so messages render cleanly as SMS.
+    Does not enforce a length limit — sms_util.send_sms handles chunking long text into
+    multiple messages instead of truncating it."""
     text = text.translate(_UNICODE_MAP)
     text = text.encode('ascii', 'ignore').decode('ascii')  # strip emoji and remaining non-GSM-7
     # Strip markdown
@@ -475,13 +474,7 @@ def _sms_clean(text: str) -> str:
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
     text = re.sub(r'^\s*[-*]\s+', '', text, flags=re.MULTILINE)
     text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
-    text = text.strip()
-    # Hard cap — truncate at last sentence boundary within limit
-    if len(text) > _SMS_HARD_LIMIT:
-        cut = text[:_SMS_HARD_LIMIT]
-        last = max(cut.rfind('. '), cut.rfind('! '), cut.rfind('? '))
-        text = cut[:last + 1] if last > _SMS_HARD_LIMIT // 2 else cut
-    return text
+    return text.strip()
 
 
 def _normalize_hhmm(raw) -> str | None:
