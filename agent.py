@@ -1060,6 +1060,37 @@ def shorten_message(text: str, max_chars: int = 320) -> str:
         return _sms_clean(text)[:max_chars]
 
 
+def _is_duplicate_subject(phone: str, new_text: str, window_hours: float = 6) -> bool:
+    """True if new_text covers the same subject as something already sent to this
+    phone in the last window_hours — catches cross-job topical redundancy (e.g. a
+    watch alert and a followup both about the same story within the same afternoon)
+    that per-job cooldowns can't see, since each job only checks its own history.
+    Fails open (False) on any error so a broken check never blocks a real send."""
+    from datetime import datetime, timezone, timedelta
+    from db import get_recent_assistant_messages
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=window_hours)).isoformat()
+    recent = get_recent_assistant_messages(phone, cutoff)
+    if not recent:
+        return False
+    try:
+        recent_block = "\n".join(f'- "{m}"' for m in recent[-5:])
+        response = client.messages.create(
+            model=HAIKU_MODEL,
+            max_tokens=10,
+            messages=[{"role": "user", "content": f"""A texting assistant is about to send this message:
+"{new_text}"
+
+It already sent these messages to the same person in the last {window_hours} hours:
+{recent_block}
+
+Is the new message about the SAME underlying subject, story, or event as any of those — even if worded differently? Reply YES or NO."""}],
+        )
+        return response.content[0].text.strip().upper().startswith("YES")
+    except Exception:
+        return False
+
+
 def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = False) -> str:
     profile = get_profile(phone)
     profile_block = "What you know about them:\n" + json.dumps(profile, indent=2) if profile else "You don't know much about this person yet. Learn as you go."

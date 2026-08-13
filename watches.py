@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta, date as _date
 
-from agent import client, _search_raw, _sms_clean, HAIKU_MODEL
+from agent import client, _search_raw, _sms_clean, _is_duplicate_subject, HAIKU_MODEL
 from db import get_active_watches, update_watch_alerted, get_messages_after, claim_watch_alert
 
 DAILY_ALERT_MAX = 4
@@ -208,6 +208,10 @@ def run_watches():
 
             alert = _format_alert(top)
             if not alert:
+                continue
+
+            if _is_duplicate_subject(watch["phone"], alert):
+                print(f"Watch {watch['id']}: subject already covered by a recent message, skipping")
                 continue
 
             if not claim_watch_alert(watch["id"], watch["cooldown_hours"]):

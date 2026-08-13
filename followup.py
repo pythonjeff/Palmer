@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from agent import client, _build_system, _sms_clean, HAIKU_MODEL, SONNET_MODEL
+from agent import client, _build_system, _sms_clean, _is_duplicate_subject, HAIKU_MODEL, SONNET_MODEL
 from db import get_all_phones, get_profile, upsert_profile, save_message, get_history, claim_daily_guard
 from morning import _local_now, _local_today
 
@@ -108,6 +108,11 @@ def run_followups():
             message = _draft_followup(phone, thread)
             if not message:
                 upsert_profile(phone, {"followup_sent_date": None})
+                continue
+
+            if _is_duplicate_subject(phone, message):
+                upsert_profile(phone, {"followup_sent_date": None})
+                print(f"Follow-up skipped for {phone}: subject already covered by a recent message")
                 continue
 
             if send_sms(phone, message):

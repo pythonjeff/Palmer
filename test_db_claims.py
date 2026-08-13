@@ -11,6 +11,26 @@ def _fresh_db(tmp_path, monkeypatch):
     db.init_db()
 
 
+class TestSaveMessageTimestamp:
+    """Regression test: save_message must write created_at in the same ISO8601+offset
+    format used for cutoff comparisons, or same-day messages silently fail to match
+    (SQLite's old CURRENT_TIMESTAMP default sorted before any same-day ISO cutoff)."""
+
+    def test_message_saved_now_matches_a_recent_cutoff(self, tmp_path, monkeypatch):
+        _fresh_db(tmp_path, monkeypatch)
+        phone = "+15551234567"
+        db.save_message(phone, "assistant", "hello there")
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+        assert db.get_recent_assistant_messages(phone, cutoff) == ["hello there"]
+
+    def test_old_message_does_not_match_a_recent_cutoff(self, tmp_path, monkeypatch):
+        _fresh_db(tmp_path, monkeypatch)
+        phone = "+15551234567"
+        db.save_message(phone, "assistant", "old message")
+        cutoff = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        assert db.get_recent_assistant_messages(phone, cutoff) == []
+
+
 class TestClaimDailyGuard:
     def test_first_claim_succeeds(self, tmp_path, monkeypatch):
         _fresh_db(tmp_path, monkeypatch)

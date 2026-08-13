@@ -162,11 +162,20 @@ def get_older_messages(phone: str, skip_recent: int = HISTORY_LIMIT) -> list[dic
 
 
 def save_message(phone: str, role: str, content: str):
+    """created_at is set explicitly (rather than left to the column's DB-side
+    CURRENT_TIMESTAMP default) so it's always the same ISO8601+offset format used
+    everywhere else timestamps are compared as strings in this codebase (reminders,
+    watches, price watches). SQLite's CURRENT_TIMESTAMP produces a bare
+    'YYYY-MM-DD HH:MM:SS' string with no 'T' or offset, which sorts incorrectly
+    against ISO-format cutoffs for same-day comparisons (space < 'T' lexicographically),
+    silently breaking any query that filters created_at against a Python-generated
+    timestamp."""
     conn = _conn()
     cur = conn.cursor()
+    now = datetime.now(timezone.utc).isoformat()
     cur.execute(
-        f"INSERT INTO messages (phone, role, content) VALUES ({PH}, {PH}, {PH})",
-        (phone, role, content),
+        f"INSERT INTO messages (phone, role, content, created_at) VALUES ({PH}, {PH}, {PH}, {PH})",
+        (phone, role, content, now),
     )
     conn.commit()
     conn.close()
@@ -405,6 +414,22 @@ def get_messages_after(phone: str, since_iso: str) -> list[dict]:
     rows = cur.fetchall()
     conn.close()
     return [{"role": r["role"]} for r in rows]
+
+
+def get_recent_assistant_messages(phone: str, since_iso: str) -> list[str]:
+    """Return the text of assistant messages sent to phone since since_iso, oldest
+    first. Used for cross-job subject-dedup — checking a new proactive text against
+    everything recently sent, regardless of which job sent it."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT content FROM messages WHERE phone = {PH} AND role = 'assistant' "
+        f"AND created_at > {PH} ORDER BY created_at ASC",
+        (phone, since_iso),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [r["content"] for r in rows]
 
 
 def cancel_watches(phone: str, text_match: str = None) -> int:

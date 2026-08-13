@@ -2,7 +2,7 @@ import hashlib
 import os
 from datetime import datetime, timezone, date as date_type
 
-from agent import client, _build_system, _sms_clean, _all_interests, _search, _parse_json, HAIKU_MODEL, SONNET_MODEL
+from agent import client, _build_system, _sms_clean, _all_interests, _search, _parse_json, _is_duplicate_subject, HAIKU_MODEL, SONNET_MODEL
 from db import get_all_phones, get_profile, upsert_profile, save_message, claim_daily_guard
 
 
@@ -134,6 +134,10 @@ def run_alert_checks():
 
             if score >= 8 and summary:
                 message = _draft_alert(phone, summary)
+                if _is_duplicate_subject(phone, message):
+                    upsert_profile(phone, {"alert_sent_date": None})
+                    print(f"No alert for {phone}: subject already covered by a recent message")
+                    continue
                 send_sms(phone, message)
                 save_message(phone, "assistant", message)
                 print(f"Alert sent to {phone} (score={score}): {message}")
