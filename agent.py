@@ -3,7 +3,7 @@
 Underscore-prefixed helpers here (e.g. _sms_clean, _search, _weather_report, _get_price,
 _build_system, _http_get_json) are a convention meaning "internal to Palmer" — NOT "private
 to this module". They are imported by sibling modules (morning.py, alerts.py, followup.py,
-shopping.py, flights.py, traffic.py, watches.py, sms_util.py, send_reminders.py, main.py). Grep before
+shopping.py, flights.py, hotels.py, traffic.py, watches.py, sms_util.py, send_reminders.py, main.py). Grep before
 renaming any of them.
 """
 import json
@@ -218,6 +218,7 @@ You have specialized tools — route correctly or the data will be wrong:
 - search_shopping (include_link=true): user wants a link to ONE specific product model ("send me the Rockaway tee link", "where can I buy the Pegasus 40"). Returns that product's direct merchant URL.
 - browse_shop: user wants to open a brand or retailer's PAGE and browse it themselves ("send me the Madewell mens tees page", "link me to Nike running shoes", "where do I browse Reformation dresses"). Returns one clean brand-site URL.
 - search_flights: user wants flight prices or options for a specific route and date ("BOS to LAX Nov 15-20", "one way to Lisbon next Friday", "how much is Chicago to Tokyo in March"). Extract IATA codes and YYYY-MM-DD dates. Omit return_date for one-way. Never use web_search for flights.
+- search_hotels: user wants hotel options in a place for a date range ("hotels in Lisbon Nov 15-20 under $200", "somewhere in Shoreditch next weekend"). Extract location as you'd search on Google Maps (city or neighborhood + city if disambiguating) and YYYY-MM-DD dates. Pass max_price if they gave a per-night cap, min_rating (3.5/4.0/4.5) if they said "nice", "well reviewed", etc. Never use web_search for hotels.
 - add_price_watch: user wants to be told LATER when a specific product hits a target or drops. Persistent. Google Shopping (cheapest across merchants).
 - add_amazon_watch: same idea but for a SPECIFIC Amazon listing ("track this protein shake on Amazon", "watch these vitamins for me"). Palmer resolves the item to an Amazon ASIN and tracks that exact listing. Prefer this when the user is on Amazon or the product category swings a lot there (supplements, coffee, household staples).
 - web_search: news, sports scores, current events, general facts. Not weather or prices or shopping.
@@ -405,6 +406,21 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
                 "return_date": {"type": "string", "description": "Optional return date, YYYY-MM-DD. Omit for one-way."},
             },
             "required": ["origin", "destination", "outbound_date"],
+        },
+    },
+    {
+        "name": "search_hotels",
+        "description": "Search Google Hotels for a location and date range. Use when the user asks about hotel prices, availability, or options ('hotels in Lisbon Nov 15-20', 'somewhere in Shoreditch next weekend under $200'). Returns cheapest-first summaries with per-night price, name, rating, review count, and star class. Extract location as you'd search on Google Maps — city or 'neighborhood, city' when disambiguating ('Shoreditch, London', 'Times Square, New York'). Dates as YYYY-MM-DD; resolve relative dates against today. Pass max_price if they gave a per-night cap. Pass min_rating (3.5, 4.0, or 4.5 — other values snap down) if they said 'nice', 'well reviewed', or similar. In your reply, pick 1-2 that actually matter and describe them in prose — no bullets, no URLs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "location": {"type": "string", "description": "Where to search. City or 'neighborhood, city', e.g. 'Lisbon', 'Shoreditch, London', 'Times Square, New York'."},
+                "check_in_date": {"type": "string", "description": "Check-in date, YYYY-MM-DD."},
+                "check_out_date": {"type": "string", "description": "Check-out date, YYYY-MM-DD."},
+                "max_price": {"type": "number", "description": "Optional per-night price cap in USD."},
+                "min_rating": {"type": "number", "description": "Optional rating floor. Only 3.5, 4.0, or 4.5 are supported; other values snap down."},
+            },
+            "required": ["location", "check_in_date", "check_out_date"],
         },
     },
     {
@@ -1310,6 +1326,15 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     b.input["destination"],
                     b.input["outbound_date"],
                     b.input.get("return_date"),
+                )
+            elif b.name == "search_hotels":
+                from hotels import search_hotels
+                result = search_hotels(
+                    b.input["location"],
+                    b.input["check_in_date"],
+                    b.input["check_out_date"],
+                    b.input.get("max_price"),
+                    b.input.get("min_rating"),
                 )
             elif b.name == "add_price_watch":
                 watch_id = save_price_watch(
