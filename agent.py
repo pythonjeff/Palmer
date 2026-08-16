@@ -3,7 +3,7 @@
 Underscore-prefixed helpers here (e.g. _sms_clean, _search, _weather_report, _get_price,
 _build_system, _http_get_json) are a convention meaning "internal to Palmer" — NOT "private
 to this module". They are imported by sibling modules (morning.py, alerts.py, followup.py,
-shopping.py, traffic.py, watches.py, sms_util.py, send_reminders.py, main.py). Grep before
+shopping.py, flights.py, traffic.py, watches.py, sms_util.py, send_reminders.py, main.py). Grep before
 renaming any of them.
 """
 import json
@@ -217,6 +217,7 @@ You have specialized tools — route correctly or the data will be wrong:
 - search_shopping (browse mode, default): user wants YOU to pull specific product options at a price point or with qualifiers ("Reebok shoes around $100", "waterproof headphones under $150", "gift under $50"). Returns product listings — no URLs. Weave 2-3 into your reply.
 - search_shopping (include_link=true): user wants a link to ONE specific product model ("send me the Rockaway tee link", "where can I buy the Pegasus 40"). Returns that product's direct merchant URL.
 - browse_shop: user wants to open a brand or retailer's PAGE and browse it themselves ("send me the Madewell mens tees page", "link me to Nike running shoes", "where do I browse Reformation dresses"). Returns one clean brand-site URL.
+- search_flights: user wants flight prices or options for a specific route and date ("BOS to LAX Nov 15-20", "one way to Lisbon next Friday", "how much is Chicago to Tokyo in March"). Extract IATA codes and YYYY-MM-DD dates. Omit return_date for one-way. Never use web_search for flights.
 - add_price_watch: user wants to be told LATER when a specific product hits a target or drops. Persistent. Google Shopping (cheapest across merchants).
 - add_amazon_watch: same idea but for a SPECIFIC Amazon listing ("track this protein shake on Amazon", "watch these vitamins for me"). Palmer resolves the item to an Amazon ASIN and tracks that exact listing. Prefer this when the user is on Amazon or the product category swings a lot there (supplements, coffee, household staples).
 - web_search: news, sports scores, current events, general facts. Not weather or prices or shopping.
@@ -390,6 +391,20 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
                 "query": {"type": "string", "description": "Brand + category, e.g. 'Madewell mens tee shirts', 'Nike running shoes womens', 'Reformation dresses'."},
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "search_flights",
+        "description": "Search Google Flights for a route and date. Use when the user asks about flight prices, options, or availability ('flights BOS to LAX Nov 15-20', 'one way to Lisbon next Friday', 'how much is Chicago to Tokyo in March'). Returns cheapest-first summaries with price, airline, stops, dep/arr times, and total duration — round-trip prices are totals. Extract IATA airport codes (Boston→BOS, LA→LAX, Tokyo→NRT/HND; pick the primary international airport if the user names a city) and dates as YYYY-MM-DD, resolving relative dates against today. Omit return_date for one-way. In your reply, pick the 1-2 options that actually matter (cheapest, or the best schedule/nonstop tradeoff) and describe them in prose — no bullets, no URLs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "origin": {"type": "string", "description": "IATA airport code, e.g. 'BOS', 'LAX', 'JFK'. Convert city names to the primary international airport."},
+                "destination": {"type": "string", "description": "IATA airport code."},
+                "outbound_date": {"type": "string", "description": "Departure date, YYYY-MM-DD. Resolve relative dates ('next Friday', 'March 15') against today."},
+                "return_date": {"type": "string", "description": "Optional return date, YYYY-MM-DD. Omit for one-way."},
+            },
+            "required": ["origin", "destination", "outbound_date"],
         },
     },
     {
@@ -1288,6 +1303,14 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
             elif b.name == "browse_shop":
                 from shopping import browse_shop
                 result = browse_shop(b.input["query"])
+            elif b.name == "search_flights":
+                from flights import search_flights
+                result = search_flights(
+                    b.input["origin"],
+                    b.input["destination"],
+                    b.input["outbound_date"],
+                    b.input.get("return_date"),
+                )
             elif b.name == "add_price_watch":
                 watch_id = save_price_watch(
                     phone_number,
