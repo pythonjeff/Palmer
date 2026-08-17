@@ -160,6 +160,7 @@ def generate_morning(phone: str) -> str:
 
 Rules:
 - ONLY include weather and traffic (when provided) and the topics they explicitly asked to track. Never add outside news, world commentary, unrelated events, or your own opinions on things they didn't ask about. If a topic's results are empty, off-topic, or clearly stale, silently skip that topic — no filler, no paraphrasing old news, no inventing.
+- Weather: name the city the forecast is for, exactly as it appears in the data (e.g. "St. Louis" or "Kirkwood, MO"). Don't drop it, don't swap in a nickname, don't just say "today" without saying where. Use the numbers from the data verbatim — don't round the high 10 degrees, don't invent rain chances, don't reinterpret a "clear" description as "sunny and hot". If the data says a forecast couldn't be pulled, say briefly you can't get today's weather and move on — never tell them to google it or check another app.
 - Traffic: keep it to the one line provided in the data. Don't expand, embellish, or invent street/exit names beyond what's given. If traffic is normal, one short sentence is enough.
 - Vary the entry point. Sometimes weather leads, sometimes traffic, sometimes the most interesting topic, sometimes a quick personal note. Different angle than what you sent yesterday.
 - One or two sentences per topic. Whole message under 700 characters.
