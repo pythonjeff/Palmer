@@ -6,7 +6,10 @@ from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta, date as _date
 
 from agent import client, _search_raw, _sms_clean, _is_duplicate_subject, HAIKU_MODEL
-from db import get_active_watches, update_watch_alerted, get_messages_after, claim_watch_alert, set_watch_genre
+from db import (
+    get_active_watches, update_watch_alerted, get_messages_after,
+    claim_watch_alert, set_watch_genre, update_watch_story,
+)
 from rubrics import classify_genre, rubric_for
 
 DAILY_ALERT_MAX = 4
@@ -92,18 +95,31 @@ def _user_engaged(watch: dict) -> bool:
 
 
 def _check_watch_hit(results: str, description: str, recent_summaries: list[str],
-                     engaged: bool, genre: str) -> bool:
+                     engaged: bool, genre: str, story_state: str | None = None) -> bool:
     """Ask Haiku if results contain something a friend would text about, using
-    the genre-specific rubric so the bar matches the topic (a Cardinals watch
-    is scored by "what a friend actually texts about sports" — not by a
-    universal 'is this MAJOR breaking' check).
+    the genre-specific rubric so the bar matches the topic AND the current
+    story state so we don't re-alert on the same arc.
+
+    Two gates in one prompt:
+      1. Does this clear the friend-would-text bar for the genre?
+      2. Does it ADVANCE the current story state (or is it a rehash)?
 
     `engaged` = user replied to the last alert; softens the rubric footer so
-    finer developments qualify while the user is following the story closely."""
+    finer developments qualify while the user is following the story closely.
+    `story_state` is the last-known 1-2 sentence state ('where we are in the
+    story'); None on first fire, filled in thereafter by _update_story_state."""
     dedup_block = ""
     if recent_summaries:
         lines = "\n".join(f'- "{s}"' for s in recent_summaries)
-        dedup_block = f"\nAlready sent — reply NO if results cover the same events:\n{lines}\n"
+        dedup_block = f"\nAlready sent titles — reply NO if results cover the same events:\n{lines}\n"
+
+    story_block = ""
+    if story_state:
+        story_block = (
+            f"\nCurrent story state (already told to the user — reply NO if the candidate "
+            f"just rehashes this, YES only if it MEANINGFULLY advances it):\n"
+            f"\"{story_state}\"\n"
+        )
 
     footer = (
         "The user is following this closely right now — the bar is lower. Meaningful "
@@ -120,9 +136,10 @@ def _check_watch_hit(results: str, description: str, recent_summaries: list[str]
         f"Rubric — the bar a real friend would text at for this kind of topic:\n"
         f"{rubric_for(genre)}\n"
         f"{footer}\n"
+        f"{story_block}"
         f"{dedup_block}\n"
         f"Candidate news:\n{results[:2000]}\n\n"
-        "Does this candidate clear the bar? Reply YES or NO."
+        "Does this candidate clear the bar AND advance the story? Reply YES or NO."
     )
     response = client.messages.create(
         model=HAIKU_MODEL,
@@ -130,6 +147,36 @@ def _check_watch_hit(results: str, description: str, recent_summaries: list[str]
         messages=[{"role": "user", "content": prompt}],
     )
     return response.content[0].text.strip().upper().startswith("YES")
+
+
+def _update_story_state(watch_id: int, previous_state: str | None,
+                        new_alert_title: str, new_alert_content: str) -> None:
+    """Fold a newly-fired alert into the watch's rolling story state via Haiku,
+    then persist. Silent on any failure — the alert already went out, we just
+    lose the semantic-dedup benefit for the next tick."""
+    context = f"Previous state: {previous_state or '(none — first alert on this watch)'}\n"
+    context += f"New alert title: {new_alert_title}\n"
+    if new_alert_content:
+        context += f"New alert content: {new_alert_content[:400]}\n"
+    prompt = (
+        "Write ONE plain sentence (max two) capturing where the story is NOW, "
+        "after this new alert. This will be shown to a future scorer as 'the "
+        "user already knows this — reply NO to rehash, YES only if advancing.' "
+        "Keep facts only, no framing.\n\n"
+        f"{context}\n"
+        "Reply with just the sentence."
+    )
+    try:
+        response = client.messages.create(
+            model=HAIKU_MODEL,
+            max_tokens=100,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        summary = response.content[0].text.strip()
+        if summary:
+            update_watch_story(watch_id, summary[:400])
+    except Exception as e:
+        print(f"_update_story_state failed for watch {watch_id}: {e}")
 
 
 def _watch_genre(watch: dict) -> str:
@@ -233,7 +280,8 @@ def run_watches():
 
             engaged = _user_engaged(watch)
             genre = _watch_genre(watch)
-            if not _check_watch_hit(combined, watch["description"], watch["recent_summaries"], engaged, genre):
+            if not _check_watch_hit(combined, watch["description"], watch["recent_summaries"],
+                                    engaged, genre, story_state=watch.get("story_state")):
                 continue
 
             # Pick best reachable result — falls through to next if top URL is dead
@@ -261,6 +309,14 @@ def run_watches():
             title = (top.get("title") or alert)[:120]
             recent = (watch["recent_summaries"] + [title])[-3:]
             update_watch_alerted(watch["id"], title, recent)
+            # Fold the alert into the rolling story state so the next tick's
+            # scorer sees 'the user already knows this — reply YES only if
+            # advancing.' Failure is silent — the alert already went out.
+            _update_story_state(
+                watch["id"], watch.get("story_state"),
+                new_alert_title=title,
+                new_alert_content=top.get("content") or "",
+            )
             print(f"Watch {watch['id']} triggered for {watch['phone']} (engaged={engaged}): {alert[:80]}")
 
         except Exception as e:

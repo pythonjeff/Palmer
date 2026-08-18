@@ -93,6 +93,7 @@ def init_db():
         "daily_alert_date TEXT",
         "recent_summaries TEXT",
         "genre TEXT",
+        "story_state TEXT",
     ]
     for col_def in watches_new_cols:
         if _DATABASE_URL:
@@ -334,7 +335,8 @@ def get_active_watches() -> list[dict]:
     cur = conn.cursor()
     cur.execute(
         "SELECT id, phone, description, queries, cooldown_hours, last_alerted, "
-        "last_alert_summary, daily_alert_count, daily_alert_date, recent_summaries, genre "
+        "last_alert_summary, daily_alert_count, daily_alert_date, recent_summaries, "
+        "genre, story_state "
         "FROM watches WHERE active = 1"
     )
     rows = cur.fetchall()
@@ -352,6 +354,7 @@ def get_active_watches() -> list[dict]:
             "daily_alert_date": r["daily_alert_date"],
             "recent_summaries": json.loads(r["recent_summaries"]) if r["recent_summaries"] else [],
             "genre": r["genre"],
+            "story_state": r["story_state"],
         }
         for r in rows
     ]
@@ -377,6 +380,19 @@ def set_watch_genre(watch_id: int, genre: str):
     conn = _conn()
     cur = conn.cursor()
     cur.execute(f"UPDATE watches SET genre = {PH} WHERE id = {PH}", (genre, watch_id))
+    conn.commit()
+    conn.close()
+
+
+def update_watch_story(watch_id: int, story_summary: str):
+    """Persist a rolling 1-2 sentence 'where we are in the story' summary onto a
+    watch. Called after a successful alert send so the next scoring pass can
+    ask Haiku 'does this candidate ADVANCE the story below, or rehash it?'
+    instead of relying purely on title-level dedup."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE watches SET story_state = {PH} WHERE id = {PH}",
+                (story_summary, watch_id))
     conn.commit()
     conn.close()
 
