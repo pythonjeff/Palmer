@@ -1289,6 +1289,51 @@ def shorten_message(text: str, max_chars: int = 320) -> str:
         return _sms_clean(text)[:max_chars]
 
 
+def _user_already_covered(phone: str, candidate: str, window_hours: float = 12) -> bool:
+    """True if the USER already brought up the same story in their recent
+    messages — 'did you see the Iran thing?' at 10am should stop a related
+    watch fire at 2pm. Separate from _is_duplicate_subject, which only sees
+    what Palmer sent.
+
+    Fail-open: any error returns False so a broken Haiku call never silently
+    suppresses a legitimate alert. Called after the topical significance
+    gates already passed, so cost is bounded to the small set of would-be sends."""
+    from datetime import datetime, timezone, timedelta
+    from db import get_recent_user_messages
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=window_hours)).isoformat()
+    recent = get_recent_user_messages(phone, cutoff)
+    if not recent:
+        return False
+    try:
+        recent_block = "\n".join(f'- "{m}"' for m in recent[-6:])
+        response = client.messages.create(
+            model=HAIKU_MODEL,
+            max_tokens=10,
+            messages=[{"role": "user", "content": f"""A texting assistant is about to send this UNPROMPTED alert:
+"{candidate}"
+
+But the user has already sent these messages in the last {window_hours} hours:
+{recent_block}
+
+Would sending this alert now be REDUNDANT — i.e. the user has already shown they know about this specific development?
+
+YES if the user has clearly signalled they've heard about this story — even shorthand references count:
+- "did you see the X thing" / "have you heard about X" / "wild what's happening with X" — when X names the alert's subject
+- Discussing the same specific event (same team's same game, same asset's same move, same conflict's same escalation)
+- Sharing a fact from the alert (score, price, casualty count, etc.)
+
+NO if the user only mentioned the general topic without touching this specific development:
+- "I like Middle East food" / "Cards look good this season" — general topic, not the specific event
+- Background chatter that predates the news
+
+Reply YES or NO."""}],
+        )
+        return response.content[0].text.strip().upper().startswith("YES")
+    except Exception:
+        return False
+
+
 def _is_duplicate_subject(phone: str, new_text: str, window_hours: float = 6) -> bool:
     """True if new_text covers the same subject as something already sent to this
     phone in the last window_hours — catches cross-job topical redundancy (e.g. a

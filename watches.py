@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta, date as _date
 
-from agent import client, _search_raw, _sms_clean, _is_duplicate_subject, HAIKU_MODEL
+from agent import client, _search_raw, _sms_clean, _is_duplicate_subject, _user_already_covered, HAIKU_MODEL
 from db import (
     get_active_watches, update_watch_alerted, get_messages_after,
     claim_watch_alert, set_watch_genre, update_watch_story,
@@ -296,6 +296,12 @@ def run_watches():
 
             if _is_duplicate_subject(watch["phone"], alert):
                 print(f"Watch {watch['id']}: subject already covered by a recent message, skipping")
+                continue
+
+            # User-mention dedup: the user brought this story up themselves.
+            # Suppress even if all our own gates would fire — they already know.
+            if _user_already_covered(watch["phone"], alert):
+                print(f"Watch {watch['id']}: user already mentioned this story themselves, skipping")
                 continue
 
             if not claim_watch_alert(watch["id"], watch["cooldown_hours"]):

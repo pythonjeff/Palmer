@@ -463,6 +463,23 @@ def get_recent_assistant_messages(phone: str, since_iso: str) -> list[str]:
     return [r["content"] for r in rows]
 
 
+def get_recent_user_messages(phone: str, since_iso: str) -> list[str]:
+    """Return the text of user messages Palmer received since since_iso, oldest
+    first. Used to suppress proactive alerts on stories the user already brought
+    up themselves — 'did you see the Iran thing?' at 10am should stop an Iran
+    watch fire at 2pm."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT content FROM messages WHERE phone = {PH} AND role = 'user' "
+        f"AND created_at > {PH} ORDER BY created_at ASC",
+        (phone, since_iso),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [r["content"] for r in rows]
+
+
 def cancel_watches(phone: str, text_match: str = None) -> int:
     conn = _conn()
     cur = conn.cursor()

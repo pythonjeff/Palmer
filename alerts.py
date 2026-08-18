@@ -4,7 +4,8 @@ from datetime import datetime, timezone, date as date_type
 
 from agent import (
     client, _build_system, _sms_clean, _all_interests, _search_raw,
-    _parse_json, _is_duplicate_subject, HAIKU_MODEL, SONNET_MODEL,
+    _parse_json, _is_duplicate_subject, _user_already_covered,
+    HAIKU_MODEL, SONNET_MODEL,
 )
 from db import get_all_phones, get_profile, upsert_profile, save_message, claim_daily_guard
 from watches import corroborated, _canonical_domain
@@ -235,6 +236,11 @@ def run_alert_checks():
                 if _is_duplicate_subject(phone, message):
                     upsert_profile(phone, {"alert_sent_date": None})
                     print(f"No alert for {phone}: subject already covered by a recent message")
+                    continue
+                # User-mention dedup — they already brought this up themselves.
+                if _user_already_covered(phone, message):
+                    upsert_profile(phone, {"alert_sent_date": None})
+                    print(f"No alert for {phone}: user already mentioned this story themselves")
                     continue
                 send_sms(phone, message)
                 save_message(phone, "assistant", message)
