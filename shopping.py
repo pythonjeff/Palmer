@@ -23,6 +23,8 @@ SERP_API_KEY = os.environ.get("SERP_API_KEY", "")
 _SERPAPI_BASE = "https://serpapi.com/search.json"
 _SERPAPI_TIMEOUT = 12
 DROP_THRESHOLD = 0.85  # alert when current <= baseline * DROP_THRESHOLD (i.e. >=15% off)
+PRICE_DAILY_ALERT_MAX = 3  # per-watch cap; guards against a price that
+# oscillates across the threshold from firing indefinitely on the 12h cadence.
 
 
 def _serpapi_search(query: str) -> list[dict]:
@@ -59,11 +61,17 @@ def _is_marketplace_thirdparty(merchant: str) -> bool:
     """True if the merchant string names a third-party marketplace listing
     (individual sellers, resale sites). We deprioritize these in link mode
     because 'buy it now' should land on a real retailer, not a random eBay
-    seller with 12 reviews."""
+    seller with 12 reviews. Also excludes these from PRICE WATCH alerts —
+    users tracking a new product don't want a text about a $75 resale from
+    a Poshmark seller."""
     m = (merchant or "").lower().strip()
-    if m.startswith("ebay - "):  # "eBay - dabondo1" style individual sellers
+    # "eBay - dabondo1" / "Walmart - Greensole LLC" — marketplace host with
+    # an individual/reseller after the dash. The bare marketplace name
+    # (just "eBay" or "Walmart") remains ambiguous, so we only flag the
+    # composite form.
+    if " - " in m and m.split(" - ", 1)[0] in {"ebay", "walmart"}:
         return True
-    return m in {"poshmark", "mercari", "depop", "vinted", "grailed"}
+    return m in {"poshmark", "mercari", "depop", "vinted", "grailed", "stockx", "goat"}
 
 
 def _brand_tokens(query: str) -> list[str]:
@@ -159,8 +167,12 @@ def _pick_best_match(product_name: str, results: list[dict]) -> dict | None:
 
 
 def check_price(product_name: str) -> dict | None:
-    """Return {price, title, merchant, url} for the cheapest genuine match, or None."""
-    results = _serpapi_search(product_name)
+    """Return {price, title, merchant, url} for the cheapest genuine match, or None.
+    Strips marketplace-thirdparty listings (Poshmark, individual eBay/Walmart
+    sellers, resale sites) — those undercut prices on new goods and produce
+    junk alerts like 'your AirPods dropped to $75 at Poshmark'."""
+    results = [r for r in _serpapi_search(product_name)
+               if not _is_marketplace_thirdparty(r.get("merchant", ""))]
     return _pick_best_match(product_name, results)
 
 
@@ -346,6 +358,16 @@ def _should_alert(watch: dict, current_price: float) -> str:
     return ""
 
 
+def _daily_ok(watch: dict) -> bool:
+    """True if this price watch is still under the per-day alert cap (UTC date).
+    Mirrors watches._daily_ok — same rationale, different table."""
+    from datetime import date as _date
+    today = _date.today().isoformat()
+    if watch.get("daily_alert_date") != today:
+        return True
+    return (watch.get("daily_alert_count") or 0) < PRICE_DAILY_ALERT_MAX
+
+
 def _draft_alert(product_name: str, current: dict, watch: dict, reason: str) -> str:
     """Palmer-voice one-liner announcing the hit. Falls back to a plain string."""
     target = watch.get("target_price")
@@ -384,6 +406,7 @@ def run_price_watches():
     """Scheduler job. Every 12h: check each active price watch, alert on target-hit
     or >=15% drop from baseline. Silent-skip on any per-watch failure. Dispatches
     to shopping (Google Shopping) or amazon (Amazon by ASIN) based on w['source']."""
+    from agent import _is_duplicate_subject
     from db import (
         get_active_price_watches, set_price_watch_baseline, update_price_watch_alerted,
         claim_price_watch_alert, release_price_watch_claim,
@@ -395,6 +418,9 @@ def run_price_watches():
     for w in watches:
         try:
             if not _cooldown_ok(w):
+                continue
+            if not _daily_ok(w):
+                print(f"Price watch {w['id']}: at daily cap ({PRICE_DAILY_ALERT_MAX}), skipping")
                 continue
             if w.get("source") == "amazon":
                 current = amazon.check_price(w)
@@ -415,6 +441,13 @@ def run_price_watches():
                 body = amazon.draft_alert(w["product_name"], current, w, reason)
             else:
                 body = _draft_alert(w["product_name"], current, w, reason)
+            # Cross-job subject dedup: if any other proactive send in the last
+            # window already covered this product, drop the alert and release
+            # the claim so a later tick can retry once the older send ages out.
+            if _is_duplicate_subject(w["phone"], body):
+                release_price_watch_claim(w["id"])
+                print(f"Price watch {w['id']}: subject already covered by a recent message, skipping")
+                continue
             if ensure_sms(w["phone"], body):
                 update_price_watch_alerted(
                     w["id"], current["price"], current["url"], current["merchant"], body

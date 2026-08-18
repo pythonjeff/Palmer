@@ -103,7 +103,10 @@ class TestAlertsSubjectDedup:
              patch("alerts._in_alert_window", return_value=True), \
              patch("alerts.claim_daily_guard", return_value=True), \
              patch("alerts._get_alert_queries", return_value=["some query"]), \
-             patch("alerts._search", return_value="some results"), \
+             patch("alerts._search_raw", return_value=[
+                 {"url": "https://apnews.com/x", "title": "t", "content": "c", "published_date": "Tue, 18 Aug 2026 12:00:00 GMT"},
+                 {"url": "https://reuters.com/y", "title": "t", "content": "c", "published_date": "Tue, 18 Aug 2026 12:00:00 GMT"},
+             ]), \
              patch("alerts._check_significance", return_value=(9, "Big breaking news")), \
              patch("alerts._draft_alert", return_value="Breaking: big news happened"), \
              patch("alerts._is_duplicate_subject", return_value=True) as dedup, \
@@ -122,7 +125,10 @@ class TestAlertsSubjectDedup:
              patch("alerts._in_alert_window", return_value=True), \
              patch("alerts.claim_daily_guard", return_value=True), \
              patch("alerts._get_alert_queries", return_value=["some query"]), \
-             patch("alerts._search", return_value="some results"), \
+             patch("alerts._search_raw", return_value=[
+                 {"url": "https://apnews.com/x", "title": "t", "content": "c", "published_date": "Tue, 18 Aug 2026 12:00:00 GMT"},
+                 {"url": "https://reuters.com/y", "title": "t", "content": "c", "published_date": "Tue, 18 Aug 2026 12:00:00 GMT"},
+             ]), \
              patch("alerts._check_significance", return_value=(9, "Big breaking news")), \
              patch("alerts._draft_alert", return_value="Breaking: big news happened"), \
              patch("alerts._is_duplicate_subject", return_value=False), \

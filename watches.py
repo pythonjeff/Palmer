@@ -10,6 +10,9 @@ from db import get_active_watches, update_watch_alerted, get_messages_after, cla
 
 DAILY_ALERT_MAX = 4
 
+# Source-tier helpers are shared with alerts.py so both news pipelines rank the
+# same way. They live here (not in agent.py) because trusted_sources.json is
+# purely a news-quality concern.
 
 def _load_trusted_sources() -> tuple[set[str], set[str]]:
     with open(Path(__file__).parent / "trusted_sources.json") as f:
@@ -55,6 +58,19 @@ def _source_tier(url: str) -> int:
     if any(host == d or host.endswith("." + d) for d in _TIER2_DOMAINS):
         return 2
     return 3
+
+
+def corroborated(results: list[dict]) -> bool:
+    """Do these results clear the shared news-quality bar?
+    Pass if >= 2 distinct canonical domains agree OR a single tier-1 source appears.
+    Single unknown-domain hits are how rumor/spam/fake alerts leak through."""
+    if not results:
+        return False
+    domains = {_canonical_domain(r.get("url", "")) for r in results}
+    domains.discard("")
+    if any(_source_tier(r.get("url", "")) == 1 for r in results):
+        return True
+    return len(domains) >= 2
 
 
 def _daily_ok(watch: dict) -> bool:
@@ -181,12 +197,9 @@ def run_watches():
             if not all_raw:
                 continue
 
-            # Corroboration gate: require >= 2 distinct sources OR >= 1 tier-1 source.
-            # Single unknown-domain hits are how rumor/spam/fake alerts leak through.
-            domains = {_canonical_domain(r.get("url", "")) for r in all_raw}
-            domains.discard("")
-            has_tier1 = any(_source_tier(r.get("url", "")) == 1 for r in all_raw)
-            if len(domains) < 2 and not has_tier1:
+            if not corroborated(all_raw):
+                domains = {_canonical_domain(r.get("url", "")) for r in all_raw}
+                domains.discard("")
                 print(f"Watch {watch['id']}: no corroboration ({len(domains)} domain(s), no tier-1), skipping")
                 continue
 

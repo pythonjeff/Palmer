@@ -105,6 +105,8 @@ def init_db():
     price_watches_new_cols = [
         "source TEXT NOT NULL DEFAULT 'shopping'",
         "asin TEXT",
+        "daily_alert_count INTEGER DEFAULT 0",
+        "daily_alert_date TEXT",
     ]
     for col_def in price_watches_new_cols:
         if _DATABASE_URL:
@@ -472,7 +474,8 @@ def get_active_price_watches() -> list[dict]:
     cur.execute(
         "SELECT id, phone, product_name, target_price, currency, baseline_price, "
         "last_seen_price, last_seen_url, last_seen_merchant, cooldown_hours, "
-        "last_alerted, last_alert_summary, source, asin "
+        "last_alerted, last_alert_summary, source, asin, "
+        "daily_alert_count, daily_alert_date "
         "FROM price_watches WHERE active = 1"
     )
     rows = cur.fetchall()
@@ -493,6 +496,8 @@ def get_active_price_watches() -> list[dict]:
             "last_alert_summary": r["last_alert_summary"],
             "source": r["source"] or "shopping",
             "asin": r["asin"],
+            "daily_alert_count": r["daily_alert_count"] or 0,
+            "daily_alert_date": r["daily_alert_date"],
         }
         for r in rows
     ]
@@ -582,13 +587,20 @@ def release_price_watch_claim(watch_id: int):
 
 def update_price_watch_alerted(watch_id: int, price: float, url: str, merchant: str, summary: str):
     now = datetime.now(timezone.utc).isoformat()
+    today = datetime.now(timezone.utc).date().isoformat()
     conn = _conn()
     cur = conn.cursor()
     cur.execute(
-        f"UPDATE price_watches SET last_alerted = {PH}, last_alert_summary = {PH}, "
-        f"last_seen_price = {PH}, last_seen_url = {PH}, last_seen_merchant = {PH} "
-        f"WHERE id = {PH}",
-        (now, summary, price, url, merchant, watch_id),
+        f"""UPDATE price_watches SET
+            last_alerted = {PH},
+            last_alert_summary = {PH},
+            last_seen_price = {PH},
+            last_seen_url = {PH},
+            last_seen_merchant = {PH},
+            daily_alert_count = CASE WHEN daily_alert_date = {PH} THEN daily_alert_count + 1 ELSE 1 END,
+            daily_alert_date = {PH}
+        WHERE id = {PH}""",
+        (now, summary, price, url, merchant, today, today, watch_id),
     )
     conn.commit()
     conn.close()

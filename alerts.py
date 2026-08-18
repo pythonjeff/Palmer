@@ -2,8 +2,12 @@ import hashlib
 import os
 from datetime import datetime, timezone, date as date_type
 
-from agent import client, _build_system, _sms_clean, _all_interests, _search, _parse_json, _is_duplicate_subject, HAIKU_MODEL, SONNET_MODEL
+from agent import (
+    client, _build_system, _sms_clean, _all_interests, _search_raw,
+    _parse_json, _is_duplicate_subject, HAIKU_MODEL, SONNET_MODEL,
+)
 from db import get_all_phones, get_profile, upsert_profile, save_message, claim_daily_guard
+from watches import corroborated, _canonical_domain
 
 
 def _daily_alert_hour(phone: str) -> int:
@@ -86,7 +90,11 @@ If score < 8 set summary to ""."""}],
 
 
 def _draft_alert(phone: str, summary: str) -> str:
-    """Write the alert in Palmer's voice."""
+    """Write the alert in Palmer's voice.
+
+    Fallback path never sends the raw Haiku summary — that's factual prose, not
+    Palmer voice, and users noticed the tone shift. Instead: prefix a soft
+    "heads up" so it still reads like Palmer even when the drafting call fails."""
     system = _build_system(phone, include_recent=True)
     try:
         response = client.messages.create(
@@ -94,17 +102,19 @@ def _draft_alert(phone: str, summary: str) -> str:
             max_tokens=150,
             system=system,
             messages=[{"role": "user", "content": (
-                f"Send a short unprompted text about this breaking news. Palmer's voice — "
+                "Send a short unprompted text about this breaking news. Palmer's voice — "
                 "like you just saw it and immediately thought of them. No opener, no ceremony. "
                 "Lead with what happened and why it matters to them specifically. "
                 "Vary the framing: sometimes a quick observation, sometimes just the fact with a sharp aside, "
-                "sometimes a question if the stakes are genuinely unclear. Don't always frame it the same way.\n\n"
+                "sometimes a question if the stakes are genuinely unclear. Don't always frame it the same way. "
+                "Write the actual text only — do NOT call tools, do NOT emit tool syntax, "
+                "and do NOT invent facts beyond what's in the news line below.\n\n"
                 f"News: {summary}"
             )}],
         )
         return _sms_clean(response.content[0].text.strip())
     except Exception:
-        return _sms_clean(summary)
+        return _sms_clean(f"quick one — {summary}")
 
 
 def run_alert_checks():
@@ -129,8 +139,31 @@ def run_alert_checks():
             continue
 
         try:
-            results = "\n\n".join(f"{q}:\n{_search(q, days=1)}" for q in queries)
-            score, summary = _check_significance(results, profile)
+            # Collect raw Tavily hits across every query so we can source-gate
+            # before spending Haiku on significance scoring. Same corroboration
+            # rules as watches.py — an unprompted daily push deserves at least
+            # the same quality bar as a user-created watch.
+            all_raw: list[dict] = []
+            seen_urls: set[str] = set()
+            for q in queries:
+                for r in _search_raw(q, days=1, max_age_hours=12):
+                    url = r.get("url", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        all_raw.append(r)
+
+            if not corroborated(all_raw):
+                upsert_profile(phone, {"alert_sent_date": None})
+                domains = {_canonical_domain(r.get("url", "")) for r in all_raw}
+                domains.discard("")
+                print(f"No alert for {phone}: no corroboration ({len(domains)} domain(s))")
+                continue
+
+            combined = "\n\n".join(
+                f"{r.get('title','')}\nPublished: {r.get('published_date','unknown')}\n{r.get('content','')[:400]}"
+                for r in all_raw
+            )
+            score, summary = _check_significance(combined, profile)
 
             if score >= 8 and summary:
                 message = _draft_alert(phone, summary)

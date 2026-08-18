@@ -221,6 +221,7 @@ You have specialized tools — route correctly or the data will be wrong:
 - search_hotels: user wants hotel options in a place for a date range ("hotels in Lisbon Nov 15-20 under $200", "somewhere in Shoreditch next weekend"). Extract location as you'd search on Google Maps (city or neighborhood + city if disambiguating) and YYYY-MM-DD dates. Pass max_price if they gave a per-night cap, min_rating (3.5/4.0/4.5) if they said "nice", "well reviewed", etc. Never use web_search for hotels.
 - add_price_watch: user wants to be told LATER when a specific product hits a target or drops. Persistent. Google Shopping (cheapest across merchants).
 - add_amazon_watch: same idea but for a SPECIFIC Amazon listing ("track this protein shake on Amazon", "watch these vitamins for me"). Palmer resolves the item to an Amazon ASIN and tracks that exact listing. Prefer this when the user is on Amazon or the product category swings a lot there (supplements, coffee, household staples).
+- list_watches: user is asking what you're watching or tracking for them ("what are you watching", "list my watches", "what am I tracking"). Call this instead of guessing from context.
 - web_search: news, sports scores, current events, general facts. Not weather or prices or shopping.
 - send_gif: when a GIF lands better than words.
 
@@ -460,6 +461,15 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
         },
     },
     {
+        "name": "list_watches",
+        "description": "Return the caller's current active watches — both news watches (add_watch) and price watches (add_price_watch / add_amazon_watch). Call this whenever the user asks what you're watching, tracking, keeping tabs on, or 'have set up' ('what are you watching for me', 'list my watches', 'what am I tracking', 'do I have any price watches'). Prefer this over recalling from context — the tool result is authoritative. Weave the result naturally into your reply; do NOT dump the raw list.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
         "name": "get_travel_time",
         "description": "Get driving time between two addresses using live traffic. Call this whenever the user asks how long a drive takes, when to leave, or ETA to a place ('how long to Fenway?', 'when should I leave for the airport?', 'time to my sister's from here?'). If the user names a destination but not an origin (or vice versa), ask them conversationally for the missing one in your own voice BEFORE calling this tool. We don't store addresses; ask fresh each time unless the user provides both in the same message.\n\nCRITICAL: Our geocoder is a mapping service, not a search engine — it does NOT reliably resolve famous landmarks, monuments, or business names. If the user gives a landmark, POI, monument, park, stadium, airport, or well-known building (e.g. 'The White House', 'Fenway Park', 'LAX', 'Times Square', 'the Golden Gate Bridge', 'Central Park', 'Wrigley Field'), YOU must convert it to the actual street address using your world knowledge before calling — pass '1600 Pennsylvania Ave NW, Washington DC 20500' not 'The White House'; pass '4 Jersey St, Boston MA 02215' not 'Fenway Park'; pass '1 World Way, Los Angeles CA 90045' not 'LAX'. Only pass raw landmark names as a last resort when you genuinely don't know the address (in which case ask the user for one). Never guess an address you don't actually know.",
         "input_schema": {
@@ -499,6 +509,13 @@ def _sms_clean(text: str) -> str:
     multiple messages instead of truncating it."""
     text = text.translate(_UNICODE_MAP)
     text = text.encode('ascii', 'ignore').decode('ascii')  # strip emoji and remaining non-GSM-7
+    # Strip tool-call / tool-response blocks that background drafters can
+    # accidentally leak when Sonnet gets the full system prompt (with tool
+    # routing rules) via a plain messages.create call that has no tools= array.
+    # Without this scrub, a thin summary would produce SMS text containing raw
+    # <tool_call>...</tool_call> XML plus a fabricated <tool_response>.
+    text = re.sub(r'<tool_(?:call|response|use|result)>.*?</tool_(?:call|response|use|result)>',
+                  '', text, flags=re.DOTALL | re.IGNORECASE)
     # Strip markdown
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text, flags=re.DOTALL)
     text = re.sub(r'__(.+?)__', r'\1', text, flags=re.DOTALL)
@@ -1544,6 +1561,28 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
             elif b.name == "cancel_price_watch":
                 count = cancel_price_watches(phone_number, b.input.get("text_match"))
                 result = f"Cancelled {count} price watch(es)."
+            elif b.name == "list_watches":
+                news = get_user_watches(phone_number)
+                prices = get_user_price_watches(phone_number)
+                if not news and not prices:
+                    result = "No active watches for this user."
+                else:
+                    lines = []
+                    for w in news:
+                        lines.append(
+                            f"news [{w['id']}] {w['description']} "
+                            f"(checked every 30 min, at most every {w['cooldown_hours']}h)"
+                        )
+                    for w in prices:
+                        bits = [f"price [{w['id']}] {w['product_name']}"]
+                        if w.get("target_price") is not None:
+                            bits.append(f"target ${float(w['target_price']):.2f}")
+                        if w.get("baseline_price") is not None:
+                            bits.append(f"baseline ${float(w['baseline_price']):.2f}")
+                        if w.get("last_seen_price") is not None:
+                            bits.append(f"last seen ${float(w['last_seen_price']):.2f}")
+                        lines.append(" — ".join(bits))
+                    result = "\n".join(lines)
             elif b.name == "get_travel_time":
                 from traffic import get_travel_time
                 result = get_travel_time(b.input["origin"], b.input["destination"])
