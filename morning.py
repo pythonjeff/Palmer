@@ -59,7 +59,7 @@ def _gather_morning_data(profile: dict) -> list[str]:
     city = profile.get("city") or ""
     if city:
         try:
-            sections.append(f"Local weather:\n{_weather_report(city, 'today')}")
+            sections.append(f"Local weather:\n{_weather_report(city, 'today', tz=profile.get('timezone'))}")
         except Exception as e:
             # Skip the weather section rather than feeding a failure message to
             # the drafting model (which used to produce "weather tool failed"
@@ -187,18 +187,16 @@ Just one. Never all three. Never generic ("how's your week going" is banned). It
 
 
 def _local_now(tz_name: str) -> datetime:
-    from zoneinfo import ZoneInfo
-    return datetime.now(ZoneInfo(tz_name))
+    from timeutil import local_now
+    return local_now(tz_name)
 
 
 def _local_today(tz_name: str | None) -> date_type:
-    """The user's local calendar date; falls back to server date if tz is missing/bad."""
-    if tz_name:
-        try:
-            return _local_now(tz_name).date()
-        except Exception:
-            pass
-    return date_type.today()
+    """The user's local calendar date; falls back to server date if tz is missing/bad.
+    Thin wrapper over timeutil.local_today so existing imports (followup.py)
+    keep working while the canonical helper lives in one place."""
+    from timeutil import local_today
+    return local_today(tz_name)
 
 
 def _parse_morning_time(value) -> tuple[int, int]:

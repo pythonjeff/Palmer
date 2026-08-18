@@ -686,10 +686,12 @@ def _geocode(location: str) -> tuple[float, float, str]:
     return coords
 
 
-def _resolve_day_delta(when: str, when_lower: str) -> int | None:
-    """Convert 'tomorrow' / weekday name / 'YYYY-MM-DD' into a day offset from today.
+def _resolve_day_delta(when: str, when_lower: str, tz: str | None = None) -> int | None:
+    """Convert 'tomorrow' / weekday name / 'YYYY-MM-DD' into a day offset from
+    the user's local today. Falls back to server UTC if tz is missing.
     Returns None if the input doesn't look like a future-date reference."""
-    today = _date.today()
+    from timeutil import local_today
+    today = local_today(tz)
     wd = today.weekday()
     day_offsets = {
         "tomorrow": 1,
@@ -713,9 +715,11 @@ def _resolve_day_delta(when: str, when_lower: str) -> int | None:
 
 
 def _nws_report(lat: float, lon: float, resolved: str, when: str, when_lower: str,
-                is_now: bool, is_today: bool) -> str:
+                is_now: bool, is_today: bool, tz: str | None = None) -> str:
     """US-only weather via api.weather.gov (NWS). Raises on any failure so the
-    caller can fall back to Open-Meteo."""
+    caller can fall back to Open-Meteo. `tz` scopes 'tomorrow'/weekday parsing to
+    the user's local today (still respects NWS's own local-timezone startTime
+    on the primary path)."""
     headers = {"User-Agent": _NWS_USER_AGENT, "Accept": "application/geo+json"}
     points = _http_get_json_retry(
         f"https://api.weather.gov/points/{lat:.4f},{lon:.4f}",
@@ -794,12 +798,13 @@ def _nws_report(lat: float, lon: float, resolved: str, when: str, when_lower: st
         return f"{resolved} today:{hilo} {desc}{tail}".strip()
 
     # Future date
-    delta = _resolve_day_delta(when, when_lower)
+    delta = _resolve_day_delta(when, when_lower, tz=tz)
     if delta is None:
         delta = 1
     if delta < 0:
         raise ValueError("Past date")
-    local_today = _period_date(periods[0].get("startTime")) or _date.today()
+    from timeutil import local_today as _lt
+    local_today = _period_date(periods[0].get("startTime")) or _lt(tz)
     target = local_today + timedelta(days=delta)
     matching = [p for p in periods if _period_date(p.get("startTime")) == target]
     if not matching:
@@ -820,8 +825,9 @@ def _nws_report(lat: float, lon: float, resolved: str, when: str, when_lower: st
 
 
 def _openmeteo_report(lat: float, lon: float, resolved: str, when: str, when_lower: str,
-                     is_now: bool, is_today: bool) -> str:
-    """Fallback weather via Open-Meteo. Used worldwide and when NWS fails."""
+                     is_now: bool, is_today: bool, tz: str | None = None) -> str:
+    """Fallback weather via Open-Meteo. Used worldwide and when NWS fails.
+    `tz` scopes 'tomorrow'/weekday parsing to the user's local today."""
     data = _http_get_json_retry(
         "https://api.open-meteo.com/v1/forecast",
         params={
@@ -877,12 +883,13 @@ def _openmeteo_report(lat: float, lon: float, resolved: str, when: str, when_low
         )
 
     # Future date
-    delta = _resolve_day_delta(when, when_lower)
+    delta = _resolve_day_delta(when, when_lower, tz=tz)
     if delta is None:
         delta = 1
     if delta < 0 or delta >= len(daily["time"]):
         return f"No forecast available for that date in {resolved} — forecast covers 8 days out."
-    target_date = _date.today() + timedelta(days=delta)
+    from timeutil import local_today as _lt
+    target_date = _lt(tz) + timedelta(days=delta)
     hi = daily["temperature_2m_max"][delta]
     lo = daily["temperature_2m_min"][delta]
     rain_pct = daily["precipitation_probability_max"][delta]
@@ -896,10 +903,13 @@ def _openmeteo_report(lat: float, lon: float, resolved: str, when: str, when_low
     )
 
 
-def _weather_report(location: str, when: str = "today") -> str:
+def _weather_report(location: str, when: str = "today", tz: str | None = None) -> str:
     """Core weather lookup. Raises on failure — callers decide how to degrade.
     Prefers NWS (api.weather.gov) for US coordinates; falls back to Open-Meteo
-    on any NWS failure and uses Open-Meteo directly outside the US."""
+    on any NWS failure and uses Open-Meteo directly outside the US. `tz` is
+    the user's IANA timezone (e.g. 'America/Los_Angeles'); when provided,
+    'tomorrow' and weekday names are resolved against the user's local today
+    rather than server UTC, fixing the late-night west-coast off-by-one."""
     when_lower = (when or "today").lower().strip()
     is_now = any(w in when_lower for w in ("now", "current"))
     is_today = any(w in when_lower for w in ("today", "tonight"))
@@ -908,17 +918,17 @@ def _weather_report(location: str, when: str = "today") -> str:
 
     if _is_us_coords(lat, lon):
         try:
-            return _nws_report(lat, lon, resolved, when, when_lower, is_now, is_today)
+            return _nws_report(lat, lon, resolved, when, when_lower, is_now, is_today, tz=tz)
         except Exception as e:
             print(f"NWS lookup failed for {location!r} ({lat:.3f},{lon:.3f}): {e}; falling back to Open-Meteo")
 
-    return _openmeteo_report(lat, lon, resolved, when, when_lower, is_now, is_today)
+    return _openmeteo_report(lat, lon, resolved, when, when_lower, is_now, is_today, tz=tz)
 
 
-def _get_weather(location: str, when: str = "today") -> str:
+def _get_weather(location: str, when: str = "today", tz: str | None = None) -> str:
     """Tool-facing wrapper: never raises, returns a fallback hint string on failure."""
     try:
-        return _weather_report(location, when)
+        return _weather_report(location, when, tz=tz)
     except ValueError as e:
         print(f"Weather geocode failed for {location!r}: {e}")
         return (
@@ -1425,6 +1435,10 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
     messages.append({"role": "user", "content": user_content})
 
     gif_url = None
+    # Pull the user's tz once — weather 'tomorrow'/weekday resolution needs
+    # user-local today, not server UTC. Missing tz falls through as None and
+    # the weather helpers degrade to server UTC (same as before this change).
+    user_tz = get_profile(phone_number).get("timezone")
 
     for _ in range(6):  # cap tool call iterations
         response = client.messages.create(
@@ -1451,7 +1465,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
             if b.name == "web_search":
                 result = _search(b.input["query"])
             elif b.name == "get_weather":
-                result = _get_weather(b.input["location"], b.input.get("when", "today"))
+                result = _get_weather(b.input["location"], b.input.get("when", "today"), tz=user_tz)
             elif b.name == "get_price":
                 result = _get_price(b.input["asset"])
             elif b.name == "send_gif":
