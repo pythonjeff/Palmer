@@ -92,6 +92,7 @@ def init_db():
         "daily_alert_count INTEGER DEFAULT 0",
         "daily_alert_date TEXT",
         "recent_summaries TEXT",
+        "genre TEXT",
     ]
     for col_def in watches_new_cols:
         if _DATABASE_URL:
@@ -333,7 +334,7 @@ def get_active_watches() -> list[dict]:
     cur = conn.cursor()
     cur.execute(
         "SELECT id, phone, description, queries, cooldown_hours, last_alerted, "
-        "last_alert_summary, daily_alert_count, daily_alert_date, recent_summaries "
+        "last_alert_summary, daily_alert_count, daily_alert_date, recent_summaries, genre "
         "FROM watches WHERE active = 1"
     )
     rows = cur.fetchall()
@@ -350,6 +351,7 @@ def get_active_watches() -> list[dict]:
             "daily_alert_count": r["daily_alert_count"] or 0,
             "daily_alert_date": r["daily_alert_date"],
             "recent_summaries": json.loads(r["recent_summaries"]) if r["recent_summaries"] else [],
+            "genre": r["genre"],
         }
         for r in rows
     ]
@@ -359,13 +361,24 @@ def get_user_watches(phone: str) -> list[dict]:
     conn = _conn()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, description, cooldown_hours, last_alerted FROM watches WHERE phone = %s AND active = 1" if _DATABASE_URL
-        else "SELECT id, description, cooldown_hours, last_alerted FROM watches WHERE phone = ? AND active = 1",
+        "SELECT id, description, cooldown_hours, last_alerted, genre FROM watches WHERE phone = %s AND active = 1" if _DATABASE_URL
+        else "SELECT id, description, cooldown_hours, last_alerted, genre FROM watches WHERE phone = ? AND active = 1",
         (phone,),
     )
     rows = cur.fetchall()
     conn.close()
-    return [{"id": r["id"], "description": r["description"], "cooldown_hours": r["cooldown_hours"], "last_alerted": r["last_alerted"]} for r in rows]
+    return [{"id": r["id"], "description": r["description"], "cooldown_hours": r["cooldown_hours"],
+             "last_alerted": r["last_alerted"], "genre": r["genre"]} for r in rows]
+
+
+def set_watch_genre(watch_id: int, genre: str):
+    """Persist a classified genre onto an existing watch row.
+    Called lazily by _check_watch_hit the first time a watch is scored."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE watches SET genre = {PH} WHERE id = {PH}", (genre, watch_id))
+    conn.commit()
+    conn.close()
 
 
 def claim_watch_alert(watch_id: int, cooldown_hours: float) -> bool:

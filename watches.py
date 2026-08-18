@@ -6,7 +6,8 @@ from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta, date as _date
 
 from agent import client, _search_raw, _sms_clean, _is_duplicate_subject, HAIKU_MODEL
-from db import get_active_watches, update_watch_alerted, get_messages_after, claim_watch_alert
+from db import get_active_watches, update_watch_alerted, get_messages_after, claim_watch_alert, set_watch_genre
+from rubrics import classify_genre, rubric_for
 
 DAILY_ALERT_MAX = 4
 
@@ -90,39 +91,60 @@ def _user_engaged(watch: dict) -> bool:
     return any(m["role"] == "user" for m in msgs)
 
 
-def _check_watch_hit(results: str, description: str, recent_summaries: list[str], engaged: bool) -> bool:
-    """Ask Haiku if results contain a new development worth alerting on.
-    High bar (engaged=False): major breaking events only.
-    Lower bar (engaged=True): meaningful updates the user showed interest in."""
+def _check_watch_hit(results: str, description: str, recent_summaries: list[str],
+                     engaged: bool, genre: str) -> bool:
+    """Ask Haiku if results contain something a friend would text about, using
+    the genre-specific rubric so the bar matches the topic (a Cardinals watch
+    is scored by "what a friend actually texts about sports" — not by a
+    universal 'is this MAJOR breaking' check).
+
+    `engaged` = user replied to the last alert; softens the rubric footer so
+    finer developments qualify while the user is following the story closely."""
     dedup_block = ""
     if recent_summaries:
         lines = "\n".join(f'- "{s}"' for s in recent_summaries)
-        dedup_block = f"\nAlready alerted on these — reply NO if results cover the same events:\n{lines}\n"
+        dedup_block = f"\nAlready sent — reply NO if results cover the same events:\n{lines}\n"
 
-    if engaged:
-        bar = (
-            "Is there a notable new development — a meaningful update (trade, signing, deal, key result) "
-            "that matches the watch and isn't already covered above? Skip only pure recap, analysis, or opinion with no new facts."
-        )
-    else:
-        bar = (
-            "Is there a MAJOR breaking development — something significant, genuinely new, and time-sensitive? "
-            "The bar is high: only a truly critical new event qualifies. "
-            "Reply NO for routine coverage, analysis, speculation, or anything not clearly a new critical event."
-        )
+    footer = (
+        "The user is following this closely right now — the bar is lower. Meaningful "
+        "in-story updates qualify, not just top-of-cycle news. Still say NO to pure "
+        "recap, opinion, or content that adds no new facts."
+        if engaged else
+        "Bar is high: only fire on the kind of thing a friend would actually text about, "
+        "not routine coverage."
+    )
 
+    prompt = (
+        f'Watch topic: "{description}"\n'
+        f"Genre: {genre}\n\n"
+        f"Rubric — the bar a real friend would text at for this kind of topic:\n"
+        f"{rubric_for(genre)}\n"
+        f"{footer}\n"
+        f"{dedup_block}\n"
+        f"Candidate news:\n{results[:2000]}\n\n"
+        "Does this candidate clear the bar? Reply YES or NO."
+    )
     response = client.messages.create(
         model=HAIKU_MODEL,
         max_tokens=10,
-        messages=[{"role": "user", "content": f"""Watch: "{description}"
-
-Results:
-{results[:2000]}
-{dedup_block}
-{bar}
-Reply YES or NO."""}],
+        messages=[{"role": "user", "content": prompt}],
     )
     return response.content[0].text.strip().upper().startswith("YES")
+
+
+def _watch_genre(watch: dict) -> str:
+    """Return the watch's genre, classifying + persisting on first use.
+    Never raises — falls back to 'other' via classify_genre's own guarantee."""
+    genre = watch.get("genre")
+    if genre:
+        return genre
+    genre = classify_genre(watch.get("description") or "")
+    try:
+        set_watch_genre(watch["id"], genre)
+    except Exception as e:
+        print(f"set_watch_genre failed for watch {watch.get('id')}: {e}")
+    watch["genre"] = genre
+    return genre
 
 
 def _url_reachable(url: str, timeout: int = 4) -> bool:
@@ -210,7 +232,8 @@ def run_watches():
             )
 
             engaged = _user_engaged(watch)
-            if not _check_watch_hit(combined, watch["description"], watch["recent_summaries"], engaged):
+            genre = _watch_genre(watch)
+            if not _check_watch_hit(combined, watch["description"], watch["recent_summaries"], engaged, genre):
                 continue
 
             # Pick best reachable result — falls through to next if top URL is dead

@@ -8,6 +8,7 @@ from agent import (
 )
 from db import get_all_phones, get_profile, upsert_profile, save_message, claim_daily_guard
 from watches import corroborated, _canonical_domain
+from rubrics import classify_genre, rubric_for
 
 
 def _daily_alert_hour(phone: str) -> int:
@@ -53,35 +54,98 @@ Return a JSON array of 2-3 queries. Just the array."""}],
     return []
 
 
-def _check_significance(results: str, profile: dict) -> tuple[int, str]:
-    """Score news significance 1-10 for this user. Returns (score, summary)."""
-    topics = _all_interests(profile)
-    interest_str = ", ".join(topics) if topics else "general news"
-    today = date_type.today().isoformat()
+def _resolve_interest_genres(phone: str, profile: dict, topics: list[str]) -> list[tuple[str, str]]:
+    """Return [(interest, genre)] for each topic. Uses profile.interest_genres as
+    a persistent cache so tomorrow's run doesn't re-classify. Persists any newly
+    classified entries in a single upsert per run."""
+    stored = dict(profile.get("interest_genres") or {})
+    resolved: list[tuple[str, str]] = []
+    newly = False
+    for t in topics:
+        key = (t or "").strip().lower()
+        if not key:
+            continue
+        genre = stored.get(key)
+        if not genre:
+            genre = classify_genre(t)
+            stored[key] = genre
+            newly = True
+        resolved.append((t, genre))
+    if newly:
+        try:
+            upsert_profile(phone, {"interest_genres": stored})
+        except Exception as e:
+            print(f"interest_genres persist failed for {phone}: {e}")
+    return resolved
+
+
+def _check_significance(results: str, profile: dict,
+                        interests: list[tuple[str, str]] | None = None) -> tuple[int, str]:
+    """Score news significance 1-10 for this user, using per-interest genre
+    rubrics so each topic is judged by 'what a friend actually texts about'
+    for its own kind.
+
+    `interests` is [(interest, genre)] pairs. When omitted (older callers /
+    tests that patch this in isolation), fall back to a flat interest list
+    with the 'other' rubric as a strict backstop."""
+    if interests is None:
+        topics = _all_interests(profile)
+        interests = [(t, "other") for t in topics] if topics else []
+    interest_str = ", ".join(f"{t} ({g})" for t, g in interests) if interests else "general news"
+
+    # Show only rubrics for genres actually present in this user's interest set.
+    present_genres: list[str] = []
+    seen: set[str] = set()
+    for _, g in interests:
+        if g not in seen:
+            seen.add(g)
+            present_genres.append(g)
+    rubric_block = "\n\n".join(
+        f"== Rubric for {g} ==\n{rubric_for(g)}" for g in present_genres
+    ) if present_genres else rubric_for("other")
+
+    # "Today" has to be the USER's local calendar day — otherwise a west-coast
+    # user's late-day-local news reads as "not from today" to Haiku (server UTC
+    # already rolled over) and gets capped under the 8-score threshold.
+    from timeutil import local_today
+    today = local_today(profile.get("timezone")).isoformat()
 
     try:
         response = client.messages.create(
             model=HAIKU_MODEL,
-            max_tokens=200,
-            messages=[{"role": "user", "content": f"""Today is {today}. Is there BREAKING news here — published TODAY — that someone interested in [{interest_str}] would want to know about RIGHT NOW, unprompted?
+            max_tokens=250,
+            messages=[{"role": "user", "content": f"""Today is {today}. This person has these interests (with their type):
+{interest_str}
+
+For each type, here's what a real friend would text about vs. would not:
+
+{rubric_block}
 
 Search results:
 {results[:2500]}
 
-RECENCY IS REQUIRED. A score of 8+ is only valid if the news broke TODAY (within the past few hours).
-If the published date is missing or not from today, cap the score at 4 regardless of how significant the story is.
-Old news that happened days or weeks ago must score 1-4 even if it's major.
+Score 1-10 how much this news clears the friend-would-text bar for any of the user's interests today:
+- 9-10: A friend would 100% text this — clears the rubric strongly, published today, high-signal
+- 8: A friend probably would text this — clears the rubric, published today
+- 5-7: Interesting but doesn't quite clear the rubric OR not from today — do NOT send
+- 1-4: Routine, opinion, recap, or nothing relevant — do NOT send
 
-Score 1-10:
-- 9-10: Massive breaking news from TODAY (blockbuster trade, major emergency, record broken, huge upset)
-- 8: Significant and timely, published TODAY (notable signing, major market move, major local incident)
-- 5-7: Interesting but not from today, or not urgent — do NOT send
-- 1-4: Old news, routine, or nothing relevant — do NOT send
+RECENCY: score 8+ requires the news broke TODAY (within the past few hours). If published date is missing or not today, cap at 4.
 
-Reply with JSON only: {{"score": N, "summary": "one sentence of what happened and when"}}
-If score < 8 set summary to ""."""}],
+Reply with JSON only: {{"score": N, "summary": "one sentence of what happened and when", "interest": "which of the user's interests this attaches to"}}
+If score < 8 set summary and interest to ""."""}],
         )
         data = _parse_json(response.content[0].text)
+        # Haiku sometimes returns a list — one scored entry per interest — even
+        # though the prompt asks for a single object. Collapse to the highest-
+        # scoring entry so the caller gets the strongest hit.
+        if isinstance(data, list):
+            best = max(
+                (d for d in data if isinstance(d, dict)),
+                key=lambda d: int(d.get("score") or 0),
+                default=None,
+            )
+            data = best
         if isinstance(data, dict):
             return int(data.get("score", 0)), data.get("summary", "")
     except Exception:
@@ -163,7 +227,8 @@ def run_alert_checks():
                 f"{r.get('title','')}\nPublished: {r.get('published_date','unknown')}\n{r.get('content','')[:400]}"
                 for r in all_raw
             )
-            score, summary = _check_significance(combined, profile)
+            interests = _resolve_interest_genres(phone, profile, _all_interests(profile))
+            score, summary = _check_significance(combined, profile, interests)
 
             if score >= 8 and summary:
                 message = _draft_alert(phone, summary)
