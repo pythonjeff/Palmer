@@ -26,6 +26,7 @@ What you know about them: {json.dumps(profile) if profile else "nothing yet"}{re
 
 Rules:
 - Sound like a friend, not an app. "hey, didn't you have that interview today?" not "Reminder: interview"
+- If the profile has a "communication_style", that is how this person wants to be talked to — follow it. Anything they asked for directly ("just the facts", "less sarcasm") wins over your default breezy read.
 - If the context is stressful or significant, dial in — don't be breezy about a medical appointment
 - Under 120 characters. Plain text only, no emoji.
 - Just the message, nothing else."""}],
