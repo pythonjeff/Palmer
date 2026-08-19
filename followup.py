@@ -21,8 +21,10 @@ def _should_send_followup(profile: dict) -> bool:
     last_sent = profile.get("followup_sent_date")
     if last_sent:
         try:
+            from tapback import pacing_factor
+            gap = min(round(3 * pacing_factor(profile)), 14)
             last_date = datetime.fromisoformat(last_sent).date()
-            if (local_now.date() - last_date).days < 3:
+            if (local_now.date() - last_date).days < gap:
                 return False
         except Exception:
             pass

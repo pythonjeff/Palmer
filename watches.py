@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta, date as _date
 from agent import client, _search_raw, _sms_clean, _is_duplicate_subject, _user_already_covered, HAIKU_MODEL
 from db import (
     get_active_watches, update_watch_alerted, get_messages_after,
-    claim_watch_alert, set_watch_genre, update_watch_story,
+    claim_watch_alert, set_watch_genre, update_watch_story, get_profile,
 )
 from rubrics import classify_genre, rubric_for
 
@@ -77,12 +77,16 @@ def corroborated(results: list[dict]) -> bool:
     return len(domains) >= 2
 
 
-def _daily_ok(watch: dict) -> bool:
-    """True if this watch is under the 4-alert daily cap (UTC date)."""
+def _daily_ok(watch: dict, cap: int = DAILY_ALERT_MAX) -> bool:
+    """True if this watch is under the daily alert cap (UTC date).
+
+    `cap` is lowered for users whose reactions say Palmer is texting too much —
+    see tapback.pacing_factor. Defaults to DAILY_ALERT_MAX so existing callers
+    and tests are unaffected."""
     today = _date.today().isoformat()
     if watch.get("daily_alert_date") != today:
         return True  # new day, count resets
-    return watch.get("daily_alert_count", 0) < DAILY_ALERT_MAX
+    return watch.get("daily_alert_count", 0) < cap
 
 
 def _user_engaged(watch: dict) -> bool:
@@ -250,7 +254,9 @@ def run_watches():
                     continue
 
             # Daily cap: max 4 alerts per watch per day
-            if not _daily_ok(watch):
+            from tapback import pacing_factor
+            cap = max(1, round(DAILY_ALERT_MAX / pacing_factor(get_profile(watch["phone"]))))
+            if not _daily_ok(watch, cap):
                 continue
 
             # Collect raw results across all queries, deduped by URL

@@ -18,6 +18,7 @@ from send_reminders import send_due_reminders
 from watches import run_watches
 from shopping import run_price_watches
 from sms_util import ensure_sms, send_sms, FALLBACK_SMS
+from tapback import parse_reaction, record_reaction, interpret_reaction, learn_from_reactions
 
 app = FastAPI()
 
@@ -62,6 +63,37 @@ def _handle_sms(from_number: str, body: str, media_url: str | None):
 
 
 def _handle_sms_inner(from_number: str, body: str, media_url: str | None) -> bool:
+    # Reactions are almost always conversation-closers. Interpret first, because
+    # the one exception matters: if Palmer asked a question and they answered it
+    # with a thumbs up, that IS a reply and swallowing it strands the thread.
+    if media_url is None:
+        reaction = parse_reaction(body)
+        if reaction:
+            last_assistant = ""
+            for m in reversed(get_history(from_number, limit=4)):
+                if m["role"] == "assistant":
+                    last_assistant = m["content"]
+                    break
+            verdict = interpret_reaction(
+                reaction, last_assistant, get_profile(from_number)
+            )
+            record_reaction(from_number, reaction, verdict)
+            learn_from_reactions(from_number)
+
+            if not verdict.get("needs_reply"):
+                # Returning True is load-bearing: _handle_sms fires FALLBACK_SMS
+                # on a falsy return, which would defeat the whole point.
+                print(f"Reaction from {from_number} ({reaction['kind']}/"
+                      f"{verdict['function']}/{verdict['sentiment']}) — no reply sent")
+                return True
+
+            # It answered something Palmer asked. Hand it to the normal path as an
+            # explicit turn so he responds to the yes/no, not to the emoji.
+            label = reaction.get("emoji") or reaction.get("kind")
+            quoted = reaction.get("quoted") or last_assistant[:120]
+            body = f'[they reacted {label} to: "{quoted}" — this is their answer]'
+            print(f"Reaction from {from_number} answers a pending question — replying")
+
     profile_before = get_profile(from_number)
     is_new_user = not profile_before.get("intro_sent")
 

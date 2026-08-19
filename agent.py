@@ -1397,6 +1397,8 @@ Is the new message about the SAME underlying subject, story, or event as any of 
 def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = False) -> str:
     profile = get_profile(phone)
     profile_block = "What you know about them:\n" + json.dumps(profile, indent=2) if profile else "You don't know much about this person yet. Learn as you go."
+    from tapback import reaction_block
+    profile_block += reaction_block(profile)
     style = (profile.get("communication_style") or "").strip() if profile else ""
     if style:
         profile_block += (
@@ -1434,6 +1436,17 @@ def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = 
             f"mention it: something like 'you keep bringing up [X] — want me to add that to your morning?' "
             f"Use update_morning_briefing if they say yes. Don't force it if the moment isn't right."
         )
+    notice = profile.get("pending_preference_notice")
+    if notice:
+        system += (
+            f"\n\nThey've thumbs-downed {notice} enough times that you've stopped putting it "
+            f"in their morning briefing. Mention it ONCE, at a natural moment in this exchange — "
+            f"not as your opener, not as an announcement. Something like 'pulled the {notice} "
+            f"stuff out of your mornings, you kept giving it the thumbs down.' Then let it go. "
+            f"If they say they want it back, call update_morning_briefing. Never let a topic "
+            f"disappear without them knowing why."
+        )
+
     watches = get_user_watches(phone)
     if watches:
         watch_lines = "\n".join(
@@ -1465,9 +1478,14 @@ def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = 
     return system
 
 
-def _profile_and_consolidate(phone_number: str, user_msg: str, reply: str, shown_suggestion: str | None):
+def _profile_and_consolidate(phone_number: str, user_msg: str, reply: str, shown_suggestion: str | None,
+                             shown_notice: str | None = None):
     """Background: extract profile updates, clear any shown suggestion, consolidate history."""
     _update_profile(phone_number, user_msg, reply)
+    # One shot, same as the suggestion below: Palmer has now had his chance to
+    # mention the dropped topic. Clear it so he doesn't bring it up every turn.
+    if shown_notice:
+        upsert_profile(phone_number, {"pending_preference_notice": None})
     # One shot: clear the suggestion Palmer just had a chance to raise. Also reset
     # the topic count so we don't immediately re-trigger. If user said yes the
     # morning_topics already updated via update_morning_briefing; if no, they had a chance.
@@ -1490,9 +1508,10 @@ def save_assistant_turn(phone_number: str, user_msg: str, reply: str):
     # Capture suggestion before the background thread runs (it reads the pre-update profile)
     pre_profile = get_profile(phone_number)
     shown_suggestion = pre_profile.get("pending_morning_suggestion")
+    shown_notice = pre_profile.get("pending_preference_notice")
     threading.Thread(
         target=_profile_and_consolidate,
-        args=(phone_number, user_msg, reply, shown_suggestion),
+        args=(phone_number, user_msg, reply, shown_suggestion, shown_notice),
         daemon=True,
     ).start()
 
