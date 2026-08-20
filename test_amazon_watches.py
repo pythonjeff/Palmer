@@ -293,8 +293,11 @@ class TestDraftAlert:
         base.update(kw)
         return base
 
-    def test_appends_url_even_on_haiku_failure(self):
-        with patch("amazon.client") as mock_client:
+    # Drafting moved to price_alert (shared with shopping), so the model client
+    # to patch lives there — patching amazon.client here silently let these make
+    # real API calls.
+    def test_appends_url_even_on_draft_failure(self):
+        with patch("price_alert.client") as mock_client:
             mock_client.messages.create.side_effect = RuntimeError("boom")
             body = amazon.draft_alert("Protein", self._current(), self._watch(), "drop")
         assert body.endswith("https://www.amazon.com/dp/B0PROT")
@@ -304,7 +307,7 @@ class TestDraftAlert:
         block.text = "your protein just dropped to $42, was $60"
         resp = MagicMock()
         resp.content = [block]
-        with patch("amazon.client") as mock_client:
+        with patch("price_alert.client") as mock_client:
             mock_client.messages.create.return_value = resp
             body = amazon.draft_alert("Protein", self._current(), self._watch(), "drop")
         assert body.endswith("https://www.amazon.com/dp/B0PROT")

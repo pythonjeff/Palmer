@@ -63,9 +63,12 @@ class TestLocalToday:
         assert _local_today("America/Chicago") is not None
 
     def test_missing_or_bad_tz_falls_back(self):
-        from datetime import date
-        assert _local_today(None) == date.today()
-        assert _local_today("Not/AZone") == date.today()
+        """Fallback is the UTC date, not the runner's local date — comparing to
+        date.today() made this fail every evening west of UTC."""
+        from datetime import datetime, timezone
+        utc_today = datetime.now(timezone.utc).date()
+        assert _local_today(None) == utc_today
+        assert _local_today("Not/AZone") == utc_today
 
 
 class TestNormalizeHhmm:

@@ -1,38 +1,38 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-import json
 import os
-from db import claim_due_reminders, save_message, get_profile, get_history
-from agent import _sms_clean, client, HAIKU_MODEL
+from db import claim_due_reminders, save_message, get_profile
+from agent import _sms_clean, client, _build_system, SONNET_MODEL
 
 
 def _personalize_reminder(phone: str, text: str, profile: dict) -> str:
-    """Use Haiku to write the reminder in Palmer's voice with profile + recent context."""
-    recent = get_history(phone, limit=6)
-    recent_block = ""
-    if recent:
-        recent_block = "\nRecent texts:\n" + "\n".join(
-            f"{m['role']}: {m['content'][:200]}" for m in recent
-        )
+    """Write the reminder as the SAME Palmer the user talks to.
+
+    This used to carry its own one-line persona ("You're Palmer, a sharp, casual
+    texting friend") plus a raw profile dump, which meant reminders never saw the
+    calibrated register, the reaction history, or any of SYSTEM_PROMPT — a user
+    who asked for less sarcasm still got the breezy default here. _build_system
+    supplies profile and recent history, so both are dropped from the prompt.
+    """
     try:
         response = client.messages.create(
-            model=HAIKU_MODEL,
+            model=SONNET_MODEL,
             max_tokens=100,
-            messages=[{"role": "user", "content": f"""You're Palmer, a sharp, casual texting friend. Write a reminder text for this person.
+            system=_build_system(phone, include_recent=True),
+            messages=[{"role": "user", "content": f"""Write the reminder text for this person.
 
 Reminder: {text}
-What you know about them: {json.dumps(profile) if profile else "nothing yet"}{recent_block}
 
 Rules:
 - Sound like a friend, not an app. "hey, didn't you have that interview today?" not "Reminder: interview"
-- If the profile has a "communication_style", that is how this person wants to be talked to — follow it. Anything they asked for directly ("just the facts", "less sarcasm") wins over your default breezy read.
 - If the context is stressful or significant, dial in — don't be breezy about a medical appointment
 - Under 120 characters. Plain text only, no emoji.
 - Just the message, nothing else."""}],
         )
-        return _sms_clean(response.content[0].text.strip())
-    except Exception:
+        return _sms_clean(response.content[0].text.strip()) or _sms_clean(f"hey - {text}")
+    except Exception as e:
+        print(f"_personalize_reminder failed for {phone}: {e}")
         return _sms_clean(f"hey - {text}")
 
 

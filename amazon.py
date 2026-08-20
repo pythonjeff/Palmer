@@ -237,35 +237,8 @@ def check_price(watch: dict) -> dict | None:
 
 
 def draft_alert(product_name: str, current: dict, watch: dict, reason: str) -> str:
-    """Palmer-voice one-liner. Unlike shopping._draft_alert, this appends the
-    Amazon URL — dp/ASIN links are clean permalinks worth sending."""
-    target = watch.get("target_price")
-    baseline = watch.get("baseline_price")
-    context_lines = [
-        f"Product: {product_name}",
-        f"Amazon price: ${current['price']:.2f}",
-    ]
-    if reason == "target" and target is not None:
-        context_lines.append(f"They wanted it at or under ${float(target):.2f} - done.")
-    elif reason == "drop" and baseline:
-        pct = (1 - current["price"] / float(baseline)) * 100
-        context_lines.append(f"Down about {pct:.0f}% from ${float(baseline):.2f}.")
-    ctx = "\n".join(context_lines)
-    prompt = (
-        "You're Palmer, a dry, sharp texting friend. Tell the user their Amazon "
-        "price watch just hit. One short line. No emoji, no markdown, no bullets. "
-        "Don't say 'alert' or 'notification' — you're a friend, not an app. Do NOT "
-        "include a URL in your line (it will be appended separately). Under 180 "
-        f"characters.\n\n{ctx}"
-    )
-    try:
-        response = client.messages.create(
-            model=HAIKU_MODEL,
-            max_tokens=100,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        line = _sms_clean(response.content[0].text.strip())
-    except Exception as e:
-        print(f"amazon.draft_alert failed: {e}")
-        line = _sms_clean(f"{product_name} is ${current['price']:.2f} on Amazon.")
-    return f"{line} {current['url']}"
+    """Amazon price hit. Shared drafter, plus the dp/ASIN URL — those are clean
+    permalinks worth sending."""
+    from price_alert import draft_price_alert
+    return draft_price_alert(product_name, current, watch, reason,
+                             link=current["url"], source_label="Amazon")

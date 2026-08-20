@@ -110,25 +110,37 @@ class TestExtractionCapturesRegister:
 
 
 class TestReminderPathHonoursStyle:
-    """send_reminders bypasses _build_system entirely, so it needs its own rule."""
+    """Reminders used to carry their own mini-persona and never saw SYSTEM_PROMPT.
+    They now go through _build_system like every other user-facing message."""
 
-    def test_style_is_in_the_reminder_prompt(self):
+    def test_reminder_uses_the_shared_system_prompt(self):
         captured = {}
 
         def _fake_create(**kwargs):
-            captured["prompt"] = kwargs["messages"][0]["content"]
+            captured.update(kwargs)
             block = MagicMock()
             block.text = "hey - dentist at 3"
             resp = MagicMock()
             resp.content = [block]
             return resp
 
-        profile = {"communication_style": "blunt, no jokes, asked for just the facts"}
-        with patch.object(send_reminders, "get_history", return_value=[]), \
+        with patch.object(send_reminders, "_build_system",
+                          return_value="SYSTEM WITH CALIBRATION READ: blunt") as bs, \
              patch.object(send_reminders.client.messages, "create", side_effect=_fake_create):
-            out = send_reminders._personalize_reminder("+15550001111", "dentist at 3", profile)
+            out = send_reminders._personalize_reminder(
+                "+15550001111", "dentist at 3",
+                {"communication_style": "blunt, asked for just the facts"},
+            )
 
         assert out
-        assert "communication_style" in captured["prompt"]
-        assert "blunt, no jokes, asked for just the facts" in captured["prompt"], \
-            "the profile carrying the style must be passed through to the drafting call"
+        bs.assert_called_once()
+        assert captured["system"] == "SYSTEM WITH CALIBRATION READ: blunt"
+        assert captured["model"] == send_reminders.SONNET_MODEL, \
+            "user-facing drafting belongs on Sonnet"
+
+    def test_reminder_survives_a_drafting_failure(self):
+        with patch.object(send_reminders, "_build_system", return_value="SYS"), \
+             patch.object(send_reminders.client.messages, "create",
+                          side_effect=RuntimeError("boom")):
+            out = send_reminders._personalize_reminder("+15550001111", "dentist at 3", {})
+        assert "dentist at 3" in out, "a failed draft must still deliver the reminder"

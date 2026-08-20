@@ -342,3 +342,32 @@ class TestNoticeSurfacedAndCleared:
              patch.object(agent, "get_profile", return_value={}):
             agent._profile_and_consolidate("+15550001111", "ok", "sure", None, "crypto")
         assert stored["pending_preference_notice"] is None
+
+
+class TestWatchCapLookupIsPerUser:
+    """run_watches covers every watch for every user and get_profile opens a
+    fresh DB connection per call — the cap lookup must not be inside the loop."""
+
+    def test_profile_read_once_per_user_not_per_watch(self):
+        import watches
+        rows = [{"phone": "+1555000111" + str(i % 2), "id": i, "last_alerted": None,
+                 "cooldown_hours": 4, "daily_alert_date": None, "daily_alert_count": 0,
+                 "queries": "[]", "description": "x", "genre": None, "story_state": None}
+                for i in range(6)]  # 6 watches spread across 2 users
+
+        with patch.object(watches, "get_active_watches", return_value=rows), \
+             patch.object(watches, "get_profile", return_value={}) as gp, \
+             patch.object(watches, "_search_raw", return_value=[]):
+            watches.run_watches()
+
+        assert gp.call_count == 2, f"expected 1 profile read per user, got {gp.call_count}"
+
+    def test_profile_failure_falls_back_to_default_cap(self):
+        import watches
+        rows = [{"phone": "+15550001111", "id": 1, "last_alerted": None,
+                 "cooldown_hours": 4, "daily_alert_date": None, "daily_alert_count": 0,
+                 "queries": "[]", "description": "x", "genre": None, "story_state": None}]
+        with patch.object(watches, "get_active_watches", return_value=rows), \
+             patch.object(watches, "get_profile", side_effect=RuntimeError("db down")), \
+             patch.object(watches, "_search_raw", return_value=[]):
+            watches.run_watches()  # must not raise

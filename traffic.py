@@ -3,7 +3,7 @@
 Pipeline per city:
   1. Geocode city name to (lat/lng + bbox) via TomTom Search — cached in-process.
   2. Fetch Traffic Flow at city center + Traffic Incidents in the bbox in parallel.
-  3. Haiku drafts one short natural line in Palmer's voice.
+  3. Haiku summarizes it into one factual line; callers voice it.
 
 Returns None on any hard failure (no key, no city, geocode/API error) so
 morning briefing can silently skip the section — never surface a broken
@@ -151,21 +151,26 @@ def get_city_traffic(city: str) -> str | None:
     notable.sort(key=lambda i: (i.get("properties") or {}).get("delay") or 0, reverse=True)
     incident_lines = [_summarize_incident(i) for i in notable[:4]]
 
-    prompt = f"""Write ONE short traffic update for {city} in Palmer's dry, natural voice. Max two sentences, under 200 characters.
+    # Deliberately NOT written in Palmer's voice. Both callers — morning.py's
+    # briefing draft and the get_city_traffic tool inside get_reply — feed this
+    # into a Sonnet call that already carries the real system prompt, so voicing
+    # it here would just be a fourth, uncalibrated impression of Palmer.
+    # This is a factual summarizer; the callers do the talking.
+    prompt = f"""Summarize the traffic situation in {city} in ONE line. Max two sentences, under 200 characters. Plain factual reporting — this is source data for another writer, not a message to a user.
 
 Overall flow near city center: {flow_state}
 Notable incidents ({len(notable)}):
 {chr(10).join(f'- {line}' for line in incident_lines) if incident_lines else '- none'}
 
-Style examples:
-- "Traffic around St. Louis is slower than usual. Multiple accidents on highway 40 near the 270 merger keeping all directions slow."
-- "Roads around Boston are clear this morning."
-- "Slow going on I-5 south into Seattle — a jam near the Ship Canal Bridge adding about 15 minutes."
+Format examples:
+- "Traffic around St. Louis is slower than usual. Multiple accidents on highway 40 near the 270 merger are slowing all directions."
+- "Roads around Boston are clear."
+- "I-5 south into Seattle is slow, with a jam near the Ship Canal Bridge adding about 15 minutes."
 
 Rules:
 - If flow is normal and no notable incidents: say the roads are clear in one short sentence.
 - If incidents exist: name the specific roads/exits from the data, don't invent details.
-- Plain ASCII only. No emoji, no headers, no preamble. Just the traffic line."""
+- No commentary, no jokes, no greeting, no preamble. Plain ASCII only, no emoji."""
 
     try:
         response = client.messages.create(

@@ -243,6 +243,17 @@ def run_watches():
     watches = get_active_watches()
     now = datetime.now(timezone.utc)
 
+    # One profile read per USER, not per watch. get_profile opens a fresh DB
+    # connection per call and this loop covers every watch for every user, so
+    # doing it inline cost N connections a tick for N watches.
+    from tapback import pacing_factor
+    caps = {}
+    for phone in {w["phone"] for w in watches}:
+        try:
+            caps[phone] = max(1, round(DAILY_ALERT_MAX / pacing_factor(get_profile(phone))))
+        except Exception:
+            caps[phone] = DAILY_ALERT_MAX
+
     for watch in watches:
         try:
             # Cooldown: respect per-watch minimum gap between alerts
@@ -253,10 +264,9 @@ def run_watches():
                 if now - last < timedelta(hours=watch["cooldown_hours"]):
                     continue
 
-            # Daily cap: max 4 alerts per watch per day
-            from tapback import pacing_factor
-            cap = max(1, round(DAILY_ALERT_MAX / pacing_factor(get_profile(watch["phone"]))))
-            if not _daily_ok(watch, cap):
+            # Daily cap per watch. Normally DAILY_ALERT_MAX; lower for users whose
+            # reactions say Palmer is texting too much (see tapback.pacing_factor).
+            if not _daily_ok(watch, caps.get(watch["phone"], DAILY_ALERT_MAX)):
                 continue
 
             # Collect raw results across all queries, deduped by URL
