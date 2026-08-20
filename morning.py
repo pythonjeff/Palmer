@@ -14,7 +14,10 @@ DEFAULT_MORNING_TIME = "07:00"
 # How long after the target time we'll still send (covers missed scheduler ticks
 # or a transient generation failure) before giving up for the day.
 CATCHUP_WINDOW_MINUTES = 120
-MAX_TOPICS = 3
+# Topics pulled per briefing. Each is one Tavily search. Was 3, which silently
+# dropped most of what users had subscribed to — someone tracking 8 subjects got
+# the first 3 and never knew.
+MAX_TOPICS = 6
 
 
 def _infer_city_from_topics(topics: list[str]) -> str | None:
@@ -38,6 +41,18 @@ def _infer_city_from_topics(topics: list[str]) -> str | None:
 _WEATHER_KEYWORDS = ("weather", "forecast", "temperature", "rain", "snow", "wind", "humidity")
 _TRAFFIC_KEYWORDS = ("traffic", "commute", "highway", "roads")
 _PRICE_KEYWORDS = ("price", "stock", "shares", "ticker", "crypto")
+
+
+# Users answer "what should I get every morning?" with delivery preferences as
+# often as with subjects — "Format: bullet points per subject" was sitting in one
+# user's topic list and being sent to the news search as a query.
+_DIRECTIVE_PREFIXES = ("format:", "formatting:", "style:", "tone:", "length:",
+                       "note:", "preference:", "prefer:", "please ")
+
+
+def _is_directive(topic: str) -> bool:
+    """True if this 'topic' is really an instruction, not a subject to search."""
+    return topic.strip().lower().startswith(_DIRECTIVE_PREFIXES)
 
 
 def _price_asset_for_topic(topic: str) -> str | None:
@@ -79,6 +94,7 @@ def _gather_morning_data(profile: dict) -> list[str]:
     topics = [
         t for t in (profile.get("morning_topics") or [])
         if t and not any(w in t.lower() for w in _auto_covered)  # weather + traffic already covered
+        and not _is_directive(t)
     ]
     for topic in topics[:MAX_TOPICS]:
         asset = _price_asset_for_topic(topic)
@@ -165,8 +181,9 @@ Rules:
 - Weather: name the city the forecast is for, exactly as it appears in the data (e.g. "St. Louis" or "Kirkwood, MO"). Don't drop it, don't swap in a nickname, don't just say "today" without saying where. Use the numbers from the data verbatim — don't round the high 10 degrees, don't invent rain chances, don't reinterpret a "clear" description as "sunny and hot". If the data says a forecast couldn't be pulled, say briefly you can't get today's weather and move on — never tell them to google it or check another app.
 - Traffic: keep it to the one line provided in the data. Don't expand, embellish, or invent street/exit names beyond what's given. If traffic is normal, one short sentence is enough.
 - Vary the entry point. Sometimes weather leads, sometimes traffic, sometimes the most interesting topic, sometimes a quick personal note. Different angle than what you sent yesterday.
-- One or two sentences per topic. Whole message under 700 characters.
+- One or two sentences per topic. Whole message under 1000 characters.
 - Give each distinct subject (weather, traffic, each topic, the personal touch) its own line — a blank line between them — so it reads as separate, scannable items rather than one run-on paragraph. Still plain text, no bullet characters or numbering.
+- Never label a line with its subject. Write "Cards lost 5-4 in Cincinnati" — never "Cardinals - lost 5-4", never "Weather:", never a header of any kind. Each line should read like a sentence a friend typed, not a field in a report.
 {avoid_rule}- End with ONE personal touch — a single sentence in Palmer's voice that shows you actually thought about THEM today. Rotate the type so it's genuinely different from your recent mornings above:
   * a real check-in tied to something specific in their profile (an ongoing thread, someone they've mentioned, a decision they're weighing, their job, their kids/partner/pet)
   * a curious or thought-provoking question they'd enjoy chewing on with coffee — tied to their world when possible
