@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from agent import client, HAIKU_MODEL, _parse_json
+from llm import client, HAIKU_MODEL, _parse_json
 from db import get_profile, upsert_profile
 
 MAX_STORED_REACTIONS = 10

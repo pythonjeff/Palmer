@@ -1,12 +1,11 @@
 """Palmer's conversation loop: system-prompt assembly, tool dispatch, reply generation.
 
-The pieces that used to live here were split out (llm, netutil, smstext, prompts,
-tools_def, weather, datafeeds, userprofile). This module keeps the orchestration
-and re-exports the former surface below.
+The rest of what used to live here was split out into llm, netutil, smstext,
+prompts, tools_def, weather, datafeeds and userprofile. Import those directly —
+agent no longer re-exports them.
 
-Underscore-prefixed helpers are a convention meaning "internal to Palmer" — NOT
-"private to this module". Sibling modules import them from here, so the
-re-export block is load-bearing API, not leftovers. Grep before renaming.
+_build_system is the one helper siblings still take from here: it assembles the
+system prompt for every user-facing message (see CLAUDE.md "One voice").
 """
 import json
 import threading
@@ -27,36 +26,6 @@ from smstext import _sms_clean, _normalize_hhmm
 from weather import _get_weather
 from datafeeds import _search, _get_price, _get_gif, _fetch_media
 from userprofile import _update_profile, _consolidate_history
-
-# --- re-exported for sibling modules; see __all__ below ---
-from llm import HAIKU_MODEL, _parse_json
-from netutil import _http_get_json, _http_get_json_retry         
-from smstext import shorten_message, _parse_published            
-from prompts import EXTRACT_PROMPT, CONSOLIDATE_PROMPT           
-from weather import _weather_report, _resolve_day_delta, _geocode
-from datafeeds import _search_raw, _CRYPTO_IDS       
-from userprofile import (               
-    _all_interests, _is_duplicate_subject, _user_already_covered,
-    _apply_profile_updates, _canonical_updates, _normalize_profile,
-    _derive_timezone, _track_conversation_topic,
-)
-
-# The names sibling modules import from `agent`. Listing them here keeps the
-# re-exports above from reading as dead imports, and makes the package surface
-# explicit in one place.
-__all__ = [
-    "client", "HAIKU_MODEL", "SONNET_MODEL", "_parse_json",
-    "_http_get_json", "_http_get_json_retry",
-    "_sms_clean", "shorten_message", "_normalize_hhmm", "_parse_published",
-    "SYSTEM_PROMPT", "EXTRACT_PROMPT", "CONSOLIDATE_PROMPT", "TOOLS",
-    "_weather_report", "_get_weather", "_resolve_day_delta", "_geocode",
-    "_search", "_search_raw", "_get_price", "_get_gif", "_fetch_media", "_CRYPTO_IDS",
-    "_all_interests", "_is_duplicate_subject", "_user_already_covered",
-    "_apply_profile_updates", "_canonical_updates", "_normalize_profile",
-    "_derive_timezone", "_track_conversation_topic",
-    "_update_profile", "_consolidate_history",
-    "_build_system", "get_reply", "save_assistant_turn",
-]
 
 init_db()
 

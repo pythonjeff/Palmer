@@ -52,8 +52,28 @@ Reminder delivery uses `FOR UPDATE SKIP LOCKED` on Postgres in `claim_due_remind
 
 Schema is created lazily in `init_db()`, called at import time from `agent.py`. New columns on existing tables must be added to the `new_cols` migration list — Postgres uses `ADD COLUMN IF NOT EXISTS`, SQLite catches the duplicate-column exception.
 
-### The big graph of imports
-Almost everything imports from `agent.py`. `morning.py`, `alerts.py`, `followup.py`, `watches.py`, `send_reminders.py`, and `traffic.py` all reuse `client`, `_build_system`, `_sms_clean`, `_search`, `_weather_report`, `_get_price`, `HAIKU_MODEL`, `SONNET_MODEL`, etc. When editing `agent.py`, treat underscore-prefixed helpers as internal-to-the-package rather than private — search before renaming.
+### Module layout
+`agent.py` used to be 1,721 lines holding the client, prompts, tool schemas, weather, prices, profile handling and the conversation loop. It was split; import from the real owner, not from `agent`:
+
+```
+llm.py          client, HAIKU_MODEL, SONNET_MODEL, _parse_json
+netutil.py      _http_get_json, _http_get_json_retry
+smstext.py      _sms_clean, shorten_message, _normalize_hhmm, _parse_published
+prompts.py      SYSTEM_PROMPT, EXTRACT_PROMPT, CONSOLIDATE_PROMPT
+tools_def.py    TOOLS schema
+weather.py      geocoding, NWS (US) + Open-Meteo (rest of world)
+datafeeds.py    Tavily search, crypto/stock prices, GIFs, media
+userprofile.py  profile extract/consolidate + the two cross-send dedup gates
+agent.py        _build_system, get_reply, tool dispatch, save_assistant_turn
+```
+
+Dependencies run strictly downward: `llm`/`netutil` ← `smstext`/`weather`/`datafeeds` ← `userprofile` ← `agent`. Each module imports standalone; keep it that way.
+
+`agent.py` exports exactly `_build_system` (used by every module that sends a user-facing message) plus `get_reply`/`save_assistant_turn` for `main.py`. It is no longer a grab-bag facade — don't add re-exports to it.
+
+Underscore prefixes still mean "internal to Palmer", not "private to this module" — `smstext._sms_clean` is imported by six modules. Grep before renaming.
+
+**Patching in tests follows the code, not the name.** `patch("agent.client")` stopped working when functions moved out; patch the module the function actually lives in (`patch("userprofile.client")`). A dead patch target does not fail loudly — it lets the test make real API calls. Watch the suite runtime: it should be ~3.5s, and a jump means something is hitting the network.
 
 ### Scheduler cadence (main.py)
 ```

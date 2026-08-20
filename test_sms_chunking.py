@@ -3,8 +3,8 @@ load_dotenv()
 
 from unittest.mock import patch, MagicMock
 
-from agent import _sms_clean
-from sms_util import _split_for_sms, send_sms, FALLBACK_SMS
+from smstext import _sms_clean
+from sms_util import _split_for_sms, send_sms
 
 
 class TestSmsCleanNoTruncation:

@@ -1,6 +1,9 @@
 from datetime import datetime
 
-from agent import client, _build_system, _sms_clean, _is_duplicate_subject, HAIKU_MODEL, SONNET_MODEL
+from agent import _build_system
+from llm import client, HAIKU_MODEL, SONNET_MODEL
+from smstext import _sms_clean
+from userprofile import _is_duplicate_subject
 from db import get_all_profiles, upsert_profile, save_message, get_history, claim_daily_guard
 from morning import _local_now, _local_today
 

@@ -1,10 +1,12 @@
 import os
 import re
 from datetime import datetime, date as date_type, timedelta, timezone
-from agent import (
-    client, _build_system, _sms_clean, _search, _weather_report, _get_price,
-    _derive_timezone, _CRYPTO_IDS, HAIKU_MODEL, SONNET_MODEL,
-)
+from agent import _build_system
+from llm import client, HAIKU_MODEL, SONNET_MODEL
+from smstext import _sms_clean
+from weather import _weather_report
+from datafeeds import _search, _get_price, _CRYPTO_IDS
+from userprofile import _derive_timezone
 from db import get_profile, upsert_profile, get_all_profiles, save_message, get_history, claim_daily_guard
 from traffic import get_city_traffic
 

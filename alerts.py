@@ -1,11 +1,11 @@
 import hashlib
 from datetime import datetime, timezone, date as date_type
 
-from agent import (
-    client, _build_system, _sms_clean, _all_interests, _search_raw,
-    _parse_json, _is_duplicate_subject, _user_already_covered,
-    HAIKU_MODEL, SONNET_MODEL,
-)
+from agent import _build_system
+from llm import client, HAIKU_MODEL, SONNET_MODEL, _parse_json
+from smstext import _sms_clean
+from datafeeds import _search_raw
+from userprofile import _all_interests, _is_duplicate_subject, _user_already_covered
 from db import get_all_profiles, upsert_profile, save_message, claim_daily_guard
 from watches import corroborated, _canonical_domain
 from rubrics import classify_genre, rubric_for

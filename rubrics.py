@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import threading
 
-from agent import client, HAIKU_MODEL
+from llm import client, HAIKU_MODEL
 
 
 VALID_GENRES = (

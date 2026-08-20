@@ -6,7 +6,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from morning import _in_send_window, _parse_morning_time, _local_today, DEFAULT_MORNING_TIME
-from agent import _normalize_hhmm, _parse_published
+from smstext import _normalize_hhmm, _parse_published
 
 
 def _dt(hour, minute, tz="America/Chicago"):

@@ -11,6 +11,7 @@ come after it to be the last word on voice.
 from unittest.mock import patch, MagicMock
 
 import agent
+import prompts
 import send_reminders
 
 
@@ -103,7 +104,7 @@ class TestBuildSystemWiring:
 
 class TestExtractionCapturesRegister:
     def test_prompt_asks_for_explicit_requests(self):
-        body = agent.EXTRACT_PROMPT.lower()
+        body = prompts.EXTRACT_PROMPT.lower()
         assert "communication_style" in body
         assert "verbatim" in body, "explicit register asks must be recorded as stated"
         assert "joke back" in body

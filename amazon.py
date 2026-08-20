@@ -21,7 +21,7 @@ import re
 import requests as _requests
 
 import serpapi
-from agent import client, HAIKU_MODEL
+from llm import client, HAIKU_MODEL
 
 
 # /dp/<ASIN> and /gp/product/<ASIN> are the two canonical Amazon product paths.

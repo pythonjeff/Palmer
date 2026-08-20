@@ -16,7 +16,7 @@ import urllib.parse
 from datetime import datetime, timezone
 
 import serpapi
-from agent import client, HAIKU_MODEL
+from llm import client, HAIKU_MODEL
 
 DROP_THRESHOLD = 0.85  # alert when current <= baseline * DROP_THRESHOLD (i.e. >=15% off)
 PRICE_DAILY_ALERT_MAX = 3  # per-watch cap; guards against a price that
@@ -367,7 +367,7 @@ def run_price_watches():
     """Scheduler job. Every 12h: check each active price watch, alert on target-hit
     or >=15% drop from baseline. Silent-skip on any per-watch failure. Dispatches
     to shopping (Google Shopping) or amazon (Amazon by ASIN) based on w['source']."""
-    from agent import _is_duplicate_subject
+    from userprofile import _is_duplicate_subject
     from db import (
         get_active_price_watches, set_price_watch_baseline, update_price_watch_alerted,
         claim_price_watch_alert, release_price_watch_claim,

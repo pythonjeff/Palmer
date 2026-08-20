@@ -2,7 +2,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from db import claim_due_reminders, save_message, get_profile
-from agent import _sms_clean, client, _build_system, SONNET_MODEL
+from agent import _build_system
+from llm import client, SONNET_MODEL
+from smstext import _sms_clean
 
 
 def _personalize_reminder(phone: str, text: str, profile: dict) -> str:

@@ -9,7 +9,8 @@ from fastapi.responses import PlainTextResponse
 from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 from apscheduler.schedulers.background import BackgroundScheduler
-from agent import get_reply, save_assistant_turn, shorten_message
+from agent import get_reply, save_assistant_turn
+from smstext import shorten_message
 from morning import generate_morning, send_morning_messages, send_missing_data_asks
 from alerts import run_alert_checks
 from followup import run_followups

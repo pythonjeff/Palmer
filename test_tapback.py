@@ -7,7 +7,7 @@ main.py calls _scheduler.start() at import, and send_due_reminders runs every
 minute and sends real SMS. Neutralize it before importing main; production code
 stays untouched.
 """
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 

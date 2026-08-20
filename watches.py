@@ -5,7 +5,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta, date as _date
 
-from agent import client, _search_raw, _sms_clean, _is_duplicate_subject, _user_already_covered, HAIKU_MODEL
+from llm import client, HAIKU_MODEL
+from smstext import _sms_clean
+from datafeeds import _search_raw
+from userprofile import _is_duplicate_subject, _user_already_covered
 from db import (
     get_active_watches, update_watch_alerted, get_messages_after,
     claim_watch_alert, set_watch_genre, update_watch_story, get_profile,

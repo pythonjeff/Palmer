@@ -13,7 +13,8 @@ import os
 import concurrent.futures
 import urllib.parse
 
-from agent import client, _http_get_json, HAIKU_MODEL
+from llm import client, HAIKU_MODEL
+from netutil import _http_get_json
 
 TOMTOM_API_KEY = os.environ.get("TOMTOM_API_KEY", "")
 _TOMTOM_BASE = "https://api.tomtom.com"

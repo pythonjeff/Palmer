@@ -9,7 +9,7 @@ stays clean (same discipline as shopping.py / flights.py / traffic.py).
 import os
 import urllib.parse
 
-from agent import _http_get_json
+from netutil import _http_get_json
 
 SERP_API_KEY = os.environ.get("SERP_API_KEY", "")
 _SERPAPI_BASE = "https://serpapi.com/search.json"

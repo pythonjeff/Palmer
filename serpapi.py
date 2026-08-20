@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import urllib.parse
 
-from agent import _http_get_json
+from netutil import _http_get_json
 
 API_KEY = os.environ.get("SERP_API_KEY", "")
 BASE = "https://serpapi.com/search.json"

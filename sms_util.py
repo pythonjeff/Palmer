@@ -2,7 +2,7 @@ import os
 
 from twilio.rest import Client as TwilioClient
 
-from agent import _sms_clean, shorten_message
+from smstext import _sms_clean, shorten_message
 
 _twilio = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
 _APP_URL = os.environ.get("APP_URL", "").rstrip("/")

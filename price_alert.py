@@ -11,7 +11,9 @@ make that coupling bidirectional.
 """
 from __future__ import annotations
 
-from agent import client, _sms_clean, SONNET_MODEL, _build_system
+from agent import _build_system
+from llm import client, SONNET_MODEL
+from smstext import _sms_clean
 
 MAX_CHARS = 180
 
