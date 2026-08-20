@@ -48,8 +48,8 @@ class TestAlertsGate:
         return {"morning_onboarded": True, "timezone": "America/Chicago"}
 
     def _run_with(self, raw):
-        with patch("alerts.get_all_phones", return_value=["+15551234567"]), \
-             patch("alerts.get_profile", return_value=self._profile()), \
+        with patch("alerts.get_all_profiles",
+                   return_value=[("+15551234567", self._profile())]), \
              patch("alerts._in_alert_window", return_value=True), \
              patch("alerts.claim_daily_guard", return_value=True), \
              patch("alerts._get_alert_queries", return_value=["some query"]), \

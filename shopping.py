@@ -12,34 +12,27 @@ Returns None on any API failure so the scheduler tick silently skips —
 never surfaces a "shopping tool failed" line to the user (same discipline
 as traffic.py).
 """
-import os
-import json
 import urllib.parse
 from datetime import datetime, timezone
 
-from agent import client, _sms_clean, _http_get_json, HAIKU_MODEL
+import serpapi
+from agent import client, HAIKU_MODEL
 
-SERP_API_KEY = os.environ.get("SERP_API_KEY", "")
-_SERPAPI_BASE = "https://serpapi.com/search.json"
-_SERPAPI_TIMEOUT = 12
 DROP_THRESHOLD = 0.85  # alert when current <= baseline * DROP_THRESHOLD (i.e. >=15% off)
 PRICE_DAILY_ALERT_MAX = 3  # per-watch cap; guards against a price that
 # oscillates across the threshold from firing indefinitely on the 12h cadence.
 
 
 def _serpapi_search(query: str) -> list[dict]:
-    if not SERP_API_KEY or not query:
+    if not query:
         return []
-    params = {
+    data = serpapi.search({
         "engine": "google_shopping",
         "q": query,
-        "api_key": SERP_API_KEY,
         "num": "20",
         "hl": "en",
         "gl": "us",
-    }
-    url = f"{_SERPAPI_BASE}?{urllib.parse.urlencode(params)}"
-    data = _http_get_json(url, timeout=_SERPAPI_TIMEOUT)
+    })
     if not data:
         return []
     results = []
@@ -94,15 +87,12 @@ def _resolve_merchant_url(page_token: str, query: str = "") -> str | None:
     and Google retired the standalone google_product engine —
     google_immersive_product is SerpAPI's replacement.
     """
-    if not page_token or not SERP_API_KEY:
+    if not page_token:
         return None
-    params = {
+    data = serpapi.search({
         "engine": "google_immersive_product",
         "page_token": page_token,
-        "api_key": SERP_API_KEY,
-    }
-    url = f"{_SERPAPI_BASE}?{urllib.parse.urlencode(params)}"
-    data = _http_get_json(url, timeout=_SERPAPI_TIMEOUT)
+    })
     if not data:
         return None
     stores = (data.get("product_results") or {}).get("stores") or []
@@ -206,7 +196,7 @@ def search_shopping(query: str, max_price: float | None = None,
     Never raises; returns a plain message on any failure so tool dispatch
     stays clean.
     """
-    if not SERP_API_KEY:
+    if not serpapi.API_KEY:
         return "Shopping search is unavailable right now."
     if include_link:
         limit = 1  # link mode always returns exactly one row
@@ -293,19 +283,17 @@ def browse_shop(query: str) -> str:
       3. First organic result that isn't an aggregator/social/search page.
 
     URL is returned raw. Never raises."""
-    if not SERP_API_KEY:
+    if not serpapi.API_KEY:
         return "Shopping search is unavailable right now."
     if not query:
         return "No browse result found."
-    params = {
+    data = serpapi.search({
         "engine": "google",
         "q": query,
-        "api_key": SERP_API_KEY,
         "num": "10",
         "hl": "en",
         "gl": "us",
-    }
-    data = _http_get_json(f"{_SERPAPI_BASE}?{urllib.parse.urlencode(params)}", timeout=_SERPAPI_TIMEOUT)
+    })
     if not data:
         return f"No browse result found for {query!r}."
 

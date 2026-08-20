@@ -205,7 +205,7 @@ class TestBrowseShop:
             organic=[{"title": "Buzzfeed roundup", "link": "https://www.buzzfeed.com/best-tees"}],
             knowledge_graph={"title": "Madewell", "website": "https://www.madewell.com"},
         )
-        with patch("shopping._http_get_json", return_value=payload):
+        with patch("serpapi._http_get_json", return_value=payload):
             out = browse_shop("Madewell mens tee shirts")
         assert "madewell.com" in out
 
@@ -214,7 +214,7 @@ class TestBrowseShop:
             {"title": "Best T-Shirts 2026", "link": "https://www.buzzfeed.com/tees"},
             {"title": "Men's T-Shirts | Madewell", "link": "https://www.madewell.com/mens/tshirts"},
         ])
-        with patch("shopping._http_get_json", return_value=payload):
+        with patch("serpapi._http_get_json", return_value=payload):
             out = browse_shop("Madewell mens tee shirts")
         assert "madewell.com/mens/tshirts" in out
         assert "buzzfeed" not in out
@@ -226,7 +226,7 @@ class TestBrowseShop:
             {"title": "Reddit thread", "link": "https://www.reddit.com/r/malefashionadvice/x"},
             {"title": "Actual store", "link": "https://www.uniqlo.com/us/en/men/tops/t-shirts"},
         ])
-        with patch("shopping._http_get_json", return_value=payload):
+        with patch("serpapi._http_get_json", return_value=payload):
             out = browse_shop("mens tee shirts")
         assert "uniqlo.com" in out
         assert "pinterest" not in out
@@ -237,7 +237,7 @@ class TestBrowseShop:
             {"title": "Amazon search", "link": "https://www.amazon.com/s?k=wool+coat"},
             {"title": "Wool coat", "link": "https://www.amazon.com/dp/B0XXXX"},
         ])
-        with patch("shopping._http_get_json", return_value=search_page):
+        with patch("serpapi._http_get_json", return_value=search_page):
             out = browse_shop("wool coat")
         assert "/dp/B0XXXX" in out
         assert "/s?k=" not in out
@@ -247,21 +247,21 @@ class TestBrowseShop:
             {"title": "Random shop", "link": "https://www.someshop.com/x"},
             {"title": "Another shop", "link": "https://www.othershop.com/y"},
         ])
-        with patch("shopping._http_get_json", return_value=payload):
+        with patch("serpapi._http_get_json", return_value=payload):
             out = browse_shop("wool coat")
         assert "someshop.com" in out
 
     def test_empty_organic_returns_no_result_string(self):
-        with patch("shopping._http_get_json", return_value=self._serp()):
+        with patch("serpapi._http_get_json", return_value=self._serp()):
             out = browse_shop("Madewell tees")
         assert out.startswith("No browse result found")
 
     def test_serpapi_failure_returns_no_result_string(self):
-        with patch("shopping._http_get_json", return_value=None):
+        with patch("serpapi._http_get_json", return_value=None):
             out = browse_shop("Madewell tees")
         assert out.startswith("No browse result found")
 
     def test_missing_api_key_returns_unavailable(self):
-        with patch("shopping.SERP_API_KEY", ""):
+        with patch("serpapi.API_KEY", ""):
             out = browse_shop("Madewell tees")
         assert "unavailable" in out.lower()

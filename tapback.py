@@ -158,11 +158,16 @@ def parse_reaction(body: str | None) -> dict | None:
     return None
 
 
-def record_reaction(phone: str, reaction: dict, verdict: dict | None = None) -> None:
-    """Append to the rolling reaction log on the profile. Never raises —
-    a bookkeeping failure must not turn into a reply the user shouldn't get."""
+def record_reaction(phone: str, reaction: dict, verdict: dict | None = None,
+                    profile: dict | None = None) -> dict:
+    """Append to the rolling reaction log on the profile.
+
+    Takes an already-loaded profile and returns the updated one so the caller
+    doesn't re-read it — this path used to cost five separate get_profile calls,
+    each opening its own DB connection. Never raises: a bookkeeping failure must
+    not turn into a reply the user shouldn't get."""
     try:
-        profile = get_profile(phone)
+        profile = dict(get_profile(phone) if profile is None else profile)
         log = list(profile.get("reactions") or [])
         log.append({
             "kind": reaction["kind"],
@@ -173,9 +178,13 @@ def record_reaction(phone: str, reaction: dict, verdict: dict | None = None) -> 
             "emoji": reaction.get("emoji", ""),
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         })
-        upsert_profile(phone, {"reactions": log[-MAX_STORED_REACTIONS:]})
+        capped = log[-MAX_STORED_REACTIONS:]
+        upsert_profile(phone, {"reactions": capped})
+        profile["reactions"] = capped
+        return profile
     except Exception as e:
         print(f"record_reaction failed for {phone}: {e}")
+        return profile or {}
 
 
 _INTERPRET_PROMPT = """Someone reacted to a text instead of replying to it. Work out what the reaction is DOING.
@@ -287,14 +296,14 @@ Update communication_style to account for what these reactions show — what reg
 Return ONLY: {{"communication_style": "..."}}"""
 
 
-def maybe_consolidate(phone: str) -> None:
+def maybe_consolidate(phone: str, profile: dict | None = None) -> None:
     """Fold accumulated reactions into communication_style every CONSOLIDATE_EVERY.
 
     Reactions never reach agent._update_profile (they short-circuit before
     get_reply), so without this the log rolls over and the signal is lost.
     Never raises."""
     try:
-        profile = get_profile(phone)
+        profile = get_profile(phone) if profile is None else profile
         log = profile.get("reactions") or []
         seen = int(profile.get("reactions_folded_count") or 0)
         if len(log) < CONSOLIDATE_EVERY or (len(log) - seen) < CONSOLIDATE_EVERY:
@@ -338,7 +347,7 @@ def pacing_factor(profile: dict) -> float:
     return min(factor, MAX_PACING_FACTOR)
 
 
-def maybe_learn_preferences(phone: str) -> None:
+def maybe_learn_preferences(phone: str, profile: dict | None = None) -> None:
     """Drop a topic from morning briefings after repeated negative reactions.
 
     morning.py already reads morning_prefs["avoid"] (and protects weather and
@@ -347,7 +356,7 @@ def maybe_learn_preferences(phone: str) -> None:
     topic — an unexplained disappearance is worse than the noise it prevents.
     Never raises."""
     try:
-        profile = get_profile(phone)
+        profile = get_profile(phone) if profile is None else profile
         log = profile.get("reactions") or []
         prefs = dict(profile.get("morning_prefs") or {})
         avoid = list(prefs.get("avoid") or [])
@@ -377,10 +386,15 @@ def maybe_learn_preferences(phone: str) -> None:
         print(f"maybe_learn_preferences failed for {phone}: {e}")
 
 
-def learn_from_reactions(phone: str) -> None:
-    """Everything a reaction should teach, in one call. Never raises."""
-    maybe_consolidate(phone)
-    maybe_learn_preferences(phone)
+def learn_from_reactions(phone: str, profile: dict | None = None) -> None:
+    """Everything a reaction should teach, in one call. Never raises.
+
+    Both learners read disjoint profile fields, so they share one snapshot
+    rather than each re-reading it."""
+    if profile is None:
+        profile = get_profile(phone)
+    maybe_consolidate(phone, profile)
+    maybe_learn_preferences(phone, profile)
 
 
 def reaction_block(profile: dict) -> str:

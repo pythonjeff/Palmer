@@ -10,7 +10,6 @@ morning briefing can silently skip the section — never surface a broken
 "traffic tool failed" message to the user.
 """
 import os
-import json
 import concurrent.futures
 import urllib.parse
 

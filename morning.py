@@ -5,7 +5,7 @@ from agent import (
     client, _build_system, _sms_clean, _search, _weather_report, _get_price,
     _derive_timezone, _CRYPTO_IDS, HAIKU_MODEL, SONNET_MODEL,
 )
-from db import get_profile, upsert_profile, get_all_phones, save_message, get_history, claim_daily_guard
+from db import get_profile, upsert_profile, get_all_profiles, save_message, get_history, claim_daily_guard
 from traffic import get_city_traffic
 
 DEFAULT_MORNING_TIME = "07:00"
@@ -225,9 +225,8 @@ def _in_send_window(now_local: datetime, morning_time: str | None,
 def send_morning_messages():
     from sms_util import send_sms
 
-    for phone in get_all_phones():
+    for phone, profile in get_all_profiles():
         try:
-            profile = get_profile(phone)
             if not profile.get("morning_onboarded"):
                 continue
             if profile.get("morning_enabled") is False:
@@ -358,9 +357,8 @@ def send_missing_data_asks():
         return
 
     matched = 0
-    for phone in get_all_phones():
+    for phone, profile in get_all_profiles():
         try:
-            profile = get_profile(phone)
             if not _needs_city_ask(profile):
                 continue
             matched += 1

@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from agent import client, _build_system, _sms_clean, _is_duplicate_subject, HAIKU_MODEL, SONNET_MODEL
-from db import get_all_phones, get_profile, upsert_profile, save_message, get_history, claim_daily_guard
+from db import get_all_profiles, upsert_profile, save_message, get_history, claim_daily_guard
 from morning import _local_now, _local_today
 
 
@@ -91,9 +91,8 @@ def run_followups():
     """Send a proactive check-in if warranted. Called every 4 hours by APScheduler."""
     from sms_util import send_sms
 
-    for phone in get_all_phones():
+    for phone, profile in get_all_profiles():
         try:
-            profile = get_profile(phone)
             if not _should_send_followup(profile):
                 continue
 

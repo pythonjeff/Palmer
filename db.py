@@ -37,7 +37,7 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    cur.execute(f"""
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             phone TEXT PRIMARY KEY,
             profile TEXT NOT NULL DEFAULT '{{}}'
@@ -204,10 +204,22 @@ def get_all_phones() -> list[str]:
 
 
 def upsert_profile(phone: str, updates: dict):
-    profile = get_profile(phone)
-    profile.update(updates)
+    """Merge `updates` into the stored profile.
+
+    Read and write share ONE connection, and on Postgres the read takes a row
+    lock — this used to be two connections with an unsynchronised gap between
+    them, so two concurrent writers (an inbound turn and a scheduler job) could
+    each read the same profile and the second write would drop the first's
+    fields. Same rationale as claim_daily_guard below."""
     conn = _conn()
     cur = conn.cursor()
+    if _DATABASE_URL:
+        cur.execute(f"SELECT profile FROM users WHERE phone = {PH} FOR UPDATE", (phone,))
+    else:
+        cur.execute(f"SELECT profile FROM users WHERE phone = {PH}", (phone,))
+    row = cur.fetchone()
+    profile = json.loads(row["profile"]) if row else {}
+    profile.update(updates)
     cur.execute(
         f"INSERT INTO users (phone, profile) VALUES ({PH}, {PH}) "
         f"ON CONFLICT(phone) DO UPDATE SET profile = EXCLUDED.profile",
@@ -215,6 +227,26 @@ def upsert_profile(phone: str, updates: dict):
     )
     conn.commit()
     conn.close()
+
+
+def get_all_profiles() -> list[tuple[str, dict]]:
+    """Every (phone, profile) in one query.
+
+    The scheduler jobs used to call get_all_phones() and then get_profile() per
+    user — one connection each, N+1 per tick across morning, alerts and
+    followups."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute("SELECT phone, profile FROM users")
+    rows = cur.fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        try:
+            out.append((r["phone"], json.loads(r["profile"]) if r["profile"] else {}))
+        except (ValueError, TypeError):
+            out.append((r["phone"], {}))
+    return out
 
 
 def claim_daily_guard(phone: str, field: str, value: str) -> bool:

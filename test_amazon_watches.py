@@ -42,16 +42,16 @@ class TestSerpapiSearch:
         return {"organic_results": items}
 
     def test_missing_key_returns_empty(self):
-        with patch("amazon.SERP_API_KEY", ""):
+        with patch("serpapi.API_KEY", ""):
             assert amazon._serpapi_search("protein") == []
 
     def test_empty_query_returns_empty(self):
-        with patch("amazon.SERP_API_KEY", "fake"):
+        with patch("serpapi.API_KEY", "fake"):
             assert amazon._serpapi_search("") == []
 
     def test_http_failure_returns_empty(self):
-        with patch("amazon.SERP_API_KEY", "fake"), \
-             patch("amazon._http_get_json", return_value=None):
+        with patch("serpapi.API_KEY", "fake"), \
+             patch("serpapi._http_get_json", return_value=None):
             assert amazon._serpapi_search("protein") == []
 
     def test_skips_items_without_asin(self):
@@ -59,8 +59,8 @@ class TestSerpapiSearch:
             {"title": "no asin here", "extracted_price": 20.0},
             {"asin": "B01", "title": "has asin", "extracted_price": 25.0},
         ])
-        with patch("amazon.SERP_API_KEY", "fake"), \
-             patch("amazon._http_get_json", return_value=payload):
+        with patch("serpapi.API_KEY", "fake"), \
+             patch("serpapi._http_get_json", return_value=payload):
             out = amazon._serpapi_search("thing")
         assert len(out) == 1
         assert out[0]["asin"] == "B01"
@@ -70,8 +70,8 @@ class TestSerpapiSearch:
             {"asin": "B01", "title": "priced", "extracted_price": 20.0},
             {"asin": "B02", "title": "no price"},
         ])
-        with patch("amazon.SERP_API_KEY", "fake"), \
-             patch("amazon._http_get_json", return_value=payload):
+        with patch("serpapi.API_KEY", "fake"), \
+             patch("serpapi._http_get_json", return_value=payload):
             out = amazon._serpapi_search("thing")
         assert [r["asin"] for r in out] == ["B01"]
 
@@ -79,8 +79,8 @@ class TestSerpapiSearch:
         payload = self._payload([
             {"asin": "B0ABC123", "title": "t", "extracted_price": 10.0},
         ])
-        with patch("amazon.SERP_API_KEY", "fake"), \
-             patch("amazon._http_get_json", return_value=payload):
+        with patch("serpapi.API_KEY", "fake"), \
+             patch("serpapi._http_get_json", return_value=payload):
             out = amazon._serpapi_search("thing")
         assert out[0]["url"] == "https://www.amazon.com/dp/B0ABC123"
 
@@ -233,22 +233,22 @@ class TestCheckPrice:
         return base
 
     def test_missing_asin_returns_none(self):
-        with patch("amazon.SERP_API_KEY", "fake"):
+        with patch("serpapi.API_KEY", "fake"):
             assert amazon.check_price(self._watch(asin=None)) is None
 
     def test_missing_key_returns_none(self):
-        with patch("amazon.SERP_API_KEY", ""):
+        with patch("serpapi.API_KEY", ""):
             assert amazon.check_price(self._watch()) is None
 
     def test_http_failure_returns_none(self):
-        with patch("amazon.SERP_API_KEY", "fake"), \
-             patch("amazon._http_get_json", return_value=None):
+        with patch("serpapi.API_KEY", "fake"), \
+             patch("serpapi._http_get_json", return_value=None):
             assert amazon.check_price(self._watch()) is None
 
     def test_reads_product_results_price(self):
         payload = {"product_results": {"title": "Full title", "extracted_price": 42.0}}
-        with patch("amazon.SERP_API_KEY", "fake"), \
-             patch("amazon._http_get_json", return_value=payload):
+        with patch("serpapi.API_KEY", "fake"), \
+             patch("serpapi._http_get_json", return_value=payload):
             out = amazon.check_price(self._watch())
         assert out["price"] == 42.0
         assert out["title"] == "Full title"
@@ -257,15 +257,15 @@ class TestCheckPrice:
 
     def test_falls_back_to_buybox_when_product_results_priceless(self):
         payload = {"product_results": {"title": "T"}, "buybox_winner": {"extracted_price": 39.99}}
-        with patch("amazon.SERP_API_KEY", "fake"), \
-             patch("amazon._http_get_json", return_value=payload):
+        with patch("serpapi.API_KEY", "fake"), \
+             patch("serpapi._http_get_json", return_value=payload):
             out = amazon.check_price(self._watch())
         assert out["price"] == 39.99
 
     def test_no_price_anywhere_returns_none(self):
         payload = {"product_results": {"title": "T"}}
-        with patch("amazon.SERP_API_KEY", "fake"), \
-             patch("amazon._http_get_json", return_value=payload):
+        with patch("serpapi.API_KEY", "fake"), \
+             patch("serpapi._http_get_json", return_value=payload):
             assert amazon.check_price(self._watch()) is None
 
     def test_uses_asin_not_query(self):
@@ -275,8 +275,8 @@ class TestCheckPrice:
         def _capture(url, timeout):
             captured["url"] = url
             return {"product_results": {"extracted_price": 10.0}}
-        with patch("amazon.SERP_API_KEY", "fake"), \
-             patch("amazon._http_get_json", side_effect=_capture):
+        with patch("serpapi.API_KEY", "fake"), \
+             patch("serpapi._http_get_json", side_effect=_capture):
             amazon.check_price(self._watch(asin="B0XYZ", product_name="totally different"))
         assert "asin=B0XYZ" in captured["url"]
         assert "totally+different" not in captured["url"]

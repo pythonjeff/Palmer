@@ -98,8 +98,8 @@ class TestAlertsSubjectDedup:
         return {"morning_onboarded": True, "timezone": "America/Chicago"}
 
     def test_skips_send_and_releases_claim_when_duplicate(self):
-        with patch("alerts.get_all_phones", return_value=["+15551234567"]), \
-             patch("alerts.get_profile", return_value=self._profile()), \
+        with patch("alerts.get_all_profiles",
+                   return_value=[("+15551234567", self._profile())]), \
              patch("alerts._in_alert_window", return_value=True), \
              patch("alerts.claim_daily_guard", return_value=True), \
              patch("alerts._get_alert_queries", return_value=["some query"]), \
@@ -120,8 +120,8 @@ class TestAlertsSubjectDedup:
         ), "expected the daily claim to be released"
 
     def test_sends_normally_when_not_duplicate(self):
-        with patch("alerts.get_all_phones", return_value=["+15551234567"]), \
-             patch("alerts.get_profile", return_value=self._profile()), \
+        with patch("alerts.get_all_profiles",
+                   return_value=[("+15551234567", self._profile())]), \
              patch("alerts._in_alert_window", return_value=True), \
              patch("alerts.claim_daily_guard", return_value=True), \
              patch("alerts._get_alert_queries", return_value=["some query"]), \
@@ -145,8 +145,8 @@ class TestFollowupSubjectDedup:
                 "ongoing_threads": ["a big life event"]}
 
     def test_skips_send_and_releases_claim_when_duplicate(self):
-        with patch("followup.get_all_phones", return_value=["+15551234567"]), \
-             patch("followup.get_profile", return_value=self._profile()), \
+        with patch("followup.get_all_profiles",
+                   return_value=[("+15551234567", self._profile())]), \
              patch("followup._should_send_followup", return_value=True), \
              patch("followup.claim_daily_guard", return_value=True), \
              patch("followup.get_history", return_value=[]), \
@@ -165,8 +165,8 @@ class TestFollowupSubjectDedup:
         ), "expected the daily claim to be released"
 
     def test_sends_normally_when_not_duplicate(self):
-        with patch("followup.get_all_phones", return_value=["+15551234567"]), \
-             patch("followup.get_profile", return_value=self._profile()), \
+        with patch("followup.get_all_profiles",
+                   return_value=[("+15551234567", self._profile())]), \
              patch("followup._should_send_followup", return_value=True), \
              patch("followup.claim_daily_guard", return_value=True), \
              patch("followup.get_history", return_value=[]), \

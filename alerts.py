@@ -1,5 +1,4 @@
 import hashlib
-import os
 from datetime import datetime, timezone, date as date_type
 
 from agent import (
@@ -7,7 +6,7 @@ from agent import (
     _parse_json, _is_duplicate_subject, _user_already_covered,
     HAIKU_MODEL, SONNET_MODEL,
 )
-from db import get_all_phones, get_profile, upsert_profile, save_message, claim_daily_guard
+from db import get_all_profiles, upsert_profile, save_message, claim_daily_guard
 from watches import corroborated, _canonical_domain
 from rubrics import classify_genre, rubric_for
 
@@ -186,8 +185,7 @@ def run_alert_checks():
     from sms_util import send_sms
     today = date_type.today().isoformat()
 
-    for phone in get_all_phones():
-        profile = get_profile(phone)
+    for phone, profile in get_all_profiles():
 
         if not profile.get("morning_onboarded"):
             continue

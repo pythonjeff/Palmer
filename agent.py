@@ -1469,7 +1469,7 @@ def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = 
                 bits.append(f"last seen ${float(w['last_seen_price']):.2f}")
             pw_lines.append("- " + " — ".join(bits))
         system += (
-            f"\n\nActive price watches (products you're checking every 12 hours for them):\n"
+            "\n\nActive price watches (products you're checking every 12 hours for them):\n"
             + "\n".join(pw_lines)
             + "\n\nIf they ask what you're tracking, roll these in with any news watches above — natural prose, not a list."
         )

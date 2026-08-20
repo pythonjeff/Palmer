@@ -16,17 +16,13 @@ Pipeline:
 Silent-skip on any API failure so the scheduler tick never surfaces
 "amazon tool failed" to the user (same discipline as shopping.py, traffic.py).
 """
-import os
 import re
-import urllib.parse
 
 import requests as _requests
 
-from agent import client, _sms_clean, _http_get_json, HAIKU_MODEL
+import serpapi
+from agent import client, HAIKU_MODEL
 
-SERP_API_KEY = os.environ.get("SERP_API_KEY", "")
-_SERPAPI_BASE = "https://serpapi.com/search.json"
-_SERPAPI_TIMEOUT = 12
 
 # /dp/<ASIN> and /gp/product/<ASIN> are the two canonical Amazon product paths.
 # ASINs are always 10 chars, uppercase alphanumeric.
@@ -96,16 +92,13 @@ def _extract_price(obj: dict) -> float | None:
 
 
 def _serpapi_search(query: str) -> list[dict]:
-    if not SERP_API_KEY or not query:
+    if not query:
         return []
-    params = {
+    data = serpapi.search({
         "engine": "amazon",
         "amazon_domain": "amazon.com",
         "k": query,
-        "api_key": SERP_API_KEY,
-    }
-    url = f"{_SERPAPI_BASE}?{urllib.parse.urlencode(params)}"
-    data = _http_get_json(url, timeout=_SERPAPI_TIMEOUT)
+    })
     if not data:
         return []
     results = []
@@ -165,16 +158,13 @@ def _amazon_product(asin: str) -> dict | None:
     """Fetch {title, price} for an ASIN via SerpAPI amazon_product. Returns None
     on any failure (missing key, HTTP error, no price found in either
     product_results.extracted_price or buybox_winner)."""
-    if not asin or not SERP_API_KEY:
+    if not asin:
         return None
-    params = {
+    data = serpapi.search({
         "engine": "amazon_product",
         "amazon_domain": "amazon.com",
         "asin": asin,
-        "api_key": SERP_API_KEY,
-    }
-    url = f"{_SERPAPI_BASE}?{urllib.parse.urlencode(params)}"
-    data = _http_get_json(url, timeout=_SERPAPI_TIMEOUT)
+    })
     if not data:
         return None
     product = data.get("product_results") or {}

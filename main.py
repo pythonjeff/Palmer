@@ -9,7 +9,7 @@ from fastapi.responses import PlainTextResponse
 from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 from apscheduler.schedulers.background import BackgroundScheduler
-from agent import get_reply, save_assistant_turn, shorten_message, _sms_clean
+from agent import get_reply, save_assistant_turn, shorten_message
 from morning import generate_morning, send_morning_messages, send_missing_data_asks
 from alerts import run_alert_checks
 from followup import run_followups
@@ -22,6 +22,11 @@ from tapback import parse_reaction, record_reaction, interpret_reaction, learn_f
 
 app = FastAPI()
 
+# Importing main starts the job loop, and send_due_reminders sends real SMS on
+# a 1-minute interval. Set PALMER_NO_SCHEDULER=1 for anything that imports this
+# module without wanting to be a live dyno — tests, shells, one-off scripts.
+_SCHEDULER_ENABLED = os.environ.get("PALMER_NO_SCHEDULER") != "1"
+
 _scheduler = BackgroundScheduler()
 _scheduler.add_job(send_due_reminders, "interval", minutes=1)
 _scheduler.add_job(send_morning_messages, "interval", minutes=5)
@@ -33,7 +38,10 @@ _scheduler.add_job(run_followups, "interval", hours=4)
 # while leaving headroom for Amazon watches (dual-source: Google Shopping +
 # amazon_product engine both go through this same tick).
 _scheduler.add_job(run_price_watches, "interval", hours=12)
-_scheduler.start()
+if _SCHEDULER_ENABLED:
+    _scheduler.start()
+else:
+    print("PALMER_NO_SCHEDULER=1 — background jobs not started")
 
 _in_flight: dict[str, set] = defaultdict(set)
 _in_flight_lock = threading.Lock()
@@ -74,11 +82,10 @@ def _handle_sms_inner(from_number: str, body: str, media_url: str | None) -> boo
                 if m["role"] == "assistant":
                     last_assistant = m["content"]
                     break
-            verdict = interpret_reaction(
-                reaction, last_assistant, get_profile(from_number)
-            )
-            record_reaction(from_number, reaction, verdict)
-            learn_from_reactions(from_number)
+            profile = get_profile(from_number)
+            verdict = interpret_reaction(reaction, last_assistant, profile)
+            profile = record_reaction(from_number, reaction, verdict, profile)
+            learn_from_reactions(from_number, profile)
 
             if not verdict.get("needs_reply"):
                 # Returning True is load-bearing: _handle_sms fires FALLBACK_SMS

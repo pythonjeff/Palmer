@@ -1,7 +1,6 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-import os
 from db import claim_due_reminders, save_message, get_profile
 from agent import _sms_clean, client, _build_system, SONNET_MODEL
 
