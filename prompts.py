@@ -230,6 +230,7 @@ Canonical key names:
 - "sports_teams" (not favorite_teams/teams/sports)
 - "brands" (not tracked_brands/shopping_interests)
 - "job", "stressed_about", "follow_up", "vibe", "interests"
+- "commute" (dict with "origin" and "destination" street addresses, if they've told you their regular drive — e.g. home to office. Used for the morning drive-time line.)
 - "relationships" (dict or list: partner, kids, pets, close friends, coworkers they mention)
 - "life_context" (short string: what's going on in their life right now)
 - "communication_style" (HOW TO TALK TO THEM, not just how they text. Capture: brevity, formality, emoji use, how precise they want answers; whether they joke back or let dry humor sit; whether they want the answer before any personality. Also record VERBATIM any explicit instruction they have given about how to talk to them — "less sarcasm", "just give me the answer", "you can be blunt with me" — and note that they asked for it directly)

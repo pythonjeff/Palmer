@@ -8,7 +8,7 @@ from weather import _weather_report
 from datafeeds import _search, _get_price, _CRYPTO_IDS
 from userprofile import _derive_timezone
 from db import get_profile, upsert_profile, get_all_profiles, save_message, get_history, claim_daily_guard
-from traffic import get_city_traffic
+from traffic import get_city_traffic, get_travel_time
 
 DEFAULT_MORNING_TIME = "07:00"
 # How long after the target time we'll still send (covers missed scheduler ticks
@@ -36,6 +36,44 @@ def _infer_city_from_topics(topics: list[str]) -> str | None:
     except Exception as e:
         print(f"_infer_city_from_topics failed: {e}")
     return None
+
+
+# A commute is a route, not a news topic. Users phrase it as one anyway
+# ("Daily commute traffic: <origin> to <destination>"), so accept that shape and
+# route it to TomTom point-to-point instead of the city-wide traffic line.
+_COMMUTE_RE = re.compile(r"(?:commute|drive|route|traffic)\b[^:]*:\s*(.+?)\s+to\s+(.+)$", re.I)
+
+# get_travel_time always returns a string, including its failures. Fall back to
+# the city line rather than putting "Couldn't find that starting address" in a
+# briefing.
+_ROUTE_FAILURES = ("couldn't find", "routing failed", "not configured", "need both")
+
+
+def _parse_commute_topic(topic: str) -> tuple[str, str] | None:
+    m = _COMMUTE_RE.search((topic or "").strip())
+    if not m:
+        return None
+    origin, dest = m.group(1).strip(" .,"), m.group(2).strip(" .,")
+    if len(origin) < 5 or len(dest) < 5:
+        return None
+    return origin, dest
+
+
+def _commute_route(profile: dict) -> tuple[str, str] | None:
+    """The user's saved commute, preferring the structured field over the
+    free-text topic it may still be stored as."""
+    c = profile.get("commute") or {}
+    if isinstance(c, dict) and c.get("origin") and c.get("destination"):
+        return c["origin"], c["destination"]
+    for topic in profile.get("morning_topics") or []:
+        parsed = _parse_commute_topic(topic)
+        if parsed:
+            return parsed
+    return None
+
+
+def _route_line_ok(line: str | None) -> bool:
+    return bool(line) and not any(f in line.lower() for f in _ROUTE_FAILURES)
 
 
 _WEATHER_KEYWORDS = ("weather", "forecast", "temperature", "rain", "snow", "wind", "humidity")
@@ -83,10 +121,21 @@ def _gather_morning_data(profile: dict) -> list[str]:
             # texts). If weather was the whole briefing, generate_morning raises
             # and the 5-minute scheduler retries within the catch-up window.
             print(f"Morning weather unavailable for {city!r}: {e}")
+        # Commute route beats city-wide conditions when we know it — "22 minutes
+        # to Clayton, 3 over normal" is actionable, "roads are clear" is not.
         try:
-            traffic_line = get_city_traffic(city)
+            route = _commute_route(profile)
+            traffic_line = None
+            if route:
+                line = get_travel_time(*route)
+                if _route_line_ok(line):
+                    traffic_line = line
+                else:
+                    print(f"Morning commute routing failed ({route[0]!r} -> {route[1]!r}): {line}")
+            if traffic_line is None:
+                traffic_line = get_city_traffic(city)
             if traffic_line:
-                sections.append(f"Local traffic:\n{traffic_line}")
+                sections.append(f"Commute / traffic:\n{traffic_line}")
         except Exception as e:
             print(f"Morning traffic unavailable for {city!r}: {e}")
 

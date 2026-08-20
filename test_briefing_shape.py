@@ -119,3 +119,72 @@ class TestBriefingShapeRules:
         src = inspect.getsource(morning.generate_morning)
         assert "Never label a line with its subject" in src
         assert "Cardinals - lost 5-4" in src, "the observed bad shape should be the example"
+
+
+class TestCommuteRoute:
+    """Palmer promised 'live drive time from Cedarbrook to Carondelet Plaza' but
+    morning.py only ever called get_city_traffic(city), which gives area-wide
+    conditions. The route tool existed; it just wasn't wired in."""
+
+    TOPIC = ("Daily commute traffic: 33 Cedarbrook Lane, Kirkwood MO 63122 "
+             "to 190 Carondelet Plaza, Clayton MO 63105")
+
+    def test_parses_the_shape_users_actually_save(self):
+        assert morning._commute_route({"morning_topics": [self.TOPIC]}) == (
+            "33 Cedarbrook Lane, Kirkwood MO 63122", "190 Carondelet Plaza, Clayton MO 63105")
+
+    def test_structured_field_wins_over_topic_text(self):
+        route = morning._commute_route({
+            "commute": {"origin": "1 Main St, Springfield", "destination": "2 Oak Ave, Shelbyville"},
+            "morning_topics": [self.TOPIC],
+        })
+        assert route == ("1 Main St, Springfield", "2 Oak Ave, Shelbyville")
+
+    def test_no_route_when_none_saved(self):
+        assert morning._commute_route({"morning_topics": ["SpaceX news"]}) is None
+
+    def test_plain_traffic_topic_is_not_a_route(self):
+        assert morning._commute_route({"morning_topics": ["St. Louis traffic"]}) is None
+
+    def test_uses_route_not_city_when_available(self):
+        with patch.object(morning, "get_travel_time", return_value="22 minutes, 13 miles. 3 over normal.") as route, \
+             patch.object(morning, "get_city_traffic", return_value="Roads are clear.") as city, \
+             patch.object(morning, "_weather_report", return_value="warm"), \
+             patch.object(morning, "_search", return_value="x"):
+            out = morning._gather_morning_data({"city": "Kirkwood", "morning_topics": [self.TOPIC]})
+        route.assert_called_once()
+        city.assert_not_called()
+        assert any("22 minutes" in s for s in out)
+
+    def test_falls_back_to_city_without_a_route(self):
+        with patch.object(morning, "get_travel_time") as route, \
+             patch.object(morning, "get_city_traffic", return_value="Roads are clear.") as city, \
+             patch.object(morning, "_weather_report", return_value="warm"), \
+             patch.object(morning, "_search", return_value="x"):
+            morning._gather_morning_data({"city": "Kirkwood", "morning_topics": ["SpaceX news"]})
+        route.assert_not_called()
+        city.assert_called_once()
+
+    def test_routing_failure_falls_back_instead_of_leaking_the_error(self):
+        """get_travel_time returns its errors as strings — those must never
+        reach a briefing as if they were traffic."""
+        for failure in ("Couldn't find that starting address: '33 Cedarbrook'.",
+                        "Routing failed for 'a' → 'b'.",
+                        "Traffic API is not configured."):
+            with patch.object(morning, "get_travel_time", return_value=failure), \
+                 patch.object(morning, "get_city_traffic", return_value="Roads are clear.") as city, \
+                 patch.object(morning, "_weather_report", return_value="warm"), \
+                 patch.object(morning, "_search", return_value="x"):
+                out = morning._gather_morning_data({"city": "Kirkwood", "morning_topics": [self.TOPIC]})
+            city.assert_called_once()
+            assert not any("Couldn't find" in s or "Routing failed" in s for s in out)
+
+    def test_route_line_ok(self):
+        assert morning._route_line_ok("17 minutes, 13.7 miles. Basically free-flow.")
+        assert not morning._route_line_ok("")
+        assert not morning._route_line_ok(None)
+        assert not morning._route_line_ok("Need both an origin and destination address to route.")
+
+    def test_commute_is_an_extracted_profile_field(self):
+        import prompts
+        assert '"commute"' in prompts.EXTRACT_PROMPT
