@@ -16,7 +16,7 @@ def _haiku_reply(text: str) -> MagicMock:
 class TestUserAlreadyCovered:
     def test_no_recent_user_messages_returns_false_without_haiku(self):
         with patch("db.get_recent_user_messages", return_value=[]), \
-             patch("agent.client") as mock_client:
+             patch("userprofile.client") as mock_client:
             assert agent._user_already_covered("+15550000000", "Iran launched strikes") is False
             mock_client.messages.create.assert_not_called()
 
@@ -24,7 +24,7 @@ class TestUserAlreadyCovered:
         with patch("db.get_recent_user_messages", return_value=[
             "did you see the Iran thing?",
             "wild what's happening over there",
-        ]), patch("agent.client") as mock_client:
+        ]), patch("userprofile.client") as mock_client:
             mock_client.messages.create.return_value = _haiku_reply("YES")
             assert agent._user_already_covered(
                 "+15550000000",
@@ -35,7 +35,7 @@ class TestUserAlreadyCovered:
         with patch("db.get_recent_user_messages", return_value=[
             "grocery list: milk, bread",
             "what's the weather tomorrow?",
-        ]), patch("agent.client") as mock_client:
+        ]), patch("userprofile.client") as mock_client:
             mock_client.messages.create.return_value = _haiku_reply("NO")
             assert agent._user_already_covered(
                 "+15550000000",
@@ -46,7 +46,7 @@ class TestUserAlreadyCovered:
         """Fail-open semantics — a broken Haiku call must NOT silently suppress
         real alerts. Better to send a possibly-duplicate than to drop a real one."""
         with patch("db.get_recent_user_messages", return_value=["did you see that"]), \
-             patch("agent.client") as mock_client:
+             patch("userprofile.client") as mock_client:
             mock_client.messages.create.side_effect = RuntimeError("boom")
             assert agent._user_already_covered("+15550000000", "some alert") is False
 
@@ -59,7 +59,7 @@ class TestUserAlreadyCovered:
 
         with patch("db.get_recent_user_messages",
                    return_value=["did you see the Iran thing", "crazy"]), \
-             patch("agent.client") as mock_client:
+             patch("userprofile.client") as mock_client:
             mock_client.messages.create.side_effect = _create
             agent._user_already_covered("+15550000000", "Iran launched missiles.")
         prompt = captured[0]

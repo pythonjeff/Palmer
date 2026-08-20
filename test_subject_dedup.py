@@ -21,25 +21,25 @@ def _haiku_response(text: str) -> MagicMock:
 class TestIsDuplicateSubject:
     def test_no_recent_messages_returns_false_without_llm_call(self):
         with patch("db.get_recent_assistant_messages", return_value=[]), \
-             patch("agent.client") as mock_client:
+             patch("userprofile.client") as mock_client:
             assert agent._is_duplicate_subject("+15551234567", "new message") is False
         mock_client.messages.create.assert_not_called()
 
     def test_haiku_says_yes_returns_true(self):
         with patch("db.get_recent_assistant_messages", return_value=["Hurts practice update"]), \
-             patch("agent.client") as mock_client:
+             patch("userprofile.client") as mock_client:
             mock_client.messages.create.return_value = _haiku_response("YES")
             assert agent._is_duplicate_subject("+15551234567", "Hurts camp footage") is True
 
     def test_haiku_says_no_returns_false(self):
         with patch("db.get_recent_assistant_messages", return_value=["weather update"]), \
-             patch("agent.client") as mock_client:
+             patch("userprofile.client") as mock_client:
             mock_client.messages.create.return_value = _haiku_response("NO")
             assert agent._is_duplicate_subject("+15551234567", "bitcoin price") is False
 
     def test_llm_failure_fails_open(self):
         with patch("db.get_recent_assistant_messages", return_value=["something"]), \
-             patch("agent.client") as mock_client:
+             patch("userprofile.client") as mock_client:
             mock_client.messages.create.side_effect = Exception("API down")
             assert agent._is_duplicate_subject("+15551234567", "new message") is False
 

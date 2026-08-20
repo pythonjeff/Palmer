@@ -60,7 +60,7 @@ class TestResolveDayDeltaHonorsTz:
 
     def test_friday_at_thursday_night_local_is_tomorrow(self):
         from agent import _resolve_day_delta
-        # Freeze both timeutil.local_today and agent._date.today so the module
+        # Freeze both timeutil.local_today and weather._date.today so the module
         # under test sees a consistent 'now'.
         with patch("timeutil.datetime") as mock_dt:
             def _now(tz=None):
