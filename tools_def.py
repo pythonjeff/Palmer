@@ -234,6 +234,15 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
         },
     },
     {
+        "name": "get_my_page",
+        "description": "Return the live URL of THIS user's own page — the same one that goes out with their morning update. It holds their weather, commute, the prices they follow, their headlines, and everything you're watching for them, and it refreshes itself. Call this whenever they ask for it in any words: 'send me my page', 'what's that link', 'link me my dashboard', 'can I see my stuff', 'resend this morning's link', 'where's my briefing'. Also call it when they ask for a rundown of everything at once ('catch me up', 'what's going on today') and the page would answer better than a wall of text — but not for a single specific question, where the right tool is the specific one. The URL is stable and permanent, so resending it is always safe.\n\nThe tool result contains the URL. Put it at the very END of your reply with nothing after it, exactly as returned — no shortening, no markdown, no parentheses around it. Message apps only draw the rich preview when the link sits at a boundary, and that preview is the point. Say one short thing in your own voice and let the link close the message.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
         "name": "get_travel_time",
         "description": "Get driving time between two addresses using live traffic. Call this whenever the user asks how long a drive takes, when to leave, or ETA to a place ('how long to Fenway?', 'when should I leave for the airport?', 'time to my sister's from here?'). If the user names a destination but not an origin (or vice versa), ask them conversationally for the missing one in your own voice BEFORE calling this tool. We don't store addresses; ask fresh each time unless the user provides both in the same message.\n\nCRITICAL: Our geocoder is a mapping service, not a search engine — it does NOT reliably resolve famous landmarks, monuments, or business names. If the user gives a landmark, POI, monument, park, stadium, airport, or well-known building (e.g. 'The White House', 'Fenway Park', 'LAX', 'Times Square', 'the Golden Gate Bridge', 'Central Park', 'Wrigley Field'), YOU must convert it to the actual street address using your world knowledge before calling — pass '1600 Pennsylvania Ave NW, Washington DC 20500' not 'The White House'; pass '4 Jersey St, Boston MA 02215' not 'Fenway Park'; pass '1 World Way, Los Angeles CA 90045' not 'LAX'. Only pass raw landmark names as a last resort when you genuinely don't know the address (in which case ask the user for one). Never guess an address you don't actually know.",
         "input_schema": {

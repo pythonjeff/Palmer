@@ -107,6 +107,16 @@ def _ago(ts: float | None, now: float | None = None) -> str:
     return f"{delta // 86400}d ago"
 
 
+def _local_day(tz_name: str | None) -> str:
+    from timeutil import local_now
+    try:
+        if tz_name:
+            return local_now(tz_name).strftime("%A, %B %d")
+    except Exception:
+        pass
+    return datetime.utcnow().strftime("%A, %B %d")
+
+
 def _price_link(p: dict) -> str:
     label = p.get("label", "")
     if p.get("is_crypto"):
@@ -133,8 +143,11 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
     # Falls back to a neutral label rather than leaving the page anonymous; the
     # prompt below turns the gap into an invitation instead of a blank.
     eyebrow = name if name else "Your briefing"
+    # The user's local day, not the server's. Heroku runs UTC, so a plain
+    # datetime.now() shows tomorrow's date to anyone west of it by evening —
+    # the one thing on a "live" page nobody would forgive being wrong.
     subhead = " · ".join(x for x in (city if name else None,
-                                     datetime.now().strftime("%A, %B %d")) if x)
+                                     _local_day(payload.get("timezone"))) if x)
 
     temp = w.get("temp_now")
     where = city if city and city != "Today" else "your briefing"

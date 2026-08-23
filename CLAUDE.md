@@ -88,6 +88,17 @@ run_price_watches        every 12 hr   (SerpAPI Google Shopping + Amazon; establ
 
 Morning briefings are sent by APScheduler at each user's chosen local time (default 7:00). No Heroku Scheduler job is required; if one runs `send_morning.py`, the per-user sent-date guard prevents double-sends.
 
+### The morning update is a link, not a briefing
+`morning._compose_morning` sends ONE message: a single Palmer-drafted sentence, then the user's Palmer Home URL. The briefing itself is the page. It used to be the full text briefing plus a second text carrying the link — that said everything twice and burned two segments.
+
+Two properties are load-bearing:
+- **The URL is last and alone.** Message apps only draw the rich link preview when the message carries exactly one URL at a boundary, and that preview is most of the value. Nothing may follow it — not a period, not a sign-off.
+- **`carries_link` gates the status callback.** A link message is sent with `add_status_callback=False`, because the `/sms-status` shorten-and-retry would truncate the URL into garbage.
+
+`generate_morning_line` drafts the sentence on Sonnet through `_build_system` like every other user-facing message. Two rules are enforced in code rather than trusted to the prompt, because the model breaks both: `_strip_link_placeholder` removes "[link]"-style stand-ins and any invented URL, and `_NAMES_THE_LINK` triggers exactly one redraft when the line says "page"/"link"/"dashboard" — that phrasing turns a text from a friend into a push notification.
+
+Every failure falls back to the full text briefing (`generate_morning`, still used by `/preview?full=1`): no APP_URL, an empty page, or a failed draft. A user never gets a link to nothing.
+
 ### One voice: all user-facing text goes through `_build_system`
 Anything the user reads is drafted with `agent._build_system(phone)` as the system prompt, on `SONNET_MODEL`. That is what carries SYSTEM_PROMPT, the CALIBRATION section, the user's `communication_style`, and their reaction history — so Palmer sounds like the same person everywhere.
 
@@ -136,6 +147,7 @@ The system prompt in `agent.py` hard-routes user asks to specific tools. Never m
 - `get_weather` → OpenWeatherMap only
 - `get_price` → CoinGecko (crypto) / yfinance (stocks) only
 - `get_travel_time` / `get_city_traffic` → TomTom only
+- `get_my_page` → the caller's own Palmer Home URL, via `home.ensure_fresh` (never `home_url` — that can hand out a link to a page that was never built)
 - `add_price_watch` / `run_price_watches` → SerpAPI Google Shopping only (product prices, distinct from `get_price` for crypto/stocks)
 - `web_search` → Tavily news mode only, never for weather or prices
 

@@ -444,6 +444,20 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                             bits.append(f"last seen ${float(w['last_seen_price']):.2f}")
                         lines.append(" — ".join(bits))
                     result = "\n".join(lines)
+            elif b.name == "get_my_page":
+                from home import ensure_fresh
+                url = ensure_fresh(phone_number)
+                if url.startswith("http"):
+                    result = (
+                        f"{url}\n\n"
+                        "That is the user's live page and it is already up to date. "
+                        "Put this URL at the very end of your reply, exactly as "
+                        "written, with no text or punctuation after it."
+                    )
+                else:
+                    result = ("No page URL is available for this user right now "
+                              "(APP_URL is not configured). Answer their question "
+                              "directly instead and do not mention a page.")
             elif b.name == "get_travel_time":
                 from traffic import get_travel_time
                 result = get_travel_time(b.input["origin"], b.input["destination"])

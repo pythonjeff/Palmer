@@ -1,17 +1,26 @@
 """Palmer Home — one stable, live page per user.
 
 A single row per user, keyed by a permanent secret token, updated in place. The
-morning job writes the full payload (including the paid news search); a page
-view refreshes only the free data classes, each behind its own cooldown:
+morning job writes the full payload; a page view refreshes whatever has gone
+stale, each class behind its own cooldown:
 
     weather   Open-Meteo    free    refresh if >10 min stale
     commute   TomTom        free    refresh if  >5 min stale
     prices    CoinGecko/yf  free    refresh if  >5 min stale
-    headlines Tavily        $0.008  never on view — morning job only
+    identity  local DB      free    refresh every view
+    headlines Tavily        $0.008  refresh if  >6 hr stale
 
-That table is the entire cost story. The page feels live because the live things
-happen to be free; the one paid input rides the schedule that already runs. A
-user hammering refresh cannot run up a bill.
+That table is the entire cost story. The page feels live because most of the
+live things are free; the one paid input is rate-limited by its own timestamp.
+
+The headline rule is the only one that costs money, so it is worth stating
+plainly: a refresh stamps `fetched.headlines_tried`, and the gate reads that
+stamp, so a successful *or* failed refresh closes the window for another six
+hours. That bounds the page to at most four news passes per user per day no
+matter how hard anyone reloads — the morning job's, plus three. Headlines used
+to refresh only in the morning, which made them free but left a "news ticker"
+showing 13-hour-old stories by dinner. Six hours is the compromise: a bounded,
+predictable bill in exchange for a page that is never badly wrong.
 
 There is no login. The token is the whole protection, so the page must only ever
 show what the user already received in a briefing — never the SMS transcript,
@@ -32,7 +41,9 @@ KIND = "home"
 TTL_HOURS = 24 * 400          # effectively permanent; refreshed on every write
 
 # seconds before a section is worth refetching on view. None = never on view.
-STALE = {"weather": 600, "traffic": 300, "prices": 300, "headlines": None}
+# headlines is the only paid entry — see the cost note in the module docstring
+# for why it is 6h and how the window is enforced.
+STALE = {"weather": 600, "traffic": 300, "prices": 300, "headlines": 6 * 3600}
 
 
 def home_token(phone: str) -> str:
@@ -122,9 +133,13 @@ def _fetch_headlines(profile: dict) -> list[dict]:
     return out
 
 
-def _tracking(phone: str) -> dict:
+def _tracking(phone: str, profile: dict | None = None) -> dict:
     """What Palmer is keeping an eye on. This is what makes it a site he
-    maintains rather than a daily snapshot."""
+    maintains rather than a daily snapshot.
+
+    Takes the caller's profile when it already has one — this runs on every
+    page view, and re-reading the profile here would open a second connection
+    for a row the caller is already holding."""
     from db import get_user_watches, get_user_price_watches
     try:
         watches = [{"description": w.get("description"), "cooldown_hours": w.get("cooldown_hours")}
@@ -139,7 +154,8 @@ def _tracking(phone: str) -> dict:
                   for w in (get_user_price_watches(phone) or [])]
     except Exception:
         prices = []
-    profile = get_profile(phone)
+    if profile is None:
+        profile = get_profile(phone)
     return {
         "watches": watches,
         "price_watches": prices,
@@ -164,25 +180,60 @@ def rebuild(phone: str, refresh_news: bool = True) -> dict:
         "prices": _fetch_prices(profile),
         "headlines": _fetch_headlines(profile) if refresh_news
                      else (previous.get("headlines") or []),
-        "tracking": _tracking(phone),
+        "tracking": _tracking(phone, profile),
         "fetched": {"weather": now, "traffic": now, "prices": now,
                     "headlines": now if refresh_news
-                                 else (previous.get("fetched", {}).get("headlines") or now)},
+                                 else (previous.get("fetched", {}).get("headlines") or now),
+                    "headlines_tried": now if refresh_news
+                                 else (previous.get("fetched", {}).get("headlines_tried") or now)},
         "built_at": now,
     }
     save(token, payload)
     return payload
 
 
+def _refresh_identity(payload: dict, profile: dict, phone: str) -> bool:
+    """Re-read the profile-derived fields. Free — these come off a row we are
+    already holding — and they are the ones a user notices going stale: they
+    tell Palmer their name at noon and the page still says "Your briefing"
+    until tomorrow morning, or they add a watch and the page doesn't list it."""
+    fresh = {
+        "city": profile.get("city") or "",
+        "name": profile.get("name"),
+        "timezone": profile.get("timezone"),
+        "tracking": _tracking(phone, profile),
+    }
+    changed = any(payload.get(k) != v for k, v in fresh.items())
+    payload.update(fresh)
+    return changed
+
+
+def _headlines_stale(fetched: dict, now: float) -> bool:
+    """Whether a view may spend money on news.
+
+    Gated on `headlines_tried`, not `headlines`, so that a refresh which comes
+    back empty still closes the window — otherwise a topic with no coverage
+    would re-search on every single view. Falls back to the data stamp for
+    payloads written before this key existed."""
+    window = STALE.get("headlines")
+    if window is None:
+        return False
+    tried = fetched.get("headlines_tried") or fetched.get("headlines") or 0
+    return (now - tried) >= window
+
+
 def refresh_stale(token: str, payload: dict) -> dict:
-    """Refresh only the free sections that have gone stale. Never touches
-    headlines — that is the paid path and it belongs to the morning job."""
+    """Bring a payload up to date on view.
+
+    The free sections refresh on short cooldowns; headlines refresh at most
+    every 6 hours (see the module docstring for the cost bound). Anything that
+    fails keeps its previous value — a stale section beats an empty one."""
     profile = get_profile(payload.get("phone") or "")
     if not profile:
         return payload
     fetched = dict(payload.get("fetched") or {})
     now = _now()
-    changed = False
+    changed = _refresh_identity(payload, profile, payload.get("phone") or "")
     for section, fetcher in (("weather", _fetch_weather),
                              ("traffic", _fetch_traffic),
                              ("prices", _fetch_prices)):
@@ -197,10 +248,43 @@ def refresh_stale(token: str, payload: dict) -> dict:
             changed = True
         except Exception as e:
             print(f"home refresh {section} failed: {e}")
+
+    if _headlines_stale(fetched, now):
+        # Stamp the attempt before the call, so a raising fetch still closes
+        # the window rather than re-searching on the next view.
+        fetched["headlines_tried"] = now
+        changed = True
+        try:
+            heads = _fetch_headlines(profile)
+            if heads:
+                payload["headlines"] = heads
+                fetched["headlines"] = now
+        except Exception as e:
+            print(f"home refresh headlines failed: {e}")
+
     if changed:
         payload["fetched"] = fetched
         save(token, payload)
     return payload
+
+
+def ensure_fresh(phone: str) -> str:
+    """The user's URL, guaranteed to point at a page with real data on it.
+
+    Every path where Palmer hands someone their link goes through this. Minting
+    a token does not build a payload, so a user who has never had a morning sent
+    (not onboarded, mornings off, or asking on their first day) would otherwise
+    get a link straight to a 404. Never raises — callers are user-facing."""
+    token = home_token(phone)
+    try:
+        payload = load(token)
+        if payload is None:
+            rebuild(phone, refresh_news=True)
+        else:
+            refresh_stale(token, payload)
+    except Exception as e:
+        print(f"home.ensure_fresh failed for {phone}: {type(e).__name__}: {e}")
+    return f"{_APP_URL}/h/{token}"
 
 
 def save(token: str, payload: dict) -> None:

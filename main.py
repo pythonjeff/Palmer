@@ -321,6 +321,14 @@ async def home_page(token: str):
 
 
 @app.get("/preview")
-async def preview_morning(phone: str):
-    message = generate_morning(phone)
+async def preview_morning(phone: str, full: bool = False):
+    """What this user's morning would actually look like.
+
+    Defaults to the real thing — the one-line text plus their page link. Pass
+    full=1 for the long-form text briefing, which is now only the fallback for
+    when the page can't be built."""
+    if full:
+        return PlainTextResponse(generate_morning(phone))
+    from morning import _compose_morning
+    message, _ = _compose_morning(phone)
     return PlainTextResponse(message)

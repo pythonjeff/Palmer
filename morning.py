@@ -355,33 +355,161 @@ def _in_send_window(now_local: datetime, morning_time: str | None,
     return target <= now_local < target + timedelta(minutes=catchup_minutes)
 
 
+def _payload_digest(payload: dict) -> str:
+    """The page's contents as a few plain lines, for the drafter to pick from.
+
+    Deliberately terse and unopinionated — this is source data for a line that
+    already carries the system prompt, not a briefing in its own right."""
+    lines = []
+    w = payload.get("weather") or {}
+    if w.get("temp_now") is not None or w.get("high") is not None:
+        bits = []
+        if w.get("description"):
+            bits.append(str(w["description"]))
+        if w.get("high") is not None and w.get("low") is not None:
+            bits.append(f"high {w['high']:.0f}, low {w['low']:.0f}")
+        if w.get("rain_pct"):
+            bits.append(f"{w['rain_pct']}% rain")
+        lines.append(f"Weather in {payload.get('city') or 'their city'}: " + ", ".join(bits))
+    t = payload.get("traffic") or {}
+    if t.get("live_min"):
+        delay = t.get("delay_min") or 0
+        lines.append(f"Commute: {t['live_min']} min"
+                     + (f", {delay} min slower than normal" if delay >= 2 else ", normal"))
+    for p in (payload.get("prices") or [])[:3]:
+        lines.append(f"{p.get('label')}: {p.get('pct_24h', 0):+.1f}% in 24h")
+    for h in (payload.get("headlines") or [])[:4]:
+        lines.append(f"Headline ({h.get('topic') or 'news'}): {h.get('title')}")
+    return "\n".join(lines)
+
+
+# Models reach for a placeholder when they know a link is coming — "[link]",
+# "(url)", "<here>" — and the prompt alone does not reliably stop it. Left in,
+# it ships to the user as literal text sitting right next to the real URL.
+_LINK_PLACEHOLDER = re.compile(
+    r"""\s*(?:[\[(<]\s*(?:link|url|here|page|site|dashboard)\s*[\])>]|https?://\S+)\s*""",
+    re.IGNORECASE,
+)
+
+
+def _strip_link_placeholder(line: str) -> str:
+    """Remove any stand-in for the URL the caller is about to append, plus any
+    real URL the model invented. Leaves the sentence's punctuation intact."""
+    return _LINK_PLACEHOLDER.sub(" ", line).strip().strip("-–—:").strip()
+
+
+# Naming the link is the failure mode this line falls into most often — "page
+# has your full rundown", "everything's on your dashboard". It turns a text from
+# a friend into a product notification, and the prompt alone does not stop it,
+# so the rule is enforced here with one redraft.
+_NAMES_THE_LINK = re.compile(
+    r"\b(link|page|dashboard|site|website|click|tap here)\b", re.IGNORECASE)
+
+
+# How long the morning line may be. The link has to survive alongside it in one
+# segment-friendly message, and the whole point is that the detail lives on the
+# page — a long line here just duplicates what they are about to tap into.
+MORNING_LINE_MAX = 220
+
+
+def generate_morning_line(phone: str, payload: dict) -> str:
+    """The one-sentence text that rides with the morning link.
+
+    Goes through `_build_system` like every other user-facing message, so it
+    carries the user's calibration rather than a second, breezier Palmer."""
+    profile = get_profile(phone)
+    system = _build_system(phone, include_recent=True)
+    today = _local_today(profile.get("timezone")).strftime("%B %d, %Y")
+    digest = _payload_digest(payload)
+    recent = _recent_assistant_texts(phone, n=4)
+    recent_block = ("\n\nThe last few things you sent them (do not reuse an opener "
+                    "or phrasing from these):\n" + "\n---\n".join(recent)) if recent else ""
+
+    prompt = f"""Today is {today}. Write the ONE-LINE text that goes out with the link to their page this morning.
+
+What is on their page right now:
+{digest or "(nothing loaded yet)"}{recent_block}
+
+This is not the briefing. The briefing is the page — they are about to tap it and see all of this laid out. Your job is the line above the link.
+
+Rules:
+- ONE sentence. Under {MORNING_LINE_MAX} characters. Shorter is better.
+- Greet them and give them ONE reason to tap: the single most notable thing on the page today. Pick the thing that actually changed or that they'd act on - a real weather swing, a bad commute, a big move on something they track, the one headline that matters. If nothing stands out, a plain greeting is correct - do not manufacture drama.
+- Do NOT list. Do NOT summarize the page. Do NOT cover two topics. One thing, or none.
+- Never say the word "link", "page", "dashboard", "site", or "click" - the link speaks for itself and naming it makes this sound like a product notification.
+- Write ONLY the sentence. The link is attached automatically after it. Do not write a URL, and do not leave a placeholder like [link] or (url) where you think one goes - anything like that ships to them as literal text.
+- Do not end with a question. The page is the ask.
+- Use the numbers from the data verbatim if you use one at all.
+- Palmer's voice. Plain ASCII, no emoji, no markdown, no bullets, no sign-off."""
+
+    def _draft(correction: str = "") -> str:
+        response = client.messages.create(
+            model=SONNET_MODEL,
+            max_tokens=120,
+            system=system,
+            messages=[{"role": "user", "content": prompt + correction}],
+        )
+        line = _strip_link_placeholder(_sms_clean(response.content[0].text.strip()))
+        line = " ".join(line.split())
+        if len(line) > MORNING_LINE_MAX:
+            line = line[:MORNING_LINE_MAX].rsplit(" ", 1)[0].rstrip(" ,;:-")
+        return line
+
+    line = _draft()
+    if _NAMES_THE_LINK.search(line):
+        retry = _draft(
+            "\n\nYou just wrote: " + repr(line) + "\nThat names the link, which is "
+            "the one thing you cannot do - it reads like a push notification "
+            "instead of a friend. Write it again with no reference to a link, "
+            "page, site, or dashboard at all. Just the observation, or just the "
+            "greeting if there is nothing worth flagging."
+        )
+        # Keep the retry only if it actually fixed the problem — a second
+        # violation means take the better-formed of the two, not a worse one.
+        if retry and not _NAMES_THE_LINK.search(retry):
+            line = retry
+    if len(line) < 8:
+        raise ValueError(f"generate_morning_line produced nothing usable: {repr(line)}")
+    _reject_meta_commentary(line)
+    return line
+
+
+def _compose_morning(phone: str) -> tuple[str, bool]:
+    """The morning message: one short line, then the link to their page.
+
+    The full briefing used to be the message and the link followed as a second
+    text. It is one message now because the page IS the briefing — sending both
+    meant saying everything twice and burning two segments to do it.
+
+    The URL goes last and alone at the end of the message. Link previews only
+    render when a message carries exactly one URL at a boundary, and that
+    preview is most of the value: it is what turns a bare link into something
+    worth tapping.
+
+    Falls back to the full text briefing if the page can't be built or the line
+    can't be drafted — a user is never left holding a link to nothing. Returns
+    (message, carries_link); the caller needs the flag because the /sms-status
+    shorten-and-retry would happily truncate a URL into garbage."""
+    from home import ensure_fresh, load, home_token
+    url = ensure_fresh(phone)
+    if not url.startswith("http"):
+        print(f"_compose_morning: APP_URL not configured for {phone}, sending text briefing")
+        return generate_morning(phone), False
+    payload = load(home_token(phone)) or {}
+    if not _payload_digest(payload):
+        print(f"_compose_morning: page is empty for {phone}, sending text briefing")
+        return generate_morning(phone), False
+    try:
+        line = generate_morning_line(phone, payload)
+    except Exception as e:
+        print(f"generate_morning_line failed for {phone}: {type(e).__name__}: {e}")
+        return generate_morning(phone), False
+    return f"{line} {url}", True
+
+
 # Called every 5 minutes by APScheduler in main.py. The morning_sent_date guard
 # (keyed to the user's local date) makes extra invocations harmless, so the old
 # hourly Heroku Scheduler job can stay on as a redundant backup or be removed.
-def _send_home_link(phone: str) -> None:
-    """A short line plus the link to the user's live page.
-
-    Sent as its OWN message on purpose. Link previews only render when a message
-    carries exactly one URL at the very start or end, and appending the link to
-    the briefing would both break that and risk pushing the text past the 900
-    char split threshold in sms_util, turning one briefing into six texts.
-
-    Never raises and never blocks — the briefing has already been delivered by
-    the time this runs, so a failure here costs an extra tap, not the update."""
-    from sms_util import send_sms
-    try:
-        from home import rebuild, home_url
-        rebuild(phone, refresh_news=True)
-        url = home_url(phone)
-        if not url.startswith("http"):
-            print(f"_send_home_link: APP_URL not configured, skipping for {phone}")
-            return
-        send_sms(phone, f"morning - everything else is here {url}",
-                 add_status_callback=False)
-    except Exception as e:
-        print(f"_send_home_link failed for {phone}: {type(e).__name__}: {e}")
-
-
 def send_morning_messages():
     from sms_util import send_sms
 
@@ -423,9 +551,10 @@ def send_morning_messages():
                 continue  # another process/tick already claimed today's send
 
             try:
-                message = generate_morning(phone)
-                if send_sms(phone, message):
-                    _send_home_link(phone)
+                message, carries_link = _compose_morning(phone)
+                # A link message opts out of the status callback: the
+                # shorten-and-retry path there would cut the URL in half.
+                if send_sms(phone, message, add_status_callback=not carries_link):
                     save_message(phone, "assistant", message)
                     print(f"Morning sent to {phone}: {message[:100]}")
                 else:
