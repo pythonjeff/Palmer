@@ -240,19 +240,41 @@ async def sms_status_webhook(
 
 @app.get("/c/{token}.png")
 async def artifact_png(token: str):
-    """Serve a rendered card. Public by necessity — Twilio fetches MMS media and
-    the recipient's phone fetches the og:image, neither of which can carry auth.
-    The token is the protection; see artifacts.py."""
-    from artifacts import fetch
-    got = fetch(token)
-    if not got:
+    """The briefing as a flat card, for MMS and og:image.
+
+    Public by necessity — Twilio fetches MMS media and the recipient's phone
+    fetches the og:image, neither of which can carry auth. The token is the
+    protection; see artifacts.py."""
+    from artifacts import load, render_png
+    payload = load(token)
+    if payload is None:
         raise HTTPException(status_code=404)
-    _, body = got
     return FileResponse(
-        content=body,
+        content=render_png(token, payload),
         media_type="image/png",
         headers={
             "Cache-Control": "public, max-age=86400",
+            "X-Robots-Tag": "noindex, nofollow",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
+
+
+@app.get("/c/{token}")
+async def artifact_page(token: str):
+    """The interactive briefing. An MMS card is a bitmap with no tap targets,
+    so this is where headlines and tickers become links."""
+    from artifacts import load, image_url, page_url
+    from page import render
+    payload = load(token)
+    if payload is None:
+        raise HTTPException(status_code=404)
+    return FileResponse(
+        content=render(payload, token=token,
+                       image_url=image_url(token), page_url=page_url(token)),
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Cache-Control": "public, max-age=300",
             "X-Robots-Tag": "noindex, nofollow",
             "Referrer-Policy": "no-referrer",
         },
