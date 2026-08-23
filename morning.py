@@ -5,7 +5,7 @@ from agent import _build_system
 from llm import client, HAIKU_MODEL, SONNET_MODEL
 from smstext import _sms_clean
 from weather import _weather_report
-from datafeeds import _search, _get_price, _CRYPTO_IDS
+from datafeeds import _search_raw, _get_price, _CRYPTO_IDS
 from userprofile import _derive_timezone
 from db import get_profile, upsert_profile, get_all_profiles, save_message, get_history, claim_daily_guard
 from traffic import get_city_traffic, get_travel_time
@@ -106,11 +106,54 @@ def _price_asset_for_topic(topic: str) -> str | None:
     return None
 
 
+# How many stories per topic reach the drafting model. Three gives it enough to
+# pick the most consequential angle without burning the character budget.
+_STORIES_PER_TOPIC = 3
+_TOPIC_MAX_AGE_HOURS = 24
+
+
+def _topic_digest(topic: str) -> str | None:
+    """Recent, source-ranked stories for one topic, or None when nothing solid.
+
+    _search returns whatever Tavily ranked first and drops the URL, so the
+    drafting model had no idea whether a line came from Reuters or a content
+    farm. This reuses the same tier-then-score ordering watches.py uses to pick
+    what is worth alerting on, and returns None rather than the string "No
+    results found." so a thin topic is left out of the data entirely instead of
+    being handed to the model to silently skip."""
+    from watches import _source_tier, _canonical_domain
+    results = _search_raw(topic, days=1, max_age_hours=_TOPIC_MAX_AGE_HOURS, min_score=0.5)
+    if not results:
+        return None
+    results.sort(key=lambda r: (_source_tier(r.get("url", "")), -(r.get("score") or 0)))
+    lines = []
+    for r in results[:_STORIES_PER_TOPIC]:
+        domain = _canonical_domain(r.get("url", "")) or "unknown source"
+        lines.append(f"[{domain}] {r.get('title','')}\n{r.get('content','')}")
+    return "\n\n".join(lines)
+
+
+def _rotated_topics(topics: list[str], today) -> list[str]:
+    """The topics to pull today, rotating the window so none is starved.
+
+    Truncating at MAX_TOPICS drops by list position, so with 7 topics and a cap
+    of 6 the 7th never ran — one user's "Daily fun fact from history" had never
+    once been delivered, silently, for a month. Rotating by the user's local
+    date means every topic comes up regularly and the set still changes day to
+    day. Rotation is deterministic, so a retry within the same day pulls the
+    same topics rather than a different briefing."""
+    if len(topics) <= MAX_TOPICS:
+        return topics
+    offset = today.toordinal() % len(topics)
+    return (topics[offset:] + topics[:offset])[:MAX_TOPICS]
+
+
 def _gather_morning_data(profile: dict) -> list[str]:
     """Fetch the briefing data: local weather always (when city known), then up to
     MAX_TOPICS user topics — prices from the price API, everything else from
     dated news search only."""
     sections = []
+    covered: list[str] = []   # headlines already used, so the adjacent pick can't repeat one
     city = profile.get("city") or ""
     if city:
         try:
@@ -145,12 +188,30 @@ def _gather_morning_data(profile: dict) -> list[str]:
         if t and not any(w in t.lower() for w in _auto_covered)  # weather + traffic already covered
         and not _is_directive(t)
     ]
-    for topic in topics[:MAX_TOPICS]:
+    for topic in _rotated_topics(topics, _local_today(profile.get("timezone"))):
         asset = _price_asset_for_topic(topic)
         if asset:
             sections.append(f"{topic}:\n{_get_price(asset)}")
+            continue
+        digest = _topic_digest(topic)
+        if digest:
+            sections.append(f"{topic}:\n{digest}")
+            covered.append(digest.splitlines()[0])
         else:
-            sections.append(f"{topic}:\n{_search(topic, days=1, require_date=True)}")
+            print(f"Morning topic {topic!r}: nothing recent enough, skipping")
+
+    # One story they didn't ask for but would want — see trends.py. Strictly
+    # optional: returns None most days, and the drafting prompt treats it as
+    # droppable, so a miss costs nothing.
+    try:
+        from trends import adjacent_story
+        pick = adjacent_story(topics or [], covered)
+        if pick:
+            sections.append(
+                f"ADJACENT (not one of their topics — {pick['why']}):\n{pick['story']}"
+            )
+    except Exception as e:
+        print(f"Morning adjacent story unavailable: {e}")
     return sections
 
 
@@ -226,10 +287,17 @@ def generate_morning(phone: str) -> str:
 {data}{context_block}{recent_block}
 
 Rules:
-- ONLY include weather and traffic (when provided) and the topics they explicitly asked to track. Never add outside news, world commentary, unrelated events, or your own opinions on things they didn't ask about. If a topic's results are empty, off-topic, or clearly stale, silently skip that topic — no filler, no paraphrasing old news, no inventing.
+- Each story is tagged with its source domain in brackets. Use that to judge weight — a wire service or major outlet outranks an aggregator — and to attribute when it matters ("Reuters says..."). Never print the bracket tag itself.
+- ONLY include weather and traffic (when provided), the topics they explicitly asked to track, and the ADJACENT item if one is present in the data. Never add outside news, world commentary, unrelated events, or your own opinions on things they didn't ask about. The ADJACENT block is the single exception and only when it is actually there — never invent one. If a topic's results are empty, off-topic, or clearly stale, silently skip that topic — no filler, no paraphrasing old news, no inventing.
 - Weather: name the city the forecast is for, exactly as it appears in the data (e.g. "St. Louis" or "Kirkwood, MO"). Don't drop it, don't swap in a nickname, don't just say "today" without saying where. Use the numbers from the data verbatim — don't round the high 10 degrees, don't invent rain chances, don't reinterpret a "clear" description as "sunny and hot". If the data says a forecast couldn't be pulled, say briefly you can't get today's weather and move on — never tell them to google it or check another app.
 - Traffic: keep it to the one line provided in the data. Don't expand, embellish, or invent street/exit names beyond what's given. If traffic is normal, one short sentence is enough.
-- Vary the entry point. Sometimes weather leads, sometimes traffic, sometimes the most interesting topic, sometimes a quick personal note. Different angle than what you sent yesterday.
+- ORDER, always the same so they know where to look:
+  1. Weather, then the commute line. These are the two things they act on before leaving the house, so they go first and stay together. Never bury them mid-message.
+  2. The topics, most consequential first — a real development outranks a routine update. Skip any that came back thin.
+  3. The ADJACENT item, if the data has one — one sentence, placed after the topics. Lead into it so it doesn't read as a non sequitur ("unrelated, but -" or "one other thing -").
+     This one is optional and you are the last check on it. Drop it entirely if it would push you over length, or if it turns out to be a non-event: an incident that resolved with nobody hurt, a scheduled game, a recall, a celebrity item. If you can't say what CHANGED, leave it out. A briefing that ends a line early is better than one padded with a story nobody needed.
+  4. The personal touch, last, on its own.
+  Keep the layout fixed. Vary the WORDING of the opening line instead — the first sentence should not start the same way as yesterday's, even though it is still about the weather.
 - One or two sentences per topic. Whole message under 1000 characters.
 - Give each distinct subject (weather, traffic, each topic, the personal touch) its own line — a blank line between them — so it reads as separate, scannable items rather than one run-on paragraph. Still plain text, no bullet characters or numbering.
 - Never label a line with its subject. Write "Cards lost 5-4 in Cincinnati" — never "Cardinals - lost 5-4", never "Weather:", never a header of any kind. Each line should read like a sentence a friend typed, not a field in a report.

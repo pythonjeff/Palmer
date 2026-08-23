@@ -91,8 +91,9 @@ class TestDirectivesAreNotTopics:
         profile = {"city": "", "morning_topics": [
             "Format: bullet points per subject", "SpaceX news",
         ]}
-        with patch.object(morning, "_search", side_effect=lambda t, **k: searched.append(t) or "x"), \
-             patch.object(morning, "_get_price", return_value="x"):
+        with patch.object(morning, "_topic_digest", side_effect=lambda t: searched.append(t) or "x"), \
+             patch.object(morning, "_get_price", return_value="x"), \
+             patch("trends.adjacent_story", return_value=None):
             morning._gather_morning_data(profile)
         assert "SpaceX news" in searched
         assert not any("Format:" in s for s in searched), \
@@ -107,8 +108,9 @@ class TestTopicCoverage:
     def test_all_topics_up_to_the_cap_are_pulled(self):
         searched = []
         profile = {"city": "", "morning_topics": [f"topic {i}" for i in range(8)]}
-        with patch.object(morning, "_search", side_effect=lambda t, **k: searched.append(t) or "x"), \
-             patch.object(morning, "_get_price", return_value="x"):
+        with patch.object(morning, "_topic_digest", side_effect=lambda t: searched.append(t) or "x"), \
+             patch.object(morning, "_get_price", return_value="x"), \
+             patch("trends.adjacent_story", return_value=None):
             morning._gather_morning_data(profile)
         assert len(searched) == morning.MAX_TOPICS
 
@@ -150,7 +152,8 @@ class TestCommuteRoute:
         with patch.object(morning, "get_travel_time", return_value="22 minutes, 13 miles. 3 over normal.") as route, \
              patch.object(morning, "get_city_traffic", return_value="Roads are clear.") as city, \
              patch.object(morning, "_weather_report", return_value="warm"), \
-             patch.object(morning, "_search", return_value="x"):
+             patch.object(morning, "_topic_digest", return_value="x"), \
+             patch("trends.adjacent_story", return_value=None):
             out = morning._gather_morning_data({"city": "Kirkwood", "morning_topics": [self.TOPIC]})
         route.assert_called_once()
         city.assert_not_called()
@@ -160,7 +163,8 @@ class TestCommuteRoute:
         with patch.object(morning, "get_travel_time") as route, \
              patch.object(morning, "get_city_traffic", return_value="Roads are clear.") as city, \
              patch.object(morning, "_weather_report", return_value="warm"), \
-             patch.object(morning, "_search", return_value="x"):
+             patch.object(morning, "_topic_digest", return_value="x"), \
+             patch("trends.adjacent_story", return_value=None):
             morning._gather_morning_data({"city": "Kirkwood", "morning_topics": ["SpaceX news"]})
         route.assert_not_called()
         city.assert_called_once()
@@ -174,7 +178,8 @@ class TestCommuteRoute:
             with patch.object(morning, "get_travel_time", return_value=failure), \
                  patch.object(morning, "get_city_traffic", return_value="Roads are clear.") as city, \
                  patch.object(morning, "_weather_report", return_value="warm"), \
-                 patch.object(morning, "_search", return_value="x"):
+                 patch.object(morning, "_topic_digest", return_value="x"), \
+                 patch("trends.adjacent_story", return_value=None):
                 out = morning._gather_morning_data({"city": "Kirkwood", "morning_topics": [self.TOPIC]})
             city.assert_called_once()
             assert not any("Couldn't find" in s or "Routing failed" in s for s in out)
