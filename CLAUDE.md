@@ -63,6 +63,7 @@ prompts.py      SYSTEM_PROMPT, EXTRACT_PROMPT, CONSOLIDATE_PROMPT
 tools_def.py    TOOLS schema
 weather.py      geocoding, NWS (US) + Open-Meteo (rest of world)
 datafeeds.py    Tavily search, crypto/stock prices, GIFs, media
+tickers.py      morning topic -> tradeable symbol (Markets section)
 userprofile.py  profile extract/consolidate + the two cross-send dedup gates
 agent.py        _build_system, get_reply, tool dispatch, save_assistant_turn
 ```
@@ -120,6 +121,17 @@ Reactions then feed `communication_style`, `morning_prefs["avoid"]`, and a pacin
 ### Shared modules — don't re-copy these
 - `serpapi.py` — SerpAPI key, base URL, timeout, and request transport. Both `shopping.py` and `amazon.py` use it. Each still parses its own engine's payload; only the transport is shared.
 - `price_alert.py` — the one drafter for price-watch alerts, used by both price sources. It lives in its own module because `shopping.py` already imports `amazon.py`, and putting it in either would make that coupling bidirectional.
+
+### Topics become prices via `tickers.py`
+The Markets section of Palmer Home is derived from the user's `morning_topics`, so a topic only shows a price if it can be resolved to a symbol. That resolution used to be a bare uppercase-word regex, which meant it worked only when the drafting model happened to write the ticker into the topic itself — `"Nvidia stock price (NVDA)"` resolved, `"Nvidia stock"` silently did not, and the user got the topic listed under "Palmer is watching" with no price anywhere. It also matched the `US` in `"US stock market"` and spent a yfinance call on a delisted symbol every page refresh.
+
+`resolve_topic_asset` runs cheapest-first and **never calls a model** — it is on the read path, which runs on every page view: crypto name → explicit `$SYM`/`(SYM)` → curated name map → bare uppercase token behind a `NOT_TICKERS` stopword guard. It returns `(symbol, display_label)` because Yahoo's index symbols are correct and unreadable; nobody wants `^GSPC` in their Markets section.
+
+`resolve_company_ticker` is the Haiku escape hatch for names the map doesn't carry. It runs **once when a topic is saved** (`agent._normalize_price_topic`, called from the `update_morning_briefing` dispatch), never on read.
+
+`PRIVATE_COMPANIES` is checked before the model is ever asked. Prompted for SpaceX's ticker a model will answer `SPCE`, which is Virgin Galactic — a different company, priced wrong, on someone's personal page. A wrong ticker is worse than no ticker, because nothing downstream can catch it.
+
+`cards.MAX_PRICES` is the shared cap. Four columns fit the card's width but the sparklines start overdrawing the price text, so three is the real limit; `home._fetch_prices` imports the constant rather than keeping its own, since the card and the page render from one payload and must not disagree about how much of it survives.
 
 ### The profile is a bounded schema
 `userprofile.PROFILE_FIELDS` is the complete set of keys a profile may hold, and `_canonical_updates` drops anything outside it. This is not tidiness — the whole profile is dumped as JSON into **every** system prompt, and the per-turn extractor is a language model that will invent a new key every turn if nothing stops it. One profile reached 624 keys, 604 of them one-offs (`monday_night_behavior`, `kendrick_fan`, `tv_taste_update`, `alternatively`): ~21,700 tokens of noise per message, roughly double SYSTEM_PROMPT and the tool schemas combined, burying the 20 keys that mattered.

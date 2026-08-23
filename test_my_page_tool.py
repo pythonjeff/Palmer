@@ -114,3 +114,44 @@ class TestDispatch:
     def test_no_app_url_still_answers_instead_of_erroring(self):
         text, _, _ = _drive(reply="not much going on", url="/h/tok")
         assert text == "not much going on"
+
+
+class TestPriceTopicNormalization:
+    """"add Nvidia to my site" has to end up as something the Markets section
+    can resolve. The drafting model often writes the ticker itself and
+    sometimes doesn't, and the failure was silent — the topic appeared under
+    "Palmer is watching" with no price anywhere."""
+
+    def test_a_topic_the_map_already_covers_is_untouched(self):
+        """No model call: it already resolves."""
+        with patch("llm.client") as client:
+            assert agent._normalize_price_topic("Nvidia stock") == "Nvidia stock"
+        client.messages.create.assert_not_called()
+
+    def test_an_unmapped_company_gains_its_ticker(self):
+        with patch("tickers.resolve_company_ticker", return_value="LULU"):
+            assert agent._normalize_price_topic("Lululemon shares") == "Lululemon shares (LULU)"
+
+    def test_a_private_company_gains_nothing(self):
+        assert agent._normalize_price_topic("SpaceX stock") == "SpaceX stock"
+
+    def test_a_news_topic_never_pays_for_a_lookup(self):
+        with patch("llm.client") as client:
+            for t in ("AI news", "St. Louis Cardinals", "Kirkwood weather"):
+                assert agent._normalize_price_topic(t) == t
+        client.messages.create.assert_not_called()
+
+    def test_an_unresolvable_topic_is_left_alone(self):
+        with patch("tickers.resolve_company_ticker", return_value=None):
+            assert agent._normalize_price_topic("some obscure stock") == "some obscure stock"
+
+    def test_empty_input_is_safe(self):
+        assert agent._normalize_price_topic("") == ""
+
+    def test_it_runs_on_the_add_path(self):
+        """Normalization has to happen where topics are SAVED, since the read
+        path runs on every page view and must stay free."""
+        import inspect
+        src = inspect.getsource(agent.get_reply)
+        block = src.split('update_morning_briefing"')[1].split("elif b.name")[0]
+        assert "_normalize_price_topic" in block

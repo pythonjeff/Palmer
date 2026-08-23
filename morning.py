@@ -5,7 +5,7 @@ from agent import _build_system
 from llm import client, HAIKU_MODEL, SONNET_MODEL
 from smstext import _sms_clean
 from weather import _weather_report
-from datafeeds import _search_raw, _get_price, _CRYPTO_IDS
+from datafeeds import _search_raw, _get_price
 from userprofile import _derive_timezone
 from db import get_profile, upsert_profile, get_all_profiles, save_message, get_history, claim_daily_guard
 from traffic import get_city_traffic, get_travel_time
@@ -78,9 +78,6 @@ def _route_line_ok(line: str | None) -> bool:
 
 _WEATHER_KEYWORDS = ("weather", "forecast", "temperature", "rain", "snow", "wind", "humidity")
 _TRAFFIC_KEYWORDS = ("traffic", "commute", "highway", "roads")
-_PRICE_KEYWORDS = ("price", "stock", "shares", "ticker", "crypto")
-
-
 # Users answer "what should I get every morning?" with delivery preferences as
 # often as with subjects — "Format: bullet points per subject" was sitting in one
 # user's topic list and being sent to the news search as a query.
@@ -94,16 +91,13 @@ def _is_directive(topic: str) -> bool:
 
 
 def _price_asset_for_topic(topic: str) -> str | None:
-    """Return an asset identifier if this topic is a price request, else None."""
-    low = topic.lower()
-    for name in _CRYPTO_IDS:
-        if re.search(rf"\b{re.escape(name)}\b", low):
-            return name
-    if any(k in low for k in _PRICE_KEYWORDS):
-        ticker = re.search(r"\b([A-Z]{1,5})\b", topic)
-        if ticker:
-            return ticker.group(1)
-    return None
+    """Asset symbol if this topic is a price request, else None.
+
+    Resolution lives in tickers.py so the text briefing and the page's Markets
+    section can never disagree about what a topic means."""
+    from tickers import resolve_topic_asset
+    got = resolve_topic_asset(topic)
+    return got[0] if got else None
 
 
 # How many stories per topic reach the drafting model. Three gives it enough to

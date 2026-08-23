@@ -85,9 +85,13 @@ def _search(query: str, days: int = 7, require_date: bool = False,
     except Exception as e:
         return f"Search failed: {e}"
 
-def price_snapshot(asset: str) -> dict | None:
+def price_snapshot(asset: str, label: str | None = None) -> dict | None:
     """Structured price data for the visual dashboard, including a short series
     for the sparkline. None on any failure.
+
+    `label` overrides how the row reads on the page. Yahoo's index symbols are
+    correct but unreadable — nobody wants "^GSPC" in their Markets section — so
+    tickers.resolve_topic_asset hands us "S&P 500" alongside the symbol.
 
     _get_price computes price and deltas and formats them away. This is
     additive — _get_price is untouched, so the text briefing can't regress."""
@@ -117,7 +121,7 @@ def price_snapshot(asset: str) -> dict | None:
             except Exception:
                 pass
             return {
-                "label": asset.title(), "price": data["usd"],
+                "label": label or asset.title(), "price": data["usd"],
                 "pct_24h": data.get("usd_24h_change") or 0.0,
                 "pct_7d": data.get("usd_7d_change") or 0.0,
                 "series": series, "is_crypto": True,
@@ -136,7 +140,7 @@ def price_snapshot(asset: str) -> dict | None:
         prev = closes[-2] if len(closes) >= 2 else current
         first = closes[0] if closes else current
         return {
-            "label": asset.upper(), "price": float(current),
+            "label": label or asset.upper(), "price": float(current),
             "pct_24h": ((current - prev) / prev * 100) if prev else 0.0,
             "pct_7d": ((current - first) / first * 100) if first else 0.0,
             "series": closes, "is_crypto": False,

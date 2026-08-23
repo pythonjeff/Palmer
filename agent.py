@@ -262,6 +262,28 @@ def save_assistant_turn(phone_number: str, user_msg: str, reply: str):
     ).start()
 
 
+def _normalize_price_topic(topic: str) -> str:
+    """Append the ticker to a price topic that doesn't already resolve to one.
+
+    The Markets section on Palmer Home is derived from these topic strings, so
+    "add Nvidia to my site" has to end up as something tickers.py can resolve.
+    It used to work only when the drafting model spontaneously wrote the symbol
+    into the topic — which it often did, and sometimes didn't, and the failure
+    was silent: the topic showed under "Palmer is watching" with no price.
+
+    This is the one place the resolution can cost a model call, because topics
+    are added rarely and read on every page view. Returns the topic unchanged
+    when there is nothing tradeable in it — SpaceX is private, "AI news" is a
+    subject, and neither should grow a fake ticker."""
+    from tickers import resolve_topic_asset, resolve_company_ticker, looks_like_price_topic
+    if not topic or not looks_like_price_topic(topic):
+        return topic
+    if resolve_topic_asset(topic):
+        return topic
+    symbol = resolve_company_ticker(topic)
+    return f"{topic} ({symbol})" if symbol else topic
+
+
 def get_reply(phone_number: str, message: str, media_url: str = None, history: list[dict] | None = None, is_new_user: bool = False) -> tuple[str, str | None]:
     """Generate a reply. Returns (text, gif_url) — gif_url is None if no GIF was queued."""
     messages = history if history is not None else get_history(phone_number, limit=HISTORY_LIMIT)
@@ -325,6 +347,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 profile = get_profile(phone_number)
                 topics = list(profile.get("morning_topics") or [])
                 for item in (b.input.get("add") or []):
+                    item = _normalize_price_topic(item)
                     if not any(item.lower() in t.lower() or t.lower() in item.lower() for t in topics):
                         topics.append(item)
                 for item in (b.input.get("remove") or []):

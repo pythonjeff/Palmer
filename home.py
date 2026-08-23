@@ -96,15 +96,21 @@ def _fetch_traffic(profile: dict) -> dict | None:
 
 
 def _fetch_prices(profile: dict) -> list[dict]:
+    """The Markets section, derived from the user's morning topics.
+
+    Resolution lives in tickers.py — a topic only shows a price if it names
+    something tradeable, so "Nvidia stock" resolves and "SpaceX stock" (private)
+    correctly does not."""
     from datafeeds import price_snapshot
-    from morning import _price_asset_for_topic
+    from tickers import resolve_topic_asset
+    from cards import MAX_PRICES
     assets, seen = [], set()
     for topic in (profile.get("morning_topics") or []):
-        a = _price_asset_for_topic(topic)
-        if a and a.lower() not in seen:
-            seen.add(a.lower())
-            assets.append(a)
-    return [s for s in (price_snapshot(a) for a in assets[:3]) if s]
+        got = resolve_topic_asset(topic)
+        if got and got[0].lower() not in seen:
+            seen.add(got[0].lower())
+            assets.append(got)
+    return [s for s in (price_snapshot(sym, label) for sym, label in assets[:MAX_PRICES]) if s]
 
 
 def _fetch_headlines(profile: dict) -> list[dict]:

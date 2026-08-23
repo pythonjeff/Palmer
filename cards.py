@@ -188,6 +188,14 @@ def _sparkline(d: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int,
     d.ellipse([coords[-1][0] - 4, coords[-1][1] - 4, coords[-1][0] + 4, coords[-1][1] + 4], fill=colour)
 
 
+# Markets columns the card has room for. Four fits the width but the sparklines
+# start overdrawing the price text ("$214.72" with a line through it), so three
+# is the layout's real limit. home._fetch_prices imports this rather than
+# keeping its own number — the card and the page render from one payload and
+# must not disagree about how much of it survives.
+MAX_PRICES = 3
+
+
 def render_dashboard(*, city: str, weather: dict | None, traffic: dict | None,
                      prices: list[dict] | None, headlines: list[str] | None,
                      when: datetime | None = None) -> bytes:
@@ -258,8 +266,8 @@ def render_dashboard(*, city: str, weather: dict | None, traffic: dict | None,
         _panel(img, [x0 - 18, top - 18, W - PAD + 18, top + 108])
         d = ImageDraw.Draw(img)
         d.text((x0, top), "MARKETS", font=_font(20, True), fill=MUTED)
-        col_w = (W - PAD - x0) // max(1, min(len(prices), 3))
-        for i, p in enumerate(prices[:3]):
+        col_w = (W - PAD - x0) // max(1, min(len(prices), MAX_PRICES))
+        for i, p in enumerate(prices[:MAX_PRICES]):
             cx = x0 + i * col_w
             pct = p.get("pct_24h") or 0.0
             colour = UP if pct >= 0 else DOWN
