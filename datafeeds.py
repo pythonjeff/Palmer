@@ -85,6 +85,67 @@ def _search(query: str, days: int = 7, require_date: bool = False,
     except Exception as e:
         return f"Search failed: {e}"
 
+def price_snapshot(asset: str) -> dict | None:
+    """Structured price data for the visual dashboard, including a short series
+    for the sparkline. None on any failure.
+
+    _get_price computes price and deltas and formats them away. This is
+    additive — _get_price is untouched, so the text briefing can't regress."""
+    asset_lower = asset.lower().strip()
+    coin_id = _CRYPTO_IDS.get(asset_lower)
+    try:
+        if coin_id:
+            resp = _requests.get(
+                "https://api.coingecko.com/api/v3/simple/price",
+                params={"ids": coin_id, "vs_currencies": "usd",
+                        "include_24hr_change": "true", "include_7d_change": "true"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json().get(coin_id) or {}
+            if not data:
+                return None
+            series = []
+            try:  # sparkline is a bonus — never let it cost us the price
+                chart = _requests.get(
+                    f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart",
+                    params={"vs_currency": "usd", "days": "7", "interval": "daily"},
+                    timeout=10,
+                )
+                chart.raise_for_status()
+                series = [p[1] for p in (chart.json().get("prices") or [])]
+            except Exception:
+                pass
+            return {
+                "label": asset.title(), "price": data["usd"],
+                "pct_24h": data.get("usd_24h_change") or 0.0,
+                "pct_7d": data.get("usd_7d_change") or 0.0,
+                "series": series, "is_crypto": True,
+            }
+
+        import yfinance as yf
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            def _fetch():
+                t = yf.Ticker(asset.upper())
+                return t.fast_info, t.history(period="7d")
+            fi, hist = ex.submit(_fetch).result(timeout=15)
+        current = fi.last_price
+        if not current:
+            return None
+        closes = [float(c) for c in hist["Close"].tolist()] if not hist.empty else []
+        prev = closes[-2] if len(closes) >= 2 else current
+        first = closes[0] if closes else current
+        return {
+            "label": asset.upper(), "price": float(current),
+            "pct_24h": ((current - prev) / prev * 100) if prev else 0.0,
+            "pct_7d": ((current - first) / first * 100) if first else 0.0,
+            "series": closes, "is_crypto": False,
+        }
+    except Exception as e:
+        print(f"price_snapshot failed for {asset!r}: {type(e).__name__}: {e}")
+        return None
+
+
 def _get_price(asset: str) -> str:
     asset_lower = asset.lower().strip()
 

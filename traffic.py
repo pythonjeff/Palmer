@@ -243,3 +243,43 @@ def get_travel_time(origin: str, destination: str) -> str:
     if dist:
         parts.append(f"{round(dist / 1609.34, 1)} miles")
     return f"{origin} → {destination}: " + "; ".join(parts) + "."
+
+
+def traffic_snapshot(origin: str, destination: str) -> dict | None:
+    """Structured commute data for the visual dashboard. None on any failure.
+
+    get_travel_time computes all of this and then formats it away. `ratio` is
+    the number the meter renders: 1.0 is free-flowing, ~1.4 is a bad morning.
+    Additive — get_travel_time is untouched, so the text briefing can't
+    regress."""
+    if not TOMTOM_API_KEY or not origin or not destination:
+        return None
+    try:
+        orig = _geocode_address(origin)
+        dest = _geocode_address(destination)
+        if not orig or not dest:
+            return None
+        locations = f"{orig[0]},{orig[1]}:{dest[0]},{dest[1]}"
+        data = _http_get_json(
+            f"{_TOMTOM_BASE}/routing/1/calculateRoute/{locations}/json"
+            f"?traffic=true&travelMode=car&computeTravelTimeFor=all&key={TOMTOM_API_KEY}",
+            timeout=_TOMTOM_TIMEOUT,
+        )
+        if not data or not data.get("routes"):
+            return None
+        summary = data["routes"][0].get("summary") or {}
+        live = summary.get("travelTimeInSeconds")
+        if not live:
+            return None
+        free = summary.get("noTrafficTravelTimeInSeconds") or live
+        dist = summary.get("lengthInMeters")
+        return {
+            "live_min": round(live / 60),
+            "free_min": round(free / 60),
+            "delay_min": round((summary.get("trafficDelayInSeconds") or 0) / 60),
+            "miles": round(dist / 1609.34, 1) if dist else None,
+            "ratio": round(live / free, 3) if free else 1.0,
+        }
+    except Exception as e:
+        print(f"traffic_snapshot failed ({origin!r} -> {destination!r}): {type(e).__name__}: {e}")
+        return None

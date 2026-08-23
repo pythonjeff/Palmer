@@ -8,3 +8,4 @@ tavily-python
 psycopg2-binary
 apscheduler
 yfinance
+Pillow>=10.0

@@ -5,7 +5,7 @@ import os
 import threading
 from collections import defaultdict
 from fastapi import FastAPI, Form, Response, BackgroundTasks, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response as FileResponse
 from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -236,6 +236,27 @@ async def sms_status_webhook(
         background_tasks.add_task(_retry_shortened_send, To, MessageSid)
 
     return Response(status_code=204)
+
+
+@app.get("/c/{token}.png")
+async def artifact_png(token: str):
+    """Serve a rendered card. Public by necessity — Twilio fetches MMS media and
+    the recipient's phone fetches the og:image, neither of which can carry auth.
+    The token is the protection; see artifacts.py."""
+    from artifacts import fetch
+    got = fetch(token)
+    if not got:
+        raise HTTPException(status_code=404)
+    _, body = got
+    return FileResponse(
+        content=body,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "X-Robots-Tag": "noindex, nofollow",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
 
 
 @app.get("/preview")

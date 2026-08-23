@@ -12,6 +12,7 @@ if _DATABASE_URL:
         _DATABASE_URL = _DATABASE_URL.replace("postgres://", "postgresql://", 1)
     PH = "%s"
     ID_COL = "SERIAL PRIMARY KEY"
+    BLOB_COL = "BYTEA"
     def _conn():
         return psycopg2.connect(_DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
 else:
@@ -19,6 +20,7 @@ else:
     _DB_PATH = Path(__file__).parent / "palmer.db"
     PH = "?"
     ID_COL = "INTEGER PRIMARY KEY AUTOINCREMENT"
+    BLOB_COL = "BLOB"
     def _conn():
         conn = sqlite3.connect(_DB_PATH)
         conn.row_factory = sqlite3.Row
@@ -64,6 +66,15 @@ def init_db():
             last_alert_summary TEXT,
             active INTEGER NOT NULL DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS artifacts (
+            token TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            body {BLOB_COL} NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP NOT NULL
         )
     """)
     cur.execute(f"""
@@ -691,3 +702,41 @@ def update_price_watch_alerted(watch_id: int, price: float, url: str, merchant: 
     )
     conn.commit()
     conn.close()
+
+
+def save_artifact(token: str, kind: str, body: bytes, ttl_hours: int = 48) -> None:
+    """Store a rendered artifact (a card PNG) for public fetch.
+
+    Twilio fetches MMS media, and the recipient's phone fetches the og:image, so
+    these URLs cannot be authenticated. The token is the only protection, hence
+    128 bits of CSPRNG in artifacts.new_token, plus a TTL."""
+    expires = datetime.now(timezone.utc) + timedelta(hours=ttl_hours)
+    conn = _conn()
+    cur = conn.cursor()
+    payload = psycopg2.Binary(body) if _DATABASE_URL else body
+    cur.execute(
+        f"INSERT INTO artifacts (token, kind, body, expires_at) VALUES ({PH}, {PH}, {PH}, {PH}) "
+        f"ON CONFLICT(token) DO UPDATE SET body = EXCLUDED.body, expires_at = EXCLUDED.expires_at",
+        (token, kind, payload, expires),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_artifact(token: str) -> tuple[str, bytes] | None:
+    """(kind, body) if the token is live, else None. Expired reads as missing."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(f"SELECT kind, body, expires_at FROM artifacts WHERE token = {PH}", (token,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    expires = row["expires_at"]
+    if isinstance(expires, str):
+        expires = datetime.fromisoformat(expires)
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires < datetime.now(timezone.utc):
+        return None
+    return row["kind"], bytes(row["body"])

@@ -191,11 +191,12 @@ def _nws_report(lat: float, lon: float, resolved: str, when: str, when_lower: st
         hilo = ""
     return f"{resolved} on {target.strftime('%A, %B %d')}:{hilo} {desc}".strip()
 
-def _openmeteo_report(lat: float, lon: float, resolved: str, when: str, when_lower: str,
-                     is_now: bool, is_today: bool, tz: str | None = None) -> str:
-    """Fallback weather via Open-Meteo. Used worldwide and when NWS fails.
-    `tz` scopes 'tomorrow'/weekday parsing to the user's local today."""
-    data = _http_get_json_retry(
+def _fetch_openmeteo(lat: float, lon: float) -> dict:
+    """One Open-Meteo call, shared by the prose report and weather_snapshot.
+
+    Both need the same fields; keeping the params in one place stops the two
+    from drifting apart."""
+    return _http_get_json_retry(
         "https://api.open-meteo.com/v1/forecast",
         params={
             "latitude": lat, "longitude": lon,
@@ -209,6 +210,46 @@ def _openmeteo_report(lat: float, lon: float, resolved: str, when: str, when_low
         },
         timeout=10,
     )
+
+
+def weather_snapshot(location: str, tz: str | None = None) -> dict | None:
+    """Structured weather for the visual dashboard. None on any failure.
+
+    Deliberately always uses Open-Meteo, even for US locations where
+    _weather_report prefers NWS. The two sources are good at different jobs:
+    NWS writes better US narrative text ("isolated showers between 4pm and
+    5pm"), which is why the prose path wants it, while Open-Meteo returns clean
+    numbers plus a WMO `weather_code` that maps directly to which art to draw.
+    Prose keeps NWS; the dashboard uses this. Fully additive — no existing
+    branch changes, so the text briefing cannot regress."""
+    try:
+        lat, lon, resolved = _geocode(location)
+        data = _fetch_openmeteo(lat, lon)
+        curr, daily = data["current"], data["daily"]
+        code = curr.get("weather_code")
+        return {
+            "resolved": resolved,
+            "temp_now": curr.get("temperature_2m"),
+            "feels_like": curr.get("apparent_temperature"),
+            "humidity": curr.get("relative_humidity_2m"),
+            "wind": curr.get("wind_speed_10m"),
+            "weather_code": code,
+            "description": _WMO_DESCRIPTIONS.get(code, "unknown conditions"),
+            "high": daily["temperature_2m_max"][0],
+            "low": daily["temperature_2m_min"][0],
+            "rain_pct": daily["precipitation_probability_max"][0],
+            "gusts": (daily.get("wind_gusts_10m_max") or [None])[0],
+        }
+    except Exception as e:
+        print(f"weather_snapshot failed for {location!r}: {type(e).__name__}: {e}")
+        return None
+
+
+def _openmeteo_report(lat: float, lon: float, resolved: str, when: str, when_lower: str,
+                     is_now: bool, is_today: bool, tz: str | None = None) -> str:
+    """Fallback weather via Open-Meteo. Used worldwide and when NWS fails.
+    `tz` scopes 'tomorrow'/weekday parsing to the user's local today."""
+    data = _fetch_openmeteo(lat, lon)
 
     curr = data["current"]
     daily = data["daily"]
