@@ -13,7 +13,9 @@ phone over a cell connection, which is the only place it will ever be opened.
 from __future__ import annotations
 
 import html
+import os
 from datetime import datetime
+from urllib.parse import quote_plus
 from urllib.parse import quote
 
 # Mirrors the card's palette so the preview and the page feel like one thing.
@@ -51,6 +53,11 @@ a.row:active{opacity:.6}
 .trk{padding:12px 0;border-top:1px solid rgba(255,255,255,.07)}
 .trk:first-of-type{border-top:0}
 .trk .t{font-size:15px}
+.ask{display:block;background:rgba(125,185,245,.10);border:1px solid rgba(125,185,245,.28);
+ border-radius:16px;padding:14px 16px;margin-top:16px}
+.ask:active{opacity:.6}
+.ask .h{font-weight:700;font-size:15px;color:#dce8fb}
+.ask .s{color:#7db9f5;font-size:13px;margin-top:3px;font-weight:600}
 .foot{color:#4a5878;font-size:12px;text-align:center;margin-top:26px;line-height:1.6}
 """
 
@@ -122,9 +129,16 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
     heads = payload.get("headlines") or []
     fetched = payload.get("fetched") or {}
     tracking = payload.get("tracking") or {}
+    name = (payload.get("name") or "").strip()
+    # Falls back to a neutral label rather than leaving the page anonymous; the
+    # prompt below turns the gap into an invitation instead of a blank.
+    eyebrow = name if name else "Your briefing"
+    subhead = " · ".join(x for x in (city if name else None,
+                                     datetime.now().strftime("%A, %B %d")) if x)
 
     temp = w.get("temp_now")
-    title = f"{temp:.0f}° in {city}" if temp is not None else f"{city} briefing"
+    where = city if city and city != "Today" else "your briefing"
+    title = f"{temp:.0f}° in {where}" if temp is not None else f"{where}".capitalize()
     bits = []
     if t.get("live_min"):
         bits.append(f"{t['live_min']} min commute")
@@ -151,9 +165,23 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         '<meta property="og:type" content="website">',
         '<meta name="twitter:card" content="summary_large_image">',
         f"<style>{CSS}</style></head><body><div class=bg></div><div class=wrap>",
-        f'<div class=eyebrow>{e(city)}</div>',
-        f'<div class=date>{e(datetime.now().strftime("%A, %B %d"))}</div>',
+        f'<div class=eyebrow>{e(eyebrow)}</div>',
+        f'<div class=date>{e(subhead)}</div>',
     ]
+
+    if not name:
+        # No form here on purpose — the page has no auth and nothing to POST to.
+        # The product is SMS, so the affordance is a pre-filled text back to
+        # Palmer. Tapping opens Messages with the body already written.
+        sms_num = os.environ.get("TWILIO_PHONE_NUMBER", "")
+        body = quote_plus("My name is ")
+        href = f"sms:{sms_num}?&body={body}" if sms_num else ""
+        opener = f'<a class=ask href="{e(href)}">' if href else '<div class=ask>'
+        closer = "</a>" if href else "</div>"
+        out.append(
+            f'{opener}<div class=h>Palmer doesn\'t know your name yet</div>'
+            f'<div class=s>{"Tap to tell him &rarr;" if href else "Text Palmer your name"}</div>{closer}'
+        )
 
     if w:
         out.append('<div class=hero><div>')
