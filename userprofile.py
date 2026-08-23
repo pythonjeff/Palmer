@@ -13,6 +13,28 @@ from prompts import EXTRACT_PROMPT, CONSOLIDATE_PROMPT
 
 
 # Canonical profile schema. Everything reads these keys; aliases are normalized on write.
+# Every key a profile is allowed to hold. The extractor is a language model and
+# will happily invent a new key every turn if nothing stops it — one profile had
+# accumulated 624 keys, 604 of them one-offs like "monday_night_behavior",
+# "kendrick_fan" and "alternatively". The whole profile is dumped as JSON into
+# every system prompt, so that was ~21,700 tokens of noise per turn, roughly
+# double SYSTEM_PROMPT and the tool schemas combined, burying the 20 keys that
+# mattered. Anything new goes here deliberately, or it doesn't persist.
+PROFILE_FIELDS = frozenset({
+    # who they are — the extraction schema in prompts.EXTRACT_PROMPT
+    "name", "city", "timezone", "job", "interests", "sports_teams", "brands",
+    "relationships", "life_context", "life_summary", "vibe", "stressed_about",
+    "follow_up", "ongoing_threads", "communication_style", "commute",
+    # briefing / scheduling config
+    "morning_topics", "morning_time", "morning_enabled", "morning_onboarded",
+    "morning_prefs", "morning_sent_date", "interest_genres",
+    # bookkeeping the jobs and handlers read
+    "intro_sent", "conversation_topics", "reactions", "reactions_folded_count",
+    "pending_morning_suggestion", "pending_preference_notice",
+    "alert_sent_date", "followup_sent_date", "city_ask_sent_date",
+})
+
+
 _PROFILE_ALIASES = {
     "location": "city",
     "favorite_teams": "sports_teams",
@@ -24,15 +46,36 @@ _PROFILE_ALIASES = {
 }
 
 def _canonical_updates(updates: dict) -> dict:
-    """Map any alias keys to their canonical names and null out the aliases."""
+    """Map alias keys to canonical names, null the aliases, and drop anything
+    outside PROFILE_FIELDS so the schema can't drift one turn at a time."""
     result = {}
+    dropped = []
     for k, v in updates.items():
         canonical = _PROFILE_ALIASES.get(k, k)
+        if canonical not in PROFILE_FIELDS:
+            dropped.append(k)
+            continue
         if canonical not in result:
             result[canonical] = v
         if k != canonical:
             result[k] = None  # null the alias so it doesn't persist
+    if dropped:
+        print(f"profile: dropped {len(dropped)} non-schema field(s): {dropped[:8]}")
     return result
+
+
+def prune_profile(profile: dict) -> tuple[dict, list[str]]:
+    """Profile reduced to PROFILE_FIELDS. Returns (kept, dropped_key_names).
+
+    Used to clean rows that accumulated invented keys before the allow-list
+    existed. Pure — the caller decides whether to write it back."""
+    kept, dropped = {}, []
+    for k, v in (profile or {}).items():
+        if k in PROFILE_FIELDS:
+            kept[k] = v
+        else:
+            dropped.append(k)
+    return kept, dropped
 
 def _normalize_profile(phone: str, profile: dict) -> dict:
     """Migrate alias keys in an existing profile to canonical form. Idempotent."""

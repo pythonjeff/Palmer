@@ -110,6 +110,15 @@ Reactions then feed `communication_style`, `morning_prefs["avoid"]`, and a pacin
 - `serpapi.py` — SerpAPI key, base URL, timeout, and request transport. Both `shopping.py` and `amazon.py` use it. Each still parses its own engine's payload; only the transport is shared.
 - `price_alert.py` — the one drafter for price-watch alerts, used by both price sources. It lives in its own module because `shopping.py` already imports `amazon.py`, and putting it in either would make that coupling bidirectional.
 
+### The profile is a bounded schema
+`userprofile.PROFILE_FIELDS` is the complete set of keys a profile may hold, and `_canonical_updates` drops anything outside it. This is not tidiness — the whole profile is dumped as JSON into **every** system prompt, and the per-turn extractor is a language model that will invent a new key every turn if nothing stops it. One profile reached 624 keys, 604 of them one-offs (`monday_night_behavior`, `kendrick_fan`, `tv_taste_update`, `alternatively`): ~21,700 tokens of noise per message, roughly double SYSTEM_PROMPT and the tool schemas combined, burying the 20 keys that mattered.
+
+Adding a field means adding it to `PROFILE_FIELDS` **and** to the schema list in `prompts.EXTRACT_PROMPT`. A key missing from the allow-list is silently discarded on write, so `test_profile_schema.py` asserts that every field the code reads is allowed.
+
+`upsert_profile(phone, {"key": None})` **deletes** the key. Callers already used None to mean "clear this" (releasing a send guard, retiring an alias) and every reader goes through `.get()`, so absent and null are equivalent to them — but a stored null still costs prompt tokens.
+
+`migrate_profile_prune.py` cleans rows that grew before the allow-list existed. It folds the stray keys into canonical fields with a Sonnet pass before dropping them, so real facts survive. Dry run by default; `--apply` writes.
+
 ### DB access patterns
 - `get_all_profiles()` returns every `(phone, profile)` in ONE query. The scheduler jobs use it. Do not write `for phone in get_all_phones(): get_profile(phone)` — `_conn()` opens a fresh connection per call, so that is N+1 per tick.
 - `upsert_profile()` does its read and write on one connection, and takes a row lock on Postgres. It used to be two connections with an unsynchronised gap, so concurrent writers could drop each other's fields.

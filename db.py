@@ -219,7 +219,16 @@ def upsert_profile(phone: str, updates: dict):
         cur.execute(f"SELECT profile FROM users WHERE phone = {PH}", (phone,))
     row = cur.fetchone()
     profile = json.loads(row["profile"]) if row else {}
-    profile.update(updates)
+    # A None value DELETES the key rather than storing a null. Callers already
+    # use None to mean "clear this" (release a send guard, retire an alias) and
+    # every reader goes through .get(), so null and absent are equivalent to
+    # them — but a stored null still costs prompt tokens, because the whole
+    # profile is dumped as JSON into every system prompt.
+    for key, value in updates.items():
+        if value is None:
+            profile.pop(key, None)
+        else:
+            profile[key] = value
     cur.execute(
         f"INSERT INTO users (phone, profile) VALUES ({PH}, {PH}) "
         f"ON CONFLICT(phone) DO UPDATE SET profile = EXCLUDED.profile",
