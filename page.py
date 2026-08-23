@@ -47,6 +47,10 @@ a.row:active{opacity:.6}
 .tick{font-size:15px;line-height:1.35}
 .src{color:#606e91;font-size:12px;margin-top:4px;text-transform:uppercase;letter-spacing:.08em}
 .chev{color:#4a5878;flex:0 0 auto}
+.as{color:#4a5878;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;float:right}
+.trk{padding:12px 0;border-top:1px solid rgba(255,255,255,.07)}
+.trk:first-of-type{border-top:0}
+.trk .t{font-size:15px}
 .foot{color:#4a5878;font-size:12px;text-align:center;margin-top:26px;line-height:1.6}
 """
 
@@ -80,6 +84,22 @@ def _gauge(ratio: float) -> str:
     )
 
 
+def _ago(ts: float | None, now: float | None = None) -> str:
+    """Relative freshness. A page showing this morning's commute at 4pm is worse
+    than showing nothing, so every live section says how old it is."""
+    import time
+    if not ts:
+        return ""
+    delta = int((now or time.time()) - ts)
+    if delta < 90:
+        return "just now"
+    if delta < 3600:
+        return f"{delta // 60} min ago"
+    if delta < 86400:
+        return f"{delta // 3600}h ago"
+    return f"{delta // 86400}d ago"
+
+
 def _price_link(p: dict) -> str:
     label = p.get("label", "")
     if p.get("is_crypto"):
@@ -100,6 +120,8 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
     t = payload.get("traffic") or {}
     prices = payload.get("prices") or []
     heads = payload.get("headlines") or []
+    fetched = payload.get("fetched") or {}
+    tracking = payload.get("tracking") or {}
 
     temp = w.get("temp_now")
     title = f"{temp:.0f}° in {city}" if temp is not None else f"{city} briefing"
@@ -151,13 +173,15 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
     if t:
         delay = t.get("delay_min") or 0
         cls, note = ("up", "clear") if delay < 2 else ("amber", f"+{delay} min vs normal")
-        out += ['<div class=card><div class=label>Commute</div>',
+        out += [f'<div class=card><div class=label>Commute'
+                f'<span class=as>{e(_ago(fetched.get("traffic")))}</span></div>',
                 f'<div class=big>{e(t.get("live_min", 0))} min '
                 f'<span class="note {cls}">{e(note)}</span></div>',
                 _gauge(t.get("ratio") or 1.0), "</div>"]
 
     if prices:
-        out.append('<div class=card><div class=label>Markets</div>')
+        out.append('<div class=card><div class=label>Markets'
+                   f'<span class=as>{e(_ago(fetched.get("prices")))}</span></div>')
         for p in prices:
             pct = p.get("pct_24h") or 0.0
             cls = "up" if pct >= 0 else "down"
@@ -172,7 +196,8 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         out.append("</div>")
 
     if heads:
-        out.append('<div class=card><div class=label>Today</div>')
+        out.append('<div class=card><div class=label>Today'
+                   f'<span class=as>{e(_ago(fetched.get("headlines")))}</span></div>')
         for h in heads:
             t_ = h.get("title", "")
             url = h.get("url")
@@ -186,6 +211,29 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
                 out.append(f'<div class=row>{inner}</div>')
         out.append("</div>")
 
-    out.append('<div class=foot>Palmer · this page expires<br>tap anything to open the source</div>')
+    watches = tracking.get("watches") or []
+    pwatches = tracking.get("price_watches") or []
+    topics = tracking.get("topics") or []
+    if watches or pwatches or topics:
+        out.append('<div class=card><div class=label>Palmer is watching</div>')
+        for w in watches:
+            out.append(f'<div class=trk><div class=t>{e(w.get("description", ""))}</div>'
+                       f'<div class=src>news watch</div></div>')
+        for w in pwatches:
+            bits = []
+            if w.get("last_seen") is not None:
+                bits.append(f'now ${w["last_seen"]:,.2f}')
+            if w.get("target") is not None:
+                bits.append(f'target ${w["target"]:,.2f}')
+            out.append(f'<div class=trk><div class=t>{e(w.get("product", ""))}</div>'
+                       f'<div class=src>{e(" · ".join(bits) or "price watch")}</div></div>')
+        if topics:
+            out.append(f'<div class=trk><div class=t>{e(", ".join(topics[:6]))}</div>'
+                       f'<div class=src>in your morning update'
+                       f'{e(" · " + tracking["morning_time"]) if tracking.get("morning_time") else ""}'
+                       f'</div></div>')
+        out.append("</div>")
+
+    out.append('<div class=foot>Palmer keeps this current<br>tap anything to open the source</div>')
     out.append("</div></body></html>")
     return "".join(out)

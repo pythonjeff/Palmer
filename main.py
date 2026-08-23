@@ -281,6 +281,45 @@ async def artifact_page(token: str):
     )
 
 
+@app.get("/h/{token}.png")
+async def home_png(token: str):
+    """The user's home as a flat card — og:image and MMS."""
+    from home import load, refresh_stale
+    from artifacts import render_png
+    payload = load(token)
+    if payload is None:
+        raise HTTPException(status_code=404)
+    payload = refresh_stale(token, payload)
+    return FileResponse(
+        content=render_png(f"{token}:{int(payload.get('built_at', 0))}", payload),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=300",
+                 "X-Robots-Tag": "noindex, nofollow",
+                 "Referrer-Policy": "no-referrer"},
+    )
+
+
+@app.get("/h/{token}")
+async def home_page(token: str):
+    """The user's live page. No login — the token is the whole protection, so
+    this shows only briefing-grade content (see home.py)."""
+    from home import load, refresh_stale
+    from page import render
+    payload = load(token)
+    if payload is None:
+        raise HTTPException(status_code=404)
+    payload = refresh_stale(token, payload)
+    base = os.environ.get("APP_URL", "").rstrip("/")
+    return FileResponse(
+        content=render(payload, token=token,
+                       image_url=f"{base}/h/{token}.png", page_url=f"{base}/h/{token}"),
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-store",
+                 "X-Robots-Tag": "noindex, nofollow",
+                 "Referrer-Policy": "no-referrer"},
+    )
+
+
 @app.get("/preview")
 async def preview_morning(phone: str):
     message = generate_morning(phone)

@@ -358,6 +358,30 @@ def _in_send_window(now_local: datetime, morning_time: str | None,
 # Called every 5 minutes by APScheduler in main.py. The morning_sent_date guard
 # (keyed to the user's local date) makes extra invocations harmless, so the old
 # hourly Heroku Scheduler job can stay on as a redundant backup or be removed.
+def _send_home_link(phone: str) -> None:
+    """A short line plus the link to the user's live page.
+
+    Sent as its OWN message on purpose. Link previews only render when a message
+    carries exactly one URL at the very start or end, and appending the link to
+    the briefing would both break that and risk pushing the text past the 900
+    char split threshold in sms_util, turning one briefing into six texts.
+
+    Never raises and never blocks — the briefing has already been delivered by
+    the time this runs, so a failure here costs an extra tap, not the update."""
+    from sms_util import send_sms
+    try:
+        from home import rebuild, home_url
+        rebuild(phone, refresh_news=True)
+        url = home_url(phone)
+        if not url.startswith("http"):
+            print(f"_send_home_link: APP_URL not configured, skipping for {phone}")
+            return
+        send_sms(phone, f"morning - everything else is here {url}",
+                 add_status_callback=False)
+    except Exception as e:
+        print(f"_send_home_link failed for {phone}: {type(e).__name__}: {e}")
+
+
 def send_morning_messages():
     from sms_util import send_sms
 
@@ -401,6 +425,7 @@ def send_morning_messages():
             try:
                 message = generate_morning(phone)
                 if send_sms(phone, message):
+                    _send_home_link(phone)
                     save_message(phone, "assistant", message)
                     print(f"Morning sent to {phone}: {message[:100]}")
                 else:
