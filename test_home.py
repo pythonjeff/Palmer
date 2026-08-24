@@ -14,6 +14,7 @@ and seconds.
 import time
 from unittest.mock import patch
 
+import datafeeds
 import home
 
 
@@ -395,3 +396,39 @@ class TestRebuild:
             t = home._tracking("+1555")
         assert t["watches"] == [] and t["price_watches"] == []
         assert t["topics"], "topics come from the profile and should survive"
+
+
+class TestHeadlineSourcing:
+    """Today only shows a story when a trusted domain covered it — the same
+    tier gate watches.py uses before firing an alert. A topic whose only
+    coverage is an unranked domain gets no story that day, not a weak one."""
+
+    TOPIC_PROFILE = {"city": "Kirkwood, MO", "timezone": "America/Chicago",
+                     "morning_topics": ["SpaceX news"]}
+
+    def test_untrusted_only_result_is_dropped(self):
+        results = [{"title": "SpaceX did a thing", "url": "https://randomblog.example/x",
+                    "score": 0.9}]
+        with patch.object(datafeeds, "_search_raw", return_value=results):
+            out = home._fetch_headlines(self.TOPIC_PROFILE)
+        assert out == [], "an unranked-domain-only result must not become a story"
+
+    def test_trusted_domain_result_is_kept(self):
+        results = [{"title": "SpaceX launches Starship again", "url": "https://apnews.com/x",
+                    "score": 0.9}]
+        with patch.object(datafeeds, "_search_raw", return_value=results):
+            out = home._fetch_headlines(self.TOPIC_PROFILE)
+        assert out and out[0]["source"] == "apnews.com"
+
+    def test_untrusted_result_never_wins_over_a_trusted_one(self):
+        """Highest Tavily score picked the untrusted blog post before this gate
+        existed — score must not override the tier filter."""
+        results = [{"title": "blog take", "url": "https://randomblog.example/x", "score": 0.95},
+                   {"title": "AP story", "url": "https://apnews.com/y", "score": 0.6}]
+        with patch.object(datafeeds, "_search_raw", return_value=results):
+            out = home._fetch_headlines(self.TOPIC_PROFILE)
+        assert out and out[0]["source"] == "apnews.com"
+
+    def test_no_results_at_all_is_not_an_error(self):
+        with patch.object(datafeeds, "_search_raw", return_value=[]):
+            assert home._fetch_headlines(self.TOPIC_PROFILE) == []

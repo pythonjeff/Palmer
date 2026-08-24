@@ -134,7 +134,18 @@ def _fetch_prices(profile: dict, previous: list[dict] | None = None) -> list[dic
 
 
 def _fetch_headlines(profile: dict) -> list[dict]:
-    """The one paid path. Morning job only — never on view."""
+    """The one paid path. Morning job only — never on view.
+
+    Solid sourcing only, or no story at all. Unlike the drafted text briefing
+    (morning._topic_digest hands the model three ranked stories and a domain
+    tag, so a shaky citation gets folded into a paraphrase a reader never
+    inspects), the page links straight to the source — the reader taps it. A
+    topic whose only coverage is an unranked domain is dropped for the day
+    rather than shown as a "Today" story with a weak citation. This is the
+    same tier gate watches.py/alerts.py use before firing an alert; the page
+    never had it wired in, so it was one search-result-ranking step behind
+    the bar the rest of the product already holds itself to.
+    """
     from datafeeds import _search_raw
     from morning import _is_directive, _rotated_topics, _WEATHER_KEYWORDS, _TRAFFIC_KEYWORDS
     from watches import _source_tier, _canonical_domain
@@ -153,10 +164,11 @@ def _fetch_headlines(profile: dict) -> list[dict]:
     for topic in _rotated_topics(topics, local_today(profile.get("timezone"))):
         try:
             results = _search_raw(topic, days=1, max_age_hours=24, min_score=0.5)
-            if not results:
+            trusted = [r for r in results if _source_tier(r.get("url", "")) <= 2]
+            if not trusted:
                 continue
-            results.sort(key=lambda r: (_source_tier(r.get("url", "")), -(r.get("score") or 0)))
-            top = results[0]
+            trusted.sort(key=lambda r: (_source_tier(r.get("url", "")), -(r.get("score") or 0)))
+            top = trusted[0]
             out.append({"title": (top.get("title") or "")[:110],
                         "url": top.get("url"),
                         "source": _canonical_domain(top.get("url", "")),
