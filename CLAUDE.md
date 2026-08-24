@@ -129,7 +129,13 @@ The Markets section of Palmer Home is derived from the user's `morning_topics`, 
 
 `resolve_company_ticker` is the Haiku escape hatch for names the map doesn't carry. It runs **once when a topic is saved** (`agent._normalize_price_topic`, called from the `update_morning_briefing` dispatch), never on read.
 
-`PRIVATE_COMPANIES` is checked before the model is ever asked. Prompted for SpaceX's ticker a model will answer `SPCE`, which is Virgin Galactic — a different company, priced wrong, on someone's personal page. A wrong ticker is worse than no ticker, because nothing downstream can catch it.
+**The model never gets the last word on a symbol.** It must return `SYMBOL | Official name`, and the name is checked against what the exchange says that symbol actually is (`_verify_symbol`). Prompted for SpaceX's ticker a model may answer `SPCE`, which is Virgin Galactic — a different company, priced wrong, on someone's personal page. Verification fails closed: a lookup error costs one unresolved topic, which is cheap, while a wrong ticker is silent and nothing downstream can catch it.
+
+This replaced a hardcoded `PRIVATE_COMPANIES` denylist, which was the wrong shape for the problem — it encoded one model's snapshot of who was public and went stale the moment anybody IPO'd. It listed SpaceX as private, which stopped being true (SPCX). **`python tickers.py --audit`** re-checks every curated symbol against live market data; run it when touching the maps. It found a second stale entry immediately: Block was still `SQ` after becoming `XYZ`.
+
+Company names are gated behind a price word, indices are not. Without that gate `"SpaceX news"` resolves to SPCX and a news topic someone follows silently grows a stock ticker in their Markets section; `"nasdaq"` needs no such qualification.
+
+**A stale model must not veto live data.** `SYSTEM_PROMPT` forbids claiming a company is private, delisted, or hasn't IPO'd from memory, and `get_price` resolves company names through `tickers.resolve_asset_name` so the tool answers rather than 404ing on `"SPACEX"`. Palmer was refusing to add SpaceX and explaining it was private, which was simply false — and the failed lookup had confirmed its prior.
 
 `cards.MAX_PRICES` is the shared cap. Four columns fit the card's width but the sparklines start overdrawing the price text, so three is the real limit; `home._fetch_prices` imports the constant rather than keeping its own, since the card and the page render from one payload and must not disagree about how much of it survives.
 

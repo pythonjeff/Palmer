@@ -132,8 +132,10 @@ class TestPriceTopicNormalization:
         with patch("tickers.resolve_company_ticker", return_value="LULU"):
             assert agent._normalize_price_topic("Lululemon shares") == "Lululemon shares (LULU)"
 
-    def test_a_private_company_gains_nothing(self):
-        assert agent._normalize_price_topic("SpaceX stock") == "SpaceX stock"
+    def test_an_unverifiable_company_gains_nothing(self):
+        """No ticker is appended when nothing tradeable can be confirmed."""
+        with patch("tickers.resolve_company_ticker", return_value=None):
+            assert agent._normalize_price_topic("Stripe stock") == "Stripe stock"
 
     def test_a_news_topic_never_pays_for_a_lookup(self):
         with patch("llm.client") as client:

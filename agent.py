@@ -262,6 +262,21 @@ def save_assistant_turn(phone_number: str, user_msg: str, reply: str):
     ).start()
 
 
+def _resolve_asset(asset: str) -> str:
+    """Turn whatever the model passed to get_price into something yfinance
+    understands.
+
+    It passes company names — "SpaceX", "Nvidia" — and yfinance 404s on those.
+    Worse than the failed lookup is what the model concluded from it: that the
+    company must be private. Resolution goes through tickers.py so the tool and
+    the page's Markets section agree on what a name means, with the verified
+    Haiku pass as the fallback for names the map doesn't carry."""
+    from tickers import resolve_asset_name, resolve_company_ticker
+    if not asset:
+        return asset
+    return resolve_asset_name(asset) or resolve_company_ticker(asset) or asset
+
+
 def _normalize_price_topic(topic: str) -> str:
     """Append the ticker to a price topic that doesn't already resolve to one.
 
@@ -336,7 +351,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
             elif b.name == "get_weather":
                 result = _get_weather(b.input["location"], b.input.get("when", "today"), tz=user_tz)
             elif b.name == "get_price":
-                result = _get_price(b.input["asset"])
+                result = _get_price(_resolve_asset(b.input["asset"]))
             elif b.name == "send_gif":
                 gif_url = _get_gif(b.input["query"])
                 result = f"GIF queued: {gif_url}" if gif_url else "No GIF found for that query."

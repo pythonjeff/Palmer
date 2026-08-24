@@ -76,6 +76,7 @@ class TestFalsePositives:
         "St. Louis Cardinals", "Philadelphia Eagles news",
         "National and international news", "Kirkwood, MO weather",
         "Trump social media posts (overnight)", "Daily fun fact from history",
+        "SpaceX news",
     ])
     def test_a_news_topic_gets_no_ticker(self, topic):
         assert resolve(topic) is None
@@ -89,25 +90,103 @@ class TestFalsePositives:
         assert word in tickers.NOT_TICKERS
 
 
-class TestPrivateCompanies:
-    """Asked for SpaceX's ticker a model will answer SPCE, which is Virgin
-    Galactic. The guard runs before the model is ever consulted."""
+class TestNewsTopicsAreNotPriceTopics:
+    """A company name is an ordinary word in a news topic. Without a price-word
+    gate, "SpaceX news" resolves to SPCX and a subject someone follows silently
+    grows a stock ticker in their Markets section."""
 
-    @pytest.mark.parametrize("topic", ["SpaceX stock", "OpenAI stock",
-                                       "Stripe stock price", "Anthropic shares"])
-    def test_a_private_company_never_resolves(self, topic):
+    @pytest.mark.parametrize("topic", [
+        "SpaceX news", "Disney movie news", "Nike news",
+        "Apple event coverage", "Tesla recall coverage", "Amazon layoffs",
+    ])
+    def test_a_company_in_a_news_topic_gets_no_ticker(self, topic):
         assert resolve(topic) is None
 
-    @pytest.mark.parametrize("topic", ["SpaceX stock", "openai stock price"])
-    def test_the_model_is_not_even_asked(self, topic):
-        with patch("llm.client") as client:
-            assert tickers.resolve_company_ticker(topic) is None
-        client.messages.create.assert_not_called()
+    @pytest.mark.parametrize("topic,symbol", [
+        ("SpaceX stock", "SPCX"), ("Disney stock", "DIS"), ("Nike stock", "NKE"),
+    ])
+    def test_the_same_company_with_a_price_word_does_resolve(self, topic, symbol):
+        assert resolve(topic)[0] == symbol
 
-    def test_spacex_news_is_still_a_valid_news_topic(self):
-        """Private only blocks a PRICE. The topic itself is fine."""
-        assert resolve("SpaceX news") is None
-        assert tickers.looks_like_price_topic("SpaceX news") is False
+    def test_indices_need_no_price_word(self):
+        """"nasdaq" is unambiguously a market reference on its own."""
+        assert resolve("nasdaq")[0] == "^IXIC"
+        assert resolve("the dow")[0] == "^DJI"
+
+    def test_crypto_needs_no_price_word(self):
+        """Pre-existing behaviour: a live user tracks "Bitcoin and major stock
+        news" and has always gotten a price for it."""
+        assert resolve("Bitcoin and major stock news")[0] == "bitcoin"
+
+
+class TestVerification:
+    """The model does not get the last word on a symbol. It must also name the
+    company, and the exchange has to agree that is what the symbol is."""
+
+    def test_the_wrong_company_is_rejected(self):
+        """The SPCE trap: right company name, wrong symbol."""
+        with patch("llm.client") as client, \
+             patch("yfinance.Ticker") as yft:
+            client.messages.create.return_value = _Resp("SPCE | Space Exploration Technologies")
+            yft.return_value.info = {"longName": "Virgin Galactic Holdings, Inc."}
+            yft.return_value.fast_info.last_price = 3.08
+            assert tickers.resolve_company_ticker("SpaceX stock") is None
+
+    def test_the_right_company_is_accepted(self):
+        with patch("llm.client") as client, \
+             patch("yfinance.Ticker") as yft:
+            client.messages.create.return_value = _Resp("SPCX | Space Exploration Technologies Corp.")
+            yft.return_value.info = {"longName": "Space Exploration Technologies Corp."}
+            yft.return_value.fast_info.last_price = 136.97
+            assert tickers.resolve_company_ticker("SpaceX stock") == "SPCX"
+
+    def test_a_symbol_with_no_listing_is_rejected(self):
+        with patch("llm.client") as client, \
+             patch("yfinance.Ticker") as yft:
+            client.messages.create.return_value = _Resp("SQ | Block, Inc.")
+            yft.return_value.info = {}
+            yft.return_value.fast_info.last_price = None
+            assert tickers.resolve_company_ticker("Block stock") is None
+
+    def test_a_lookup_failure_fails_closed(self):
+        """A network blip costs one unresolved topic. Failing open would cost a
+        wrong price on someone's page, silently."""
+        with patch("llm.client") as client, \
+             patch("yfinance.Ticker", side_effect=RuntimeError("network")):
+            client.messages.create.return_value = _Resp("LULU | Lululemon Athletica Inc.")
+            assert tickers.resolve_company_ticker("Lululemon shares") is None
+
+    def test_an_answer_without_a_name_is_rejected(self):
+        """A bare symbol cannot be checked, so it is not trusted."""
+        with patch("llm.client") as client:
+            client.messages.create.return_value = _Resp("LULU")
+            assert tickers.resolve_company_ticker("Lululemon shares") is None
+
+
+class TestNameAgreement:
+    @pytest.mark.parametrize("a,b", [
+        ("Space Exploration Technologies Corp.", "Space Exploration Technologies Corp."),
+        ("Apple Inc", "Apple Inc."),
+        ("Meta Platforms", "Meta Platforms, Inc."),
+        ("Lululemon Athletica Inc.", "lululemon athletica inc."),
+        ("Block", "Block, Inc."),
+    ])
+    def test_the_same_company_agrees_across_suffix_noise(self, a, b):
+        assert tickers._names_agree(a, b)
+
+    @pytest.mark.parametrize("a,b", [
+        ("Space Exploration Technologies", "Virgin Galactic Holdings, Inc."),
+        ("Alphabet Inc.", "Amazon.com, Inc."),
+        ("Block, Inc.", "BlackRock, Inc."),
+        ("", "Apple Inc."),
+        ("Apple Inc.", ""),
+    ])
+    def test_different_companies_disagree(self, a, b):
+        assert not tickers._names_agree(a, b)
+
+    def test_boilerplate_alone_is_never_a_match(self):
+        """Two companies sharing only "Inc." and "Holdings" are not the same."""
+        assert not tickers._names_agree("Holdings Inc.", "Group Corp.")
 
 
 class TestCrypto:
@@ -145,28 +224,30 @@ class TestModelFallback:
     """For names the map doesn't carry. Save-time only — never on the read
     path, which runs on every page view."""
 
-    def _resolve(self, answer):
-        with patch("llm.client") as client:
+    def _resolve(self, answer, listed="Lululemon Athletica Inc.", price=121.07):
+        with patch("llm.client") as client, patch("yfinance.Ticker") as yft:
             client.messages.create.return_value = _Resp(answer)
+            yft.return_value.info = {"longName": listed}
+            yft.return_value.fast_info.last_price = price
             return tickers.resolve_company_ticker("Lululemon shares"), client
 
     def test_a_ticker_comes_back(self):
-        assert self._resolve("LULU")[0] == "LULU"
+        assert self._resolve("LULU | Lululemon Athletica Inc.")[0] == "LULU"
 
     def test_it_runs_on_haiku_not_sonnet(self):
-        _, client = self._resolve("LULU")
+        _, client = self._resolve("LULU | Lululemon Athletica Inc.")
         from llm import HAIKU_MODEL
         assert client.messages.create.call_args.kwargs["model"] == HAIKU_MODEL
 
     @pytest.mark.parametrize("answer", ["NONE", "none", "", "I'm not sure",
-                                        "The ticker is LULU", "US", "$$$"])
+                                        "US | United States", "$$$", "LULU"])
     def test_a_non_answer_yields_nothing(self, answer):
         """Anything that isn't cleanly a symbol must produce no ticker rather
         than a guess."""
         assert self._resolve(answer)[0] is None
 
     def test_stray_punctuation_is_tolerated(self):
-        assert self._resolve("$LULU.")[0] == "LULU"
+        assert self._resolve("$LULU. | Lululemon Athletica Inc.")[0] == "LULU"
 
     def test_an_api_failure_is_not_fatal(self):
         with patch("llm.client") as client:
@@ -174,7 +255,7 @@ class TestModelFallback:
             assert tickers.resolve_company_ticker("Lululemon shares") is None
 
     def test_the_prompt_forbids_guessing(self):
-        _, client = self._resolve("LULU")
+        _, client = self._resolve("LULU | Lululemon Athletica Inc.")
         body = client.messages.create.call_args.kwargs["messages"][0]["content"].lower()
         assert "never guess" in body
 

@@ -31,7 +31,7 @@ TOOLS = [
     },
     {
         "name": "get_price",
-        "description": "Get real-time price for crypto or stocks. Use for Bitcoin, Ethereum, other crypto, or any stock ticker (AAPL, TSLA, SPY, QQQ, etc). Returns current price and % change.",
+        "description": "Get real-time price for crypto or stocks. Use for Bitcoin, Ethereum, other crypto, any stock ticker (AAPL, TSLA, SPY, QQQ), or a company name you don't have a ticker for — company names are resolved for you, so pass 'SpaceX' or 'Nvidia' rather than declining. Returns current price and % change. Call this before saying a company is private or untradeable; the live lookup is authoritative and your memory of listings is not.",
         "input_schema": {
             "type": "object",
             "properties": {
