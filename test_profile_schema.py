@@ -123,3 +123,31 @@ class TestConsolidationSafety:
         with patch.object(mig.client.messages, "create") as create:
             assert mig._consolidate({"city": "K"}, {}) == {}
         create.assert_not_called()
+
+
+class TestNameIsExtracted:
+    """"My name is Jeff" returned {} from the extractor, so profile["name"]
+    stayed empty while Palmer happily called the user Jeff from conversation
+    history. The page reads the profile, so it showed "Your briefing" and kept
+    asking for a name it had already been told twice."""
+
+    def test_the_schema_demands_identity_explicitly(self):
+        from prompts import EXTRACT_PROMPT
+        assert "IDENTITY FIRST" in EXTRACT_PROMPT
+
+    def test_it_names_the_phrasings_people_actually_use(self):
+        from prompts import EXTRACT_PROMPT
+        low = EXTRACT_PROMPT.lower()
+        for phrase in ("my name is", "i'm jeff", "call me"):
+            assert phrase in low
+
+    def test_it_overrides_the_skip_when_already_present_instinct(self):
+        """The failure was the model deciding the name was too obvious to
+        bother returning, or assuming it must already be stored."""
+        from prompts import EXTRACT_PROMPT
+        low = EXTRACT_PROMPT.lower()
+        assert "even when" in low and "already" in low
+
+    def test_name_is_still_an_allowed_field(self):
+        from userprofile import PROFILE_FIELDS
+        assert "name" in PROFILE_FIELDS

@@ -34,6 +34,27 @@ class TestNameKnown:
         assert "doesn't know your name" in _render(name="   ")
 
 
+class TestPreviewTitle:
+    """The og:title is the headline of the link preview in the thread — and the
+    user-visible proof that Palmer stored the name rather than just reading it
+    back out of the conversation."""
+
+    def _title(self, **over):
+        return re.search(r'og:title" content="(.*?)"', _render(**over)).group(1)
+
+    def test_the_name_is_the_headline_when_known(self):
+        assert self._title(name="Jeff") == "Jeff"
+
+    def test_it_falls_back_to_the_weather_when_unknown(self):
+        assert self._title() == "81\u00b0 in Kirkwood, MO"
+
+    def test_the_browser_title_matches(self):
+        assert "<title>Jeff</title>" in _render(name="Jeff")
+
+    def test_a_blank_name_does_not_produce_an_empty_headline(self):
+        assert self._title(name="   ").strip()
+
+
 class TestNameMissing:
     def test_neutral_header_instead_of_blank(self):
         assert "Your briefing" in _render()
@@ -47,7 +68,16 @@ class TestNameMissing:
         m = re.search(r'href="(sms:[^"]+)"', html)
         assert m, "expected a tappable sms: link"
         assert "+17312525071" in m.group(1)
-        assert "body=My+name+is" in m.group(1), "the text should be pre-written"
+        assert "body=My%20name%20is" in m.group(1), "the text should be pre-written"
+
+    def test_the_prefilled_body_uses_percent_escapes_not_plusses(self):
+        """The sms: scheme has no form encoding, so "+" is a literal plus.
+        quote_plus put people into Messages with "My+name+is+" already typed,
+        and that is exactly the text Palmer received back."""
+        with patch.dict(os.environ, {"TWILIO_PHONE_NUMBER": "+17312525071"}):
+            html = _render()
+        body = re.search(r'body=([^"]+)"', html).group(1)
+        assert "+" not in body, f"literal plus in prefilled body: {body!r}"
 
     def test_degrades_without_a_configured_number(self):
         """No number is a config gap, not a reason to render a broken link."""

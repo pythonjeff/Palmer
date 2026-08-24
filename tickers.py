@@ -18,22 +18,27 @@ runs on every page view:
     4. bare uppercase     "NVDA stock"           -> NVDA   (stopword-guarded)
 
 `resolve_company_ticker` is the escape hatch for names the map doesn't carry.
-It costs a Haiku call, so it runs once when a topic is SAVED, not when it is
+It makes a network call, so it runs once when a topic is SAVED, not when it is
 read — see the update_morning_briefing dispatch in agent.py.
 
-That Haiku call is the dangerous path: asked for SpaceX's ticker a model may
-answer SPCE, which is Virgin Galactic — a different company, priced wrong, on
-someone's personal page. So the model does not get the last word. It must
-return a symbol AND the official company name, and the name is checked against
-what the market data actually says that symbol is. A guess that names the right
-company but the wrong symbol fails the check and yields nothing.
+No model is asked for a symbol anywhere in here, and that is deliberate. Two
+earlier versions of this got it wrong in the same way: a hardcoded list of
+private companies (which listed SpaceX as private after it had IPO'd as SPCX),
+then a Haiku lookup with its answer verified against the exchange. Both encoded
+a model's snapshot of who was public, and a snapshot goes stale the moment
+anybody lists. Asked for SpaceX's ticker a model may answer SPCE — Virgin
+Galactic — with total confidence.
 
-This replaced a hardcoded list of private companies, which was the wrong shape
-for the problem: it encoded one model's snapshot of who was public, and went
-out of date the moment anybody IPO'd. It listed SpaceX as private, which stopped
-being true. `python tickers.py --audit` re-checks every curated symbol against
-live market data and is how that class of staleness gets caught — it is worth
-running when touching COMPANY_TICKERS.
+Yahoo's search endpoint answers the same question authoritatively, for free,
+with no key, and stays current on its own: it independently returns SPCX for
+SpaceX and XYZ for Block, the two entries the local map had wrong.
+
+Indices are the exception and stay hand-mapped, because search returns futures
+contracts for them ("s&p 500" -> ES=F, "nasdaq" -> NQ=F) rather than the index.
+
+`python tickers.py --audit` re-checks every curated symbol against live market
+data. Run it when touching the maps — it is what catches staleness in the parts
+that are still written by hand.
 """
 from __future__ import annotations
 
@@ -176,100 +181,71 @@ def resolve_asset_name(name: str) -> str | None:
     return None
 
 
-_RESOLVE_PROMPT = """What publicly traded company or index does this request refer to?
+# Yahoo's own symbol search. Keyless, ~0.2s, and — unlike anything written from
+# model knowledge — self-updating: it independently returns SPCX for SpaceX and
+# XYZ for Block, the two entries this map had wrong.
+_SEARCH_URL = "https://query2.finance.yahoo.com/v1/finance/search"
 
-Request: {topic}
-
-Answer on ONE line, exactly: SYMBOL | Official company name
-Or the single word NONE.
-
-Answer NONE if:
-- the company is private or not publicly traded on its own
-- it is a subsidiary priced under a different parent, unless the user clearly means the parent
-- the request is about a sector, theme, or news topic rather than one tradeable thing
-- you are not confident of the exact symbol
-
-Never guess. A wrong ticker puts a different company's price on this person's page.
-The name you give will be checked against the exchange listing for that symbol, so
-give the official registered name, not a nickname."""
-
-# Corporate boilerplate that differs between a model's answer and the exchange's
-# registered name without meaning the two disagree.
-_NAME_NOISE = frozenset({
-    "inc", "incorporated", "corp", "corporation", "company", "co", "companies",
-    "plc", "ltd", "limited", "holdings", "holding", "group", "the", "sa", "nv",
-    "ag", "ab", "as", "asa", "class", "a", "b", "c", "common", "stock", "shares",
-    "index", "composite", "average", "technologies", "technology",
-})
+# Real listings, not derivatives. The filter is load-bearing rather than
+# defensive: unfiltered, "openai" comes back as a tokenized crypto and a
+# thematic ETF that merely share the name, and "anthropic" as a crypto
+# derivative. Restricting to equities on a US exchange is what makes a private
+# company resolve to nothing instead of to somebody else's price.
+_US_EXCHANGES = frozenset({"NMS", "NYQ", "NAS", "NGM", "ASE", "PCX", "BTS", "NCM"})
 
 
-def _name_tokens(name: str) -> set[str]:
-    words = re.findall(r"[a-z0-9&]+", (name or "").lower())
-    return {w for w in words if w not in _NAME_NOISE}
+def _search_query(topic: str) -> str:
+    """The topic reduced to the thing being asked about.
+
+    Search matches names, not sentences: "spacex" returns SPCX and "spacex
+    stock" returns nothing at all."""
+    words = [w for w in re.split(r"[^A-Za-z0-9&.\-]+", topic or "")
+             if w and w.lower() not in _PRICE_WORDS and w.lower() not in
+             {"the", "a", "an", "and", "my", "of", "for", "updates", "update",
+              "news", "daily", "today", "latest"}]
+    return " ".join(words).strip()
 
 
-def _names_agree(claimed: str, listed: str) -> bool:
-    """Whether two renderings of a company name refer to the same company.
+def search_symbol(name: str) -> str | None:
+    """Ticker for a company name via Yahoo's search, or None.
 
-    Deliberately tolerant about suffixes ("Inc.", "Holdings") and strict about
-    the distinctive words: "Space Exploration" vs "Virgin Galactic" share
-    nothing and must not pass."""
-    a, b = _name_tokens(claimed), _name_tokens(listed)
-    if not a or not b:
-        return False
-    if a <= b or b <= a:
-        return True
-    return len(a & b) / min(len(a), len(b)) >= 0.6
-
-
-def _verify_symbol(symbol: str, claimed_name: str) -> bool:
-    """Confirm the exchange agrees this symbol is the company the model named.
-
-    Fails closed. A network blip costs one unresolved topic; a wrong ticker
-    costs a real price for the wrong company, silently, on someone's page."""
-    try:
-        import yfinance as yf
-        t = yf.Ticker(symbol)
-        info = t.info or {}
-        listed = info.get("longName") or info.get("shortName") or ""
-        if not listed or not t.fast_info.last_price:
-            return False
-        return _names_agree(claimed_name, listed)
-    except Exception as e:
-        print(f"_verify_symbol({symbol!r}) failed: {type(e).__name__}: {e}")
-        return False
+    Network-bound, so callers must use it at SAVE time — never on the read
+    path, which runs on every page view. Returns None on any failure: an
+    unresolved topic costs one missing price row, which is cheap and visible,
+    where a wrong symbol is silent."""
+    import urllib.parse
+    from netutil import _http_get_json
+    query = _search_query(name)
+    if not query:
+        return None
+    url = f"{_SEARCH_URL}?" + urllib.parse.urlencode({"q": query, "quotesCount": 10})
+    data = _http_get_json(url, timeout=10)
+    if not data:
+        return None
+    for quote in (data.get("quotes") or []):
+        if quote.get("quoteType") != "EQUITY":
+            continue
+        if quote.get("exchange") not in _US_EXCHANGES:
+            continue
+        symbol = (quote.get("symbol") or "").upper()
+        if symbol and symbol not in NOT_TICKERS and "." not in symbol:
+            return symbol
+    return None
 
 
 def resolve_company_ticker(topic: str) -> str | None:
-    """Ticker for a topic the map doesn't carry, or None.
+    """Ticker for a topic the local maps don't carry, or None.
 
-    Costs a Haiku call plus a listing lookup, so callers must use it at SAVE
-    time only. Returns None rather than raising; an unresolved topic simply
-    gets no price row."""
-    try:
-        from llm import client, HAIKU_MODEL
-        response = client.messages.create(
-            model=HAIKU_MODEL,
-            max_tokens=40,
-            messages=[{"role": "user", "content": _RESOLVE_PROMPT.format(topic=topic)}],
-        )
-        answer = (response.content[0].text or "").strip()
-    except Exception as e:
-        print(f"resolve_company_ticker failed for {topic!r}: {type(e).__name__}: {e}")
-        return None
+    This used to ask Haiku for a symbol and then check the answer against the
+    exchange, because a model asked for SpaceX's ticker may answer SPCE —
+    Virgin Galactic. Yahoo's search does the same job without the model, the
+    verification step, or the chance of a confident wrong answer, and it stays
+    current on its own.
 
-    if not answer or answer.upper().startswith("NONE"):
-        return None
-    symbol, _, claimed = answer.partition("|")
-    symbol = symbol.strip().upper().strip(".$")
-    claimed = claimed.strip()
-    if (not claimed or symbol in NOT_TICKERS
-            or not re.fullmatch(r"\^?[A-Z][A-Z.\-]{0,5}", symbol)):
-        return None
-    if not _verify_symbol(symbol, claimed):
-        print(f"resolve_company_ticker: {symbol!r} did not verify as {claimed!r}")
-        return None
-    return symbol
+    Indices deliberately do NOT come through here: search returns futures
+    contracts for them ("s&p 500" -> ES=F, "nasdaq" -> NQ=F), so those stay
+    hand-mapped in INDEX_TICKERS where they are correct."""
+    return search_symbol(topic)
 
 
 def looks_like_price_topic(topic: str) -> bool:

@@ -129,15 +129,24 @@ The Markets section of Palmer Home is derived from the user's `morning_topics`, 
 
 `resolve_company_ticker` is the Haiku escape hatch for names the map doesn't carry. It runs **once when a topic is saved** (`agent._normalize_price_topic`, called from the `update_morning_briefing` dispatch), never on read.
 
-**The model never gets the last word on a symbol.** It must return `SYMBOL | Official name`, and the name is checked against what the exchange says that symbol actually is (`_verify_symbol`). Prompted for SpaceX's ticker a model may answer `SPCE`, which is Virgin Galactic — a different company, priced wrong, on someone's personal page. Verification fails closed: a lookup error costs one unresolved topic, which is cheap, while a wrong ticker is silent and nothing downstream can catch it.
+**Resolution is Yahoo's search endpoint, not a model.** Keyless, ~0.2s, filtered to `quoteType=EQUITY` on a US exchange. It is self-updating, which is the property the alternatives lacked: it independently returns SPCX for SpaceX and XYZ for Block, the two entries the hand-written map had wrong. The filter is load-bearing rather than defensive — unfiltered, `"openai"` comes back as a tokenized crypto and a thematic ETF that merely share the name, so filtering is what makes a private company resolve to nothing instead of to somebody else's price. Strip price words from the query first: `"spacex"` returns SPCX, `"spacex stock"` returns nothing.
 
-This replaced a hardcoded `PRIVATE_COMPANIES` denylist, which was the wrong shape for the problem — it encoded one model's snapshot of who was public and went stale the moment anybody IPO'd. It listed SpaceX as private, which stopped being true (SPCX). **`python tickers.py --audit`** re-checks every curated symbol against live market data; run it when touching the maps. It found a second stale entry immediately: Block was still `SQ` after becoming `XYZ`.
+Two earlier versions of this got it wrong the same way, and the pattern is worth remembering: a hardcoded `PRIVATE_COMPANIES` denylist, then a Haiku lookup verified against the exchange. Both encoded a model's snapshot of who was public, and a snapshot goes stale the moment anybody lists.
+
+**Indices stay hand-mapped.** Search returns futures for them (`"s&p 500"` → `ES=F`, `"nasdaq"` → `NQ=F`), so `INDEX_TICKERS` is correct where search is not.
 
 Company names are gated behind a price word, indices are not. Without that gate `"SpaceX news"` resolves to SPCX and a news topic someone follows silently grows a stock ticker in their Markets section; `"nasdaq"` needs no such qualification.
 
 **A stale model must not veto live data.** `SYSTEM_PROMPT` forbids claiming a company is private, delisted, or hasn't IPO'd from memory, and `get_price` resolves company names through `tickers.resolve_asset_name` so the tool answers rather than 404ing on `"SPACEX"`. Palmer was refusing to add SpaceX and explaining it was private, which was simply false — and the failed lookup had confirmed its prior.
 
 `cards.MAX_PRICES` is the shared cap. Four columns fit the card's width but the sparklines start overdrawing the price text, so three is the real limit; `home._fetch_prices` imports the constant rather than keeping its own, since the card and the page render from one payload and must not disagree about how much of it survives.
+
+### The name must be extracted, not just spoken
+`profile["name"]` was empty for a user who had told Palmer his name twice. Palmer still called him Jeff — it reads the name straight out of conversation history — but the page renders from the profile, so it showed "Your briefing" and kept prompting for a name it had already been given. Anything reading the profile rather than the transcript saw an anonymous user.
+
+The cause was the extractor: `"My name is Jeff"` returned `{}`. `EXTRACT_PROMPT` asked for "life details, relationships, preferences, personality" and Haiku did not count a name as worth remembering — and where the profile already looked populated, it assumed the name must be in there. `EXTRACT_PROMPT` now opens with an IDENTITY FIRST rule that names the phrasings people use and explicitly overrides the "too obvious to return" and "surely it is already stored" instincts. `test_profile_schema.py` guards it.
+
+The lesson generalizes: Palmer sounding like it knows something is not evidence that anything was stored. The transcript and the profile are different memories, and only one of them survives into the morning job, the page, and the card.
 
 ### The profile is a bounded schema
 `userprofile.PROFILE_FIELDS` is the complete set of keys a profile may hold, and `_canonical_updates` drops anything outside it. This is not tidiness — the whole profile is dumped as JSON into **every** system prompt, and the per-turn extractor is a language model that will invent a new key every turn if nothing stops it. One profile reached 624 keys, 604 of them one-offs (`monday_night_behavior`, `kendrick_fan`, `tv_taste_update`, `alternatively`): ~21,700 tokens of noise per message, roughly double SYSTEM_PROMPT and the tool schemas combined, burying the 20 keys that mattered.

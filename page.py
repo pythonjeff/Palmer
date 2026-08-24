@@ -15,7 +15,6 @@ from __future__ import annotations
 import html
 import os
 from datetime import datetime
-from urllib.parse import quote_plus
 from urllib.parse import quote
 
 # Mirrors the card's palette so the preview and the page feel like one thing.
@@ -151,7 +150,12 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
 
     temp = w.get("temp_now")
     where = city if city and city != "Today" else "your briefing"
-    title = f"{temp:.0f}° in {where}" if temp is not None else f"{where}".capitalize()
+    # The link preview's headline. When Palmer knows who this is, the name is
+    # the whole point — it is what makes the card read as *yours* in a thread,
+    # and it is the user-visible proof that Palmer actually stored the name
+    # rather than just reading it back out of the conversation.
+    title = name or (f"{temp:.0f}° in {where}" if temp is not None
+                     else f"{where}".capitalize())
     bits = []
     if t.get("live_min"):
         bits.append(f"{t['live_min']} min commute")
@@ -187,7 +191,10 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         # The product is SMS, so the affordance is a pre-filled text back to
         # Palmer. Tapping opens Messages with the body already written.
         sms_num = os.environ.get("TWILIO_PHONE_NUMBER", "")
-        body = quote_plus("My name is ")
+        # quote(), not quote_plus(): the sms: URI scheme has no form encoding,
+        # so a "+" is a literal plus. quote_plus sent people into Messages with
+        # "My+name+is+" already typed, and that is exactly what Palmer received.
+        body = quote("My name is ")
         href = f"sms:{sms_num}?&body={body}" if sms_num else ""
         opener = f'<a class=ask href="{e(href)}">' if href else '<div class=ask>'
         closer = "</a>" if href else "</div>"

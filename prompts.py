@@ -225,7 +225,9 @@ You: {reply}
 Existing profile:
 {profile}
 
-Return a JSON object with only new or updated fields. Capture everything that builds a full picture of who they are — life details, relationships, preferences, ongoing threads, personality, patterns, plans, worries.
+Return a JSON object with only new or updated fields. Capture everything that builds a full picture of who they are — their name, life details, relationships, preferences, ongoing threads, personality, patterns, plans, worries.
+
+IDENTITY FIRST. If they state their name in any form — "my name is Jeff", "I'm Jeff", "it's Jeff", "call me Jeff", or signing off with it — ALWAYS return it as "name", even when the answer feels too obvious to bother with, even when your reply already used the name, and even when you assume it must already be stored. Do not skip it because the profile above appears to have it; return it anyway. Their name is the single most-used field in the whole system and the most common one to be silently missing.
 
 Canonical key names:
 - "city" (not location), "name", "timezone"
