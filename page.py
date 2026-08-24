@@ -17,51 +17,68 @@ import os
 from datetime import datetime
 from urllib.parse import quote
 
-# Mirrors the card's palette so the preview and the page feel like one thing.
+# A newspaper page, not a dashboard: flat paper white, ink-black type, thin
+# hairline rules instead of glass panels. Color is rationed to the two places
+# a reader actually needs it at a glance — the temperature and the commute
+# gauge — everything else stays black-and-white. Mirrors cards.py's palette
+# so the MMS/og:image preview and the page read as one publication.
 CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#090d1a;color:#f0f4ff;font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+:root{
+ --paper:#f7f5ef;--ink:#161510;--ink2:#5c584c;--rule:rgba(22,21,16,.16);
+ --warm:#a8461a;--cool:#1f5a8c;--up:#1f6e3a;--down:#a3271f;--amber:#8a5a10;
+ --serif:Georgia,"Iowan Old Style","Times New Roman",Times,serif;
+ --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+body{background:var(--paper);color:var(--ink);font:16px/1.5 var(--serif);
  -webkit-font-smoothing:antialiased;padding:0 0 48px}
-.wrap{max-width:640px;margin:0 auto;padding:28px 20px}
-.bg{position:fixed;inset:0;z-index:-1;background:
- radial-gradient(120% 70% at 85% -10%,rgba(60,90,160,.45),transparent 60%),
- linear-gradient(#090d1a,#161e36)}
-.eyebrow{color:#8a98ba;font-size:13px;letter-spacing:.14em;font-weight:700;text-transform:uppercase}
-.date{color:#606e91;font-size:12px;letter-spacing:.12em;text-transform:uppercase;margin-top:4px}
-.hero{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:18px 0 4px}
-.temp{font-size:76px;font-weight:800;letter-spacing:-.03em;line-height:1}
-.desc{font-size:20px;color:#ced9f2;margin-top:6px}
-.chips{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 4px}
-.chip{background:rgba(255,255,255,.08);border-radius:999px;padding:8px 14px;font-size:13px;font-weight:700;color:#8a98ba}
-.chip.cool{color:#7db9f5}.chip.warm{color:#facc15}
-.card{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.06);
- border-radius:18px;padding:18px;margin-top:14px}
-.label{color:#8a98ba;font-size:12px;letter-spacing:.14em;font-weight:700;text-transform:uppercase}
-.big{font-size:34px;font-weight:800;margin-top:6px}
-.note{font-size:14px;font-weight:700}
-.up{color:#4ade80}.down{color:#f87171}.amber{color:#facc15}
+.wrap{max-width:640px;margin:0 auto;padding:28px 22px}
+.masthead{text-align:center;padding-bottom:16px}
+.eyebrow{font-family:var(--serif);font-weight:700;font-size:28px;letter-spacing:.01em;text-transform:uppercase}
+.rule{border:0;border-top:3px double var(--ink);margin-top:10px}
+.date{font-family:var(--mono);color:var(--ink2);font-size:11px;letter-spacing:.16em;
+ text-transform:uppercase;margin-top:9px}
+.hero{display:flex;align-items:baseline;justify-content:space-between;gap:14px;
+ margin-top:26px;padding-bottom:18px;border-bottom:1px solid var(--rule)}
+.temp{font-family:var(--mono);font-size:60px;font-weight:600;letter-spacing:-.02em;line-height:1}
+.temp.warm{color:var(--warm)}.temp.cool{color:var(--cool)}
+.desc{font-family:var(--serif);font-style:italic;font-size:18px;color:var(--ink2);margin-top:8px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.chip{border:1px solid var(--rule);border-radius:2px;padding:5px 10px;
+ font-family:var(--mono);font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink2)}
+.chip.cool{color:var(--cool);border-color:var(--cool)}
+.chip.warm{color:var(--warm);border-color:var(--warm)}
+.card{padding:20px 0;border-bottom:1px solid var(--rule)}
+.label{color:var(--ink);font-family:var(--serif);font-size:13px;letter-spacing:.13em;
+ font-weight:700;text-transform:uppercase;display:flex;justify-content:space-between;align-items:baseline}
+.big{font-family:var(--mono);font-size:38px;font-weight:600;margin-top:10px;letter-spacing:-.01em}
+.note{font-family:var(--mono);font-size:14px;font-weight:600;margin-left:10px}
+.up{color:var(--up)}.down{color:var(--down)}.amber{color:var(--amber)}
 a{color:inherit;text-decoration:none}
 a.row{display:flex;align-items:center;justify-content:space-between;gap:14px;
- padding:14px 0;border-top:1px solid rgba(255,255,255,.07)}
+ padding:14px 0;border-top:1px solid var(--rule)}
 a.row:first-of-type{border-top:0}
-a.row:active{opacity:.6}
-.tick{font-size:15px;line-height:1.35}
-.src{color:#606e91;font-size:12px;margin-top:4px;text-transform:uppercase;letter-spacing:.08em}
-.chev{color:#4a5878;flex:0 0 auto}
-.as{color:#4a5878;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;float:right}
-.trk{padding:12px 0;border-top:1px solid rgba(255,255,255,.07)}
+a.row:active{opacity:.55}
+.tick{font-family:var(--serif);font-size:16px;line-height:1.4}
+.src{color:var(--ink2);font-family:var(--mono);font-size:10px;margin-top:5px;
+ text-transform:uppercase;letter-spacing:.07em}
+.chev{color:var(--ink2);flex:0 0 auto}
+.as{color:var(--ink2);font-family:var(--mono);font-size:10px;font-weight:400;
+ letter-spacing:.05em;text-transform:uppercase}
+.trk{padding:12px 0;border-top:1px solid var(--rule)}
 .trk:first-of-type{border-top:0}
-.trk .t{font-size:15px}
-.ask{display:block;background:rgba(125,185,245,.10);border:1px solid rgba(125,185,245,.28);
- border-radius:16px;padding:14px 16px;margin-top:16px}
-.ask:active{opacity:.6}
-.ask .h{font-weight:700;font-size:15px;color:#dce8fb}
-.ask .s{color:#7db9f5;font-size:13px;margin-top:3px;font-weight:600}
-.foot{color:#4a5878;font-size:12px;text-align:center;margin-top:26px;line-height:1.6}
+.trk .t{font-family:var(--serif);font-size:15px}
+.ask{display:block;border:1px solid var(--ink);padding:15px 16px;margin-top:18px}
+.ask:active{opacity:.55}
+.ask .h{font-family:var(--serif);font-weight:700;font-size:15px}
+.ask .s{color:var(--ink2);font-family:var(--mono);font-size:11px;margin-top:5px;
+ text-transform:uppercase;letter-spacing:.04em}
+.foot{color:var(--ink2);font-family:var(--mono);font-size:11px;text-align:center;
+ margin-top:28px;line-height:1.7;letter-spacing:.03em;text-transform:uppercase}
 """
 
 
-def _spark(series, colour: str, w: int = 96, h: int = 34) -> str:
+def _spark(series, colour: str, w: int = 92, h: int = 28) -> str:
     pts = [p for p in (series or []) if isinstance(p, (int, float))]
     if len(pts) < 2:
         return ""
@@ -71,22 +88,32 @@ def _spark(series, colour: str, w: int = 96, h: int = 34) -> str:
     coords = " ".join(f"{i*step:.1f},{h - ((p-lo)/rng)*h:.1f}" for i, p in enumerate(pts))
     last = coords.split()[-1]
     return (f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" fill="none">'
-            f'<polyline points="{coords}" stroke="{colour}" stroke-width="2.5" '
+            f'<polyline points="{coords}" stroke="{colour}" stroke-width="1.75" '
             f'stroke-linecap="round" stroke-linejoin="round"/>'
-            f'<circle cx="{last.split(",")[0]}" cy="{last.split(",")[1]}" r="3" fill="{colour}"/></svg>')
+            f'<circle cx="{last.split(",")[0]}" cy="{last.split(",")[1]}" r="2.5" fill="{colour}"/></svg>')
 
 
-def _gauge(ratio: float) -> str:
-    """Commute gauge — same needle-on-a-graded-scale metaphor as the card."""
+def _traffic_tier(ratio: float) -> tuple[str, float]:
+    """Same graded 0..1 span the meter draws on, collapsed to a 3-way tier so
+    the marker colour and the note text always agree with each other and with
+    the card's _meter()."""
     span = max(0.0, min(1.0, (ratio - 1.0) / 0.5))
-    x = 4 + span * 92
+    tier = "up" if span < 0.34 else ("amber" if span < 0.67 else "down")
+    return tier, span
+
+
+_TIER_HEX = {"up": "#1f6e3a", "amber": "#8a5a10", "down": "#a3271f"}
+
+
+def _gauge(ratio: float, tier: str, span: float) -> str:
+    """Commute gauge — a plain grey rule with a single coloured marker, not a
+    rainbow track. The colour is the one accent this row gets."""
+    colour = _TIER_HEX[tier]
+    x = 2 + span * 96
     return (
-        '<svg width="100%" height="18" viewBox="0 0 100 18" preserveAspectRatio="none" style="margin-top:14px">'
-        '<defs><linearGradient id="g" x1="0" x2="1">'
-        '<stop offset="0" stop-color="#4ade80"/><stop offset="0.5" stop-color="#facc15"/>'
-        '<stop offset="1" stop-color="#f87171"/></linearGradient></defs>'
-        '<rect x="0" y="5" width="100" height="8" rx="4" fill="url(#g)" opacity="0.42"/>'
-        f'<rect x="{x-1.6:.1f}" y="1" width="3.2" height="16" rx="1.6" fill="#fff"/></svg>'
+        '<svg width="100%" height="14" viewBox="0 0 100 14" preserveAspectRatio="none" style="margin-top:14px">'
+        '<line x1="0" y1="7" x2="100" y2="7" stroke="rgba(22,21,16,.18)" stroke-width="1.5"/>'
+        f'<circle cx="{x:.1f}" cy="7" r="4" fill="{colour}"/></svg>'
     )
 
 
@@ -171,7 +198,7 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">',
         '<meta name="robots" content="noindex,nofollow">',
         '<meta name="referrer" content="no-referrer">',
-        '<meta name="theme-color" content="#090d1a">',
+        '<meta name="theme-color" content="#f7f5ef">',
         f"<title>{e(title)}</title>",
         f'<meta property="og:title" content="{e(title)}">',
         f'<meta property="og:description" content="{e(desc)}">',
@@ -181,9 +208,12 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         f'<meta property="og:url" content="{e(page_url)}">',
         '<meta property="og:type" content="website">',
         '<meta name="twitter:card" content="summary_large_image">',
-        f"<style>{CSS}</style></head><body><div class=bg></div><div class=wrap>",
+        f"<style>{CSS}</style></head><body><div class=wrap>",
+        '<div class=masthead>',
         f'<div class=eyebrow>{e(eyebrow)}</div>',
+        '<hr class=rule>',
         f'<div class=date>{e(subhead)}</div>',
+        '</div>',
     ]
 
     if not name:
@@ -204,9 +234,14 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         )
 
     if w:
+        # Temperature is one of two places the page spends real color — hot
+        # reads warm, cold reads cool, anything in between stays plain ink.
+        temp_cls = ""
+        if temp is not None:
+            temp_cls = " warm" if temp >= 80 else (" cool" if temp <= 40 else "")
         out.append('<div class=hero><div>')
         if temp is not None:
-            out.append(f'<div class=temp>{temp:.0f}°</div>')
+            out.append(f'<div class="temp{temp_cls}">{temp:.0f}°</div>')
         if w.get("description"):
             out.append(f'<div class=desc>{e(w["description"].capitalize())}</div>')
         out.append("</div></div><div class=chips>")
@@ -220,12 +255,13 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
 
     if t:
         delay = t.get("delay_min") or 0
-        cls, note = ("up", "clear") if delay < 2 else ("amber", f"+{delay} min vs normal")
+        tier, span = _traffic_tier(t.get("ratio") or 1.0)
+        note = "clear" if tier == "up" else f"+{delay} min vs normal"
         out += [f'<div class=card><div class=label>Commute'
                 f'<span class=as>{e(_ago(fetched.get("traffic")))}</span></div>',
                 f'<div class=big>{e(t.get("live_min", 0))} min '
-                f'<span class="note {cls}">{e(note)}</span></div>',
-                _gauge(t.get("ratio") or 1.0), "</div>"]
+                f'<span class="note {tier}">{e(note)}</span></div>',
+                _gauge(t.get("ratio") or 1.0, tier, span), "</div>"]
 
     if prices:
         out.append('<div class=card><div class=label>Markets'
@@ -233,14 +269,14 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         for p in prices:
             pct = p.get("pct_24h") or 0.0
             cls = "up" if pct >= 0 else "down"
-            colour = "#4ade80" if pct >= 0 else "#f87171"
+            colour = _TIER_HEX["up"] if pct >= 0 else _TIER_HEX["down"]
             price = p.get("price") or 0
             ptxt = f"${price:,.0f}" if price >= 1000 else f"${price:,.2f}"
             out += [f'<a class=row href="{e(_price_link(p))}" target="_blank" rel="noopener noreferrer">',
-                    f'<div><div style="font-weight:700">{e(p.get("label",""))}</div>',
+                    f'<div><div class=tick style="font-weight:700">{e(p.get("label",""))}</div>',
                     f'<div class="note {cls}" style="margin-top:2px">{pct:+.1f}%</div></div>',
                     f'<div style="display:flex;align-items:center;gap:12px">{_spark(p.get("series"), colour)}',
-                    f'<div style="font-weight:800;font-size:18px">{e(ptxt)}</div>{_CHEV}</div></a>']
+                    f'<div style="font-family:var(--mono);font-weight:700;font-size:17px">{e(ptxt)}</div>{_CHEV}</div></a>']
         out.append("</div>")
 
     if heads:
