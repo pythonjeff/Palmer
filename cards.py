@@ -190,9 +190,9 @@ def _sparkline(d: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int,
 
 # Markets columns the card has room for. Four fits the width but the sparklines
 # start overdrawing the price text ("$214.72" with a line through it), so three
-# is the layout's real limit. home._fetch_prices imports this rather than
-# keeping its own number — the card and the page render from one payload and
-# must not disagree about how much of it survives.
+# is the layout's real limit. This is a rendering cap, not a data cap: the
+# payload may carry more (see home.MAX_PRICES) and the page shows all of them,
+# because a vertical list has room where a fixed-width row does not.
 MAX_PRICES = 3
 
 

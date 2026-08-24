@@ -95,22 +95,42 @@ def _fetch_traffic(profile: dict) -> dict | None:
     return traffic_snapshot(c["origin"], c["destination"])
 
 
-def _fetch_prices(profile: dict) -> list[dict]:
+# How many tickers the page's Markets section carries. Deliberately larger than
+# cards.MAX_PRICES: the card lays its rows out in columns across a fixed 1200px
+# and the sparklines start overdrawing the price text past three, while the page
+# is a vertical scrolling list with no such limit. The card slices this list
+# down to what it has room for, so the two never disagree — the card is a
+# summary of the payload, not a different payload.
+MAX_PRICES = 6
+
+
+def _fetch_prices(profile: dict, previous: list[dict] | None = None) -> list[dict]:
     """The Markets section, derived from the user's morning topics.
 
     Resolution lives in tickers.py — a topic only shows a price if it names
-    something tradeable, so "Nvidia stock" resolves and "SpaceX stock" (private)
-    correctly does not."""
+    something tradeable, so "Nvidia stock" resolves and a private company
+    correctly does not.
+
+    A symbol whose fetch fails keeps its last known row instead of vanishing.
+    CoinGecko rate-limits (429) and yfinance times out, and without this a
+    transient blip silently deletes a ticker the user is tracking — which looks
+    exactly like Palmer forgetting, and is far worse than a slightly stale
+    number sitting under a visible "N min ago" stamp."""
     from datafeeds import price_snapshot
     from tickers import resolve_topic_asset
-    from cards import MAX_PRICES
+    stale = {(p.get("label") or "").lower(): p for p in (previous or [])}
     assets, seen = [], set()
     for topic in (profile.get("morning_topics") or []):
         got = resolve_topic_asset(topic)
         if got and got[0].lower() not in seen:
             seen.add(got[0].lower())
             assets.append(got)
-    return [s for s in (price_snapshot(sym, label) for sym, label in assets[:MAX_PRICES]) if s]
+    out = []
+    for symbol, label in assets[:MAX_PRICES]:
+        snapshot = price_snapshot(symbol, label) or stale.get(label.lower())
+        if snapshot:
+            out.append(snapshot)
+    return out
 
 
 def _fetch_headlines(profile: dict) -> list[dict]:
@@ -119,9 +139,16 @@ def _fetch_headlines(profile: dict) -> list[dict]:
     from morning import _is_directive, _rotated_topics, _WEATHER_KEYWORDS, _TRAFFIC_KEYWORDS
     from watches import _source_tier, _canonical_domain
     from timeutil import local_today
+    from tickers import resolve_topic_asset
     auto = _WEATHER_KEYWORDS + _TRAFFIC_KEYWORDS
+    # A topic that resolves to a ticker is already answered by the Markets
+    # section, so searching news for it buys a second, paid answer to the same
+    # question — and "Apple stock price" is a poor news query anyway. The text
+    # briefing has always skipped these (_gather_morning_data continues past
+    # them); this is the page catching up.
     topics = [t for t in (profile.get("morning_topics") or [])
-              if t and not any(w in t.lower() for w in auto) and not _is_directive(t)]
+              if t and not any(w in t.lower() for w in auto)
+              and not _is_directive(t) and not resolve_topic_asset(t)]
     out = []
     for topic in _rotated_topics(topics, local_today(profile.get("timezone"))):
         try:
@@ -183,7 +210,7 @@ def rebuild(phone: str, refresh_news: bool = True) -> dict:
         "timezone": profile.get("timezone"),
         "weather": _fetch_weather(profile),
         "traffic": _fetch_traffic(profile),
-        "prices": _fetch_prices(profile),
+        "prices": _fetch_prices(profile, previous.get("prices")),
         "headlines": _fetch_headlines(profile) if refresh_news
                      else (previous.get("headlines") or []),
         "tracking": _tracking(phone, profile),
@@ -242,7 +269,7 @@ def refresh_stale(token: str, payload: dict) -> dict:
     changed = _refresh_identity(payload, profile, payload.get("phone") or "")
     for section, fetcher in (("weather", _fetch_weather),
                              ("traffic", _fetch_traffic),
-                             ("prices", _fetch_prices)):
+                             ("prices", lambda p: _fetch_prices(p, payload.get("prices")))):
         window = STALE.get(section)
         if window is None:
             continue
@@ -272,6 +299,33 @@ def refresh_stale(token: str, payload: dict) -> dict:
         payload["fetched"] = fetched
         save(token, payload)
     return payload
+
+
+def invalidate(phone: str, sections: tuple[str, ...] = ("prices",)) -> None:
+    """Force the named sections to refetch on the next page view.
+
+    Called when something the user just said changes what the page should hold —
+    adding a ticker, dropping one. Without it Markets keeps serving the cached
+    row set until the 5-minute cooldown lapses, so "add apple stock" appears to
+    do nothing for up to five minutes, which reads as broken.
+
+    Expiring a stamp rather than rebuilding here is deliberate: the user is
+    waiting on a text reply, and refetching prices inline would put seconds of
+    network on that reply for data nobody is looking at yet. Never raises."""
+    try:
+        token = get_profile(phone).get("home_token")
+        if not token:
+            return          # no page minted yet; ensure_fresh will build it fresh
+        payload = load(token)
+        if not payload:
+            return
+        fetched = dict(payload.get("fetched") or {})
+        for section in sections:
+            fetched[section] = 0
+        payload["fetched"] = fetched
+        save(token, payload)
+    except Exception as e:
+        print(f"home.invalidate failed for {phone}: {type(e).__name__}: {e}")
 
 
 def ensure_fresh(phone: str) -> str:

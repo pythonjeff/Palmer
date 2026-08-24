@@ -371,6 +371,14 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 if "enabled" in b.input:
                     updates["morning_enabled"] = b.input["enabled"]
                 upsert_profile(phone_number, updates)
+                # The page caches prices for 5 minutes. Without expiring that
+                # stamp, a ticker the user just added does not appear until the
+                # cooldown lapses, which reads as "it didn't work".
+                try:
+                    from home import invalidate
+                    invalidate(phone_number, ("prices",))
+                except Exception as e:
+                    print(f"home.invalidate after briefing update failed: {e}")
                 topic_str = ", ".join(topics) if topics else "none"
                 enabled = updates.get("morning_enabled")
                 if enabled is False:

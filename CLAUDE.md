@@ -141,6 +141,16 @@ Company names are gated behind a price word, indices are not. Without that gate 
 
 `cards.MAX_PRICES` is the shared cap. Four columns fit the card's width but the sparklines start overdrawing the price text, so three is the real limit; `home._fetch_prices` imports the constant rather than keeping its own, since the card and the page render from one payload and must not disagree about how much of it survives.
 
+### One list drives the morning and the page
+`morning_topics` is the single source for both the morning update and Palmer Home. A topic that resolves to a ticker becomes a live Markets row; everything else becomes a followed subject. So "add Apple stock to markets", "put Nvidia on my site" and "add Bitcoin to my morning" are all the same operation — `update_morning_briefing` — and its description and the `USE THE RIGHT TOOL` block say so explicitly, because users do not know they are one list.
+
+Three things make that flow feel live rather than broken:
+- **`home.invalidate(phone, ("prices",))` runs on every topic change.** The page caches prices for 5 minutes, so without it a ticker the user just added does not appear for up to five minutes, which reads as "it didn't work". It expires the stamp rather than refetching inline — the user is waiting on a text reply, and seconds of network for data nobody is looking at yet would go straight onto that reply.
+- **A failed price fetch keeps its previous row.** CoinGecko 429s under load and yfinance times out. Without the fallback in `_fetch_prices`, a blip silently deletes a ticker the user is tracking, which looks exactly like Palmer forgetting — far worse than a stale number under a visible "N min ago" stamp.
+- **Asking a price is not tracking one.** "what's Apple at" is `get_price`; "add Apple", "and Nvidia", "spacex too" are `update_morning_briefing`. Mid-list continuations were routing to `get_price`, so Palmer quoted a price at someone who was plainly still adding things.
+
+A topic that resolves to a ticker is also **excluded from the paid news search** — Markets already answers it, and "Apple stock price" is a poor news query. The text briefing always did this; `home._fetch_headlines` now matches.
+
 ### The name must be extracted, not just spoken
 `profile["name"]` was empty for a user who had told Palmer his name twice. Palmer still called him Jeff — it reads the name straight out of conversation history — but the page renders from the profile, so it showed "Your briefing" and kept prompting for a name it had already been given. Anything reading the profile rather than the transcript saw an anonymous user.
 

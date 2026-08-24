@@ -157,3 +157,31 @@ class TestPriceTopicNormalization:
         src = inspect.getsource(agent.get_reply)
         block = src.split('update_morning_briefing"')[1].split("elif b.name")[0]
         assert "_normalize_price_topic" in block
+
+
+class TestAddingToTheSiteRefreshesIt:
+    """The morning list and the page are one list, so a topic change has to be
+    visible on the page immediately — not after the 5-minute price cooldown."""
+
+    def test_the_add_path_expires_the_price_cache(self):
+        import inspect
+        src = inspect.getsource(agent.get_reply)
+        block = src.split('update_morning_briefing"')[1].split("elif b.name")[0]
+        assert "invalidate" in block, "a topic change must expire the cached prices"
+
+    def test_a_failure_to_invalidate_does_not_break_the_reply(self):
+        import inspect
+        src = inspect.getsource(agent.get_reply)
+        block = src.split('update_morning_briefing"')[1].split("elif b.name")[0]
+        assert "except" in block, "the reply matters more than the cache stamp"
+
+    def test_the_tool_description_covers_site_vocabulary(self):
+        from tools_def import TOOLS
+        d = next(t for t in TOOLS if t["name"] == "update_morning_briefing")["description"].lower()
+        for word in ("markets", "site", "page", "morning"):
+            assert word in d, f"users say {word!r} and mean this tool"
+
+    def test_the_prompt_separates_asking_a_price_from_tracking_one(self):
+        import prompts
+        block = prompts.SYSTEM_PROMPT.lower()
+        assert "one-off" in block and "update_morning_briefing" in block

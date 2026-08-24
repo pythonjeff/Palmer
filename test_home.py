@@ -227,6 +227,85 @@ class TestIdentityFreshness:
         assert gp.call_count == 1
 
 
+class TestPricesSurviveAFailure:
+    """A rate-limited fetch must not delete a ticker the user is tracking.
+    CoinGecko 429s under load and yfinance times out; a row vanishing looks
+    exactly like Palmer forgetting, which is worse than a stale number sitting
+    under a visible "N min ago" stamp."""
+
+    PROF = {"morning_topics": ["Bitcoin price", "Nvidia stock"]}
+    PREV = [{"label": "Bitcoin", "price": 77000.0}, {"label": "NVDA", "price": 214.0}]
+
+    def test_a_failed_symbol_keeps_its_last_row(self):
+        with patch("datafeeds.price_snapshot", side_effect=[None, {"label": "NVDA", "price": 215.0}]):
+            out = home._fetch_prices(self.PROF, self.PREV)
+        assert [p["label"] for p in out] == ["Bitcoin", "NVDA"]
+        assert out[0]["price"] == 77000.0, "kept the stale row"
+        assert out[1]["price"] == 215.0, "took the fresh one"
+
+    def test_a_fresh_fetch_wins_over_the_stale_row(self):
+        with patch("datafeeds.price_snapshot", return_value={"label": "Bitcoin", "price": 80000.0}):
+            out = home._fetch_prices({"morning_topics": ["Bitcoin price"]}, self.PREV)
+        assert out[0]["price"] == 80000.0
+
+    def test_with_no_history_a_failure_simply_drops_out(self):
+        """First ever build has nothing to fall back to; better an absent row
+        than a fabricated one."""
+        with patch("datafeeds.price_snapshot", return_value=None):
+            assert home._fetch_prices(self.PROF, None) == []
+
+    def test_a_removed_ticker_does_not_come_back_from_the_stale_set(self):
+        """The stale rows are a fallback, never a source of symbols."""
+        with patch("datafeeds.price_snapshot", return_value={"label": "NVDA", "price": 215.0}):
+            out = home._fetch_prices({"morning_topics": ["Nvidia stock"]}, self.PREV)
+        assert [p["label"] for p in out] == ["NVDA"]
+
+
+class TestInvalidate:
+    """"add apple stock" has to show up now, not in five minutes."""
+
+    def test_it_expires_the_named_section(self):
+        pl = _payload()
+        with patch.object(home, "get_profile", return_value={"home_token": "tok"}), \
+             patch.object(home, "load", return_value=pl), \
+             patch.object(home, "save") as save:
+            home.invalidate("+1555", ("prices",))
+        assert save.call_args[0][1]["fetched"]["prices"] == 0
+
+    def test_it_leaves_other_sections_alone(self):
+        """Expiring headlines would spend money on a topic change."""
+        pl = _payload()
+        before = pl["fetched"]["headlines_tried"]
+        with patch.object(home, "get_profile", return_value={"home_token": "tok"}), \
+             patch.object(home, "load", return_value=pl), \
+             patch.object(home, "save") as save:
+            home.invalidate("+1555", ("prices",))
+        saved = save.call_args[0][1]["fetched"]
+        assert saved["headlines_tried"] == before
+        assert saved["weather"] != 0
+
+    def test_the_expired_section_actually_refetches(self):
+        pl = _payload()
+        pl["fetched"]["prices"] = 0
+        with patch.object(home, "get_profile", return_value=PROFILE), \
+             patch.object(home, "_fetch_prices", return_value=[{"label": "AAPL"}]) as fp, \
+             patch.object(home, "_fetch_headlines", return_value=[]), \
+             patch.object(home, "save"):
+            out = home.refresh_stale("tok", pl)
+        fp.assert_called_once()
+        assert out["prices"] == [{"label": "AAPL"}]
+
+    def test_no_page_yet_is_a_noop(self):
+        with patch.object(home, "get_profile", return_value={}), \
+             patch.object(home, "save") as save:
+            home.invalidate("+1555")
+        save.assert_not_called()
+
+    def test_it_never_raises(self):
+        with patch.object(home, "get_profile", side_effect=RuntimeError("db down")):
+            home.invalidate("+1555")
+
+
 class TestEnsureFresh:
     """The one entry point for every path where Palmer hands over the link."""
 
