@@ -432,15 +432,34 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     b.input.get("min_rating"),
                 )
             elif b.name == "add_price_watch":
+                import shopping
+                product_name = b.input["product_name"]
                 watch_id = save_price_watch(
                     phone_number,
-                    b.input["product_name"],
+                    product_name,
                     b.input.get("target_price"),
                     b.input.get("currency", "USD"),
                 )
                 target = b.input.get("target_price")
                 target_str = f" at or under ${float(target):.2f}" if target is not None else " for meaningful drops"
-                result = f"Price watch set (id={watch_id}). I'll check every 12 hours and text if it hits{target_str}."
+                # Seed the baseline now, same as the Amazon path — otherwise a watch
+                # whose first scheduler match ever fails silently never gets a
+                # reference price and can never alert (see run_price_watches).
+                current = shopping.check_price(product_name)
+                if current:
+                    set_price_watch_baseline(watch_id, current["price"], current["url"], current["merchant"])
+                    result = (
+                        f"Price watch set (id={watch_id}) for {product_name}. "
+                        f"Currently ${current['price']:.2f} at {current['merchant'] or 'a store I found'}. "
+                        f"I'll check every 12 hours and text if it hits{target_str}."
+                    )
+                else:
+                    result = (
+                        f"Price watch set (id={watch_id}) for {product_name}, but I couldn't pin down a "
+                        f"confident match on Google Shopping just now — tell the user that if it's a common "
+                        f"item, a more specific name (brand + size/flavor) helps. I'll keep trying every "
+                        f"12 hours and text if it hits{target_str}."
+                    )
             elif b.name == "add_amazon_watch":
                 import amazon
                 query = b.input["product_query"]
