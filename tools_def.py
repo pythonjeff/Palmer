@@ -190,7 +190,7 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "add_price_watch",
-        "description": "Start tracking a product's price via Google Shopping (cheapest across merchants: Target, Nordstrom, Best Buy, etc.). Palmer checks every 12 hours and texts when the price hits the user's target OR drops meaningfully from the price at watch creation (at least 5%, and at least $2, so cheap items don't alert on churn). Use for general product tracking. If the user is clearly on Amazon or names a category where Amazon is the obvious channel (supplements, protein, coffee, household staples), use add_amazon_watch instead. Extract a clean product_name (brand + model, size/color if they specified). If they gave a target price, pass it as target_price.",
+        "description": "Start tracking a product's price via Google Shopping (cheapest across merchants: Target, Nordstrom, Best Buy, etc.). Palmer checks twice a day and texts when the price hits the user's target OR moves more than $2 in either direction from the last price he told them about. Rises included — a jump is the signal to buy now rather than wait. Use for general product tracking. If the user is clearly on Amazon or names a category where Amazon is the obvious channel (supplements, protein, coffee, household staples), use add_amazon_watch instead. Extract a clean product_name (brand + model, size/color if they specified). If they gave a target price, pass it as target_price.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -203,7 +203,7 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "add_amazon_watch",
-        "description": "Watch ONE specific Amazon listing for price drops. Use when the user says 'on Amazon', mentions Prime, or names a category where Amazon is the obvious channel (supplements, protein powder, coffee, paper goods, household staples that swing hard on Amazon). Palmer resolves the item to an Amazon ASIN and tracks that exact listing across ticks — so alerts stay pinned to the right seller and pack size. Palmer checks every 12 hours and texts when the price hits the user's target OR drops meaningfully from the baseline (at least 5%, and at least $2, so cheap items don't alert on churn). Distinct from add_price_watch, which searches Google Shopping across many merchants. Cancel via cancel_price_watch — one id space.",
+        "description": "Watch ONE specific Amazon listing for price drops. Use when the user says 'on Amazon', mentions Prime, or names a category where Amazon is the obvious channel (supplements, protein powder, coffee, paper goods, household staples that swing hard on Amazon). Palmer resolves the item to an Amazon ASIN and tracks that exact listing across ticks — so alerts stay pinned to the right seller and pack size. Palmer checks twice a day and texts when the price hits the user's target OR moves more than $2 in either direction from the last price he told them about. Rises included — a jump is the signal to buy now rather than wait. Distinct from add_price_watch, which searches Google Shopping across many merchants. Cancel via cancel_price_watch — one id space.",
         "input_schema": {
             "type": "object",
             "properties": {

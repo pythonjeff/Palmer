@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 
 from shopping import (
-    _cooldown_ok, _should_alert, DROP_PCT, DROP_MIN_ABS, _filter_and_sort,
+    _cooldown_ok, _should_alert, MOVE_MIN_ABS, _filter_and_sort,
     _is_marketplace_thirdparty, _brand_tokens, browse_shop,
 )
 
@@ -41,34 +41,44 @@ class TestShouldAlert:
     def test_target_not_hit_no_alert(self):
         assert _should_alert(_watch(target_price=100.0), 100.01) == ""
 
-    def test_drop_threshold_hit_alerts(self):
-        # On a $200 item the percentage bar governs: 5% = $10, so $190 or below.
-        assert _should_alert(_watch(baseline_price=200.0), 190.0) == "drop"
+    def test_drop_over_the_bar_alerts(self):
+        assert _should_alert(_watch(baseline_price=50.98), 47.98) == "drop"
         assert _should_alert(_watch(baseline_price=200.0), 150.0) == "drop"
 
-    def test_drop_threshold_not_hit_no_alert(self):
-        # $5 off $200 is 2.5% — under the percentage bar, so no.
-        assert _should_alert(_watch(baseline_price=200.0), 195.0) == ""
-
-    def test_consumable_sized_drop_alerts(self):
-        # The case that went silent: a $50.98 protein shake at $47.98. Under the
-        # old flat 15% bar this needed a $7.65 move, which groceries never make
-        # in one step, so the watch could never fire. 5% of $50.98 is $2.55.
-        assert _should_alert(_watch(baseline_price=50.98), 47.98) == "drop"
+    def test_move_under_the_bar_is_silent(self):
         assert _should_alert(_watch(baseline_price=50.98), 49.50) == ""
+        assert _should_alert(_watch(baseline_price=200.0), 198.50) == ""
+        assert _should_alert(_watch(baseline_price=200.0), 201.50) == ""
 
-    def test_absolute_floor_suppresses_churn_on_cheap_items(self):
-        # 5% of $12 is $0.60 — that is noise, so the $2 floor governs instead.
-        assert _should_alert(_watch(baseline_price=12.00), 11.40) == ""
-        assert _should_alert(_watch(baseline_price=12.00), 10.00) == "drop"
+    def test_bar_is_flat_not_proportional(self):
+        # The rule is "$2 on any product", so an expensive item is NOT held to a
+        # bigger move. A percentage bar (briefly max(5%, $2)) needed $10 here.
+        assert _should_alert(_watch(baseline_price=200.0), 197.50) == "drop"
+        assert _should_alert(_watch(baseline_price=1200.0), 1197.50) == "drop"
+        # ...and a cheap item clears it on the same absolute move.
+        assert _should_alert(_watch(baseline_price=12.00), 9.50) == "drop"
+
+    def test_rise_over_the_bar_alerts(self):
+        # A material move UP is worth a text too — it's the cue to buy now.
+        assert _should_alert(_watch(baseline_price=50.98), 53.98) == "rise"
+        assert _should_alert(_watch(baseline_price=200.0), 202.50) == "rise"
+
+    def test_boundary_is_inclusive_both_ways(self):
+        assert _should_alert(_watch(baseline_price=100.0), 98.00) == "drop"
+        assert _should_alert(_watch(baseline_price=100.0), 102.00) == "rise"
+        assert _should_alert(_watch(baseline_price=100.0), 98.01) == ""
+        assert _should_alert(_watch(baseline_price=100.0), 101.99) == ""
 
     def test_target_takes_precedence_over_drop(self):
         # Both would trigger; expect 'target' since that's the user's explicit ask
         assert _should_alert(_watch(target_price=150.0, baseline_price=200.0), 140.0) == "target"
 
-    def test_drop_constants_are_reasonable(self):
-        assert 0.0 < DROP_PCT < 0.5      # a discount fraction, not a multiplier
-        assert 0.0 < DROP_MIN_ABS < 10.0  # a floor on churn, not a second bar
+    def test_a_rise_never_reports_as_a_target_hit(self):
+        # target is a ceiling: a price above it must not read as "you got it".
+        assert _should_alert(_watch(target_price=45.0, baseline_price=50.0), 55.0) == "rise"
+
+    def test_move_constant_is_reasonable(self):
+        assert 0.0 < MOVE_MIN_ABS < 10.0  # a materiality floor, in dollars
 
 
 class TestCooldownOk:
@@ -198,9 +208,11 @@ class TestBaselineWorkflow:
         assert _should_alert(w, 150.0) == "drop"
 
     def test_second_check_no_alert_on_noise(self):
-        # After baseline at $200, tick 2 sees $195 → nope
+        # After baseline at $200, tick 2 sees $199.20 — an $0.80 wobble, under
+        # the flat $2 bar. ($195 used to count as noise here; under a flat bar a
+        # $5 move on any product is material, which is the point of the change.)
         w = _watch(baseline_price=200.0)
-        assert _should_alert(w, 195.0) == ""
+        assert _should_alert(w, 199.20) == ""
 
     def test_alerted_price_becomes_the_new_baseline(self):
         # update_price_watch_alerted re-baselines to the alerted price, so the
@@ -210,7 +222,7 @@ class TestBaselineWorkflow:
         assert _should_alert(w, 150.0) == "drop"
         w["baseline_price"] = 150.0          # what the alert write now does
         assert _should_alert(w, 150.0) == ""  # still cheap, but already told
-        assert _should_alert(w, 142.0) == "drop"  # a further 5% move does fire
+        assert _should_alert(w, 147.0) == "drop"  # a further $3 move does fire
 
 
 class TestBrowseShop:

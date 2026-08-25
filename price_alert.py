@@ -33,13 +33,20 @@ def _context(product_name: str, current: dict, watch: dict, reason: str,
     baseline = watch.get("baseline_price")
     if reason == "target" and target is not None:
         lines.append(f"They wanted it at or under ${float(target):.2f} - done.")
-    elif reason == "drop" and baseline:
-        pct = (1 - current["price"] / float(baseline)) * 100
-        lines.append(f"Down about {pct:.0f}% from ${float(baseline):.2f}.")
+    elif reason in ("drop", "rise") and baseline:
+        baseline = float(baseline)
+        delta = current["price"] - baseline
+        pct = abs(delta / baseline) * 100
+        way = "Up" if delta > 0 else "Down"
+        # Dollars lead: the materiality rule is a flat $2, so the dollar move is
+        # the fact that earned this text. The percentage is context, not trigger.
+        lines.append(f"{way} ${abs(delta):.2f} (about {pct:.0f}%) from ${baseline:.2f}.")
     return "\n".join(lines)
 
 
 def _fallback(product_name: str, current: dict, source_label: str | None) -> str:
+    """Direction-neutral on purpose: it states where the price IS, which is true
+    whether the move was up or down, so one fallback covers every reason."""
     if source_label:
         return f"{product_name} is ${current['price']:.2f} on {source_label}."
     return (f"{product_name} is at ${current['price']:.2f} at "
@@ -61,8 +68,16 @@ def draft_price_alert(product_name: str, current: dict, watch: dict, reason: str
     ctx = _context(product_name, current, watch, reason, source_label)
     url_rule = ("Do NOT include a URL in your line — it gets appended separately. "
                 if link else "No URL. ")
+    # A rise is not a hit. Telling someone their watch "hit" when the price went
+    # UP reads as good news and is actively misleading, so it gets its own lead.
+    if reason == "rise":
+        lead = ("Tell them something they're tracking went UP in price. "
+                "This is not good news and not a win — don't congratulate them "
+                "or dress it up. State it plainly and briefly. ")
+    else:
+        lead = "Tell them their price watch just hit. "
     prompt = (
-        "Tell them their price watch just hit. One short line, no opener, no ceremony. "
+        f"{lead}One short line, no opener, no ceremony. "
         "Don't say 'alert' or 'notification' — you're a friend, not an app. "
         f"{url_rule}No emoji, no markdown, no bullets. Under {MAX_CHARS} characters.\n\n{ctx}"
     )

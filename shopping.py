@@ -18,14 +18,15 @@ from datetime import datetime, timezone
 import serpapi
 from llm import client, HAIKU_MODEL
 
-# A drop earns a text when it clears BOTH a proportional and an absolute bar,
-# whichever is larger. A single percentage is wrong at both ends of the price
-# range: 15% of a $51 grocery item is $7.65, which consumables essentially never
-# swing in one move, so those watches could never fire at all; but 5% of a $12
-# item is $0.60, which is churn. Percentage governs anything expensive, the
-# dollar floor suppresses noise on cheap items.
-DROP_PCT = 0.05      # at least this fraction off the baseline
-DROP_MIN_ABS = 2.00  # ...and at least this much in absolute currency units
+# Materiality is a flat dollar amount, in EITHER direction: any move of more
+# than this much is worth a text, on any product at any price. Deliberately not
+# proportional. A percentage bar (this was briefly max(5%, $2)) makes expensive
+# items need a $10+ move before anything fires, which inverts the intent — a
+# $2.50 move counts the same on a $200 item as on a $12 one.
+#
+# Rises alert too, not just drops. The user tracking a price wants to know it
+# moved; an increase is the signal to buy now rather than wait.
+MOVE_MIN_ABS = 2.00
 PRICE_DAILY_ALERT_MAX = 3  # per-watch cap; guards against a price that
 # oscillates across the threshold from firing indefinitely on the 12h cadence.
 
@@ -342,17 +343,18 @@ def _cooldown_ok(watch: dict, now: datetime | None = None) -> bool:
 
 
 def _should_alert(watch: dict, current_price: float) -> str:
-    """Return the alert reason ('target' | 'drop') or '' if no alert.
+    """Return the alert reason ('target' | 'drop' | 'rise') or '' if no alert.
     Assumes cooldown was already checked."""
     target = watch.get("target_price")
     baseline = watch.get("baseline_price")
     if target is not None and current_price <= float(target):
         return "target"
     if baseline is not None:
-        baseline = float(baseline)
-        required = max(baseline * DROP_PCT, DROP_MIN_ABS)
-        if baseline - current_price >= required:
+        delta = float(baseline) - current_price
+        if delta >= MOVE_MIN_ABS:
             return "drop"
+        if -delta >= MOVE_MIN_ABS:
+            return "rise"
     return ""
 
 

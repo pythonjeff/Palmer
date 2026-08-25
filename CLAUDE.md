@@ -87,8 +87,14 @@ run_watches              every 30 min
 run_alert_checks         every 60 min
 send_missing_data_asks   every 60 min  (asks users with no city so mornings can target them; DATA_ASK_DRY_RUN=1 to preview)
 run_followups            every 4 hr
-run_price_watches        00:00 + 16:00 UTC (cron, NOT interval — see below; SerpAPI Google Shopping + Amazon; baseline seeded at watch creation, alerts on target-hit or a drop clearing both a 5% and a $2 bar, then re-baselines)
+run_price_watches        00:00 + 16:00 UTC (cron, NOT interval — see below; SerpAPI Google Shopping + Amazon; baseline seeded at watch creation, alerts on target-hit or ANY move over $2 in either direction, then re-baselines)
 ```
+
+**Materiality is a flat $2, in either direction.** `shopping.MOVE_MIN_ABS` is the whole rule: any move of more than $2 earns a text, on a $12 item and a $1,200 one alike. It is deliberately not proportional. Two earlier versions were, and both failed the same way — a flat 15% meant a $50 consumable needed a $7.65 move in one step, which groceries never make, so those watches could never fire at all; `max(5%, $2)` then held expensive items to a $10+ move, inverting the intent again. A percentage bar always encodes an assumption about what kind of product this is, and the watch list holds every kind.
+
+Rises alert too, not just drops, which is why `_should_alert` returns `'rise'` alongside `'target'`/`'drop'`. `price_alert.draft_price_alert` gives a rise its own lead — "your price watch just hit" on a price INCREASE reads as good news and is actively misleading. `_fallback` stays direction-neutral (it states where the price *is*), so it covers every reason without branching.
+
+Because the bar is low and fires both ways, the rate limits are what keep it civil rather than an afterthought: the twice-daily cadence, the per-watch `cooldown_hours` (default 12), `PRICE_DAILY_ALERT_MAX`, the re-baseline on every alert, and `_is_duplicate_subject`. Removing any of them turns a $2 bar into a pager.
 
 **`run_price_watches` is on a cron trigger, and must stay one.** An APScheduler interval job's first run is scheduled at `start + interval`, and that clock restarts on every dyno boot — which means every deploy. At a twice-daily cadence it made the job a function of deploy history rather than of the clock: on a day with four deploys it never ran at all, and since a tick that finds no qualifying price change logs nothing, it failed invisibly. The two slots are 16h and 8h apart rather than evenly split, deliberately — the budget constraint is runs per day, while the hour is the part users feel, and no strict 12h split lands in waking hours for both timezones served. `test_price_watches.py::TestPriceWatchSchedule` guards the phase-independence property.
 

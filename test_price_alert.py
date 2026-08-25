@@ -22,9 +22,17 @@ WATCH = {"phone": "+15550001111", "target_price": None, "baseline_price": 60.0}
 
 
 class TestContextFacts:
-    def test_drop_percentage(self):
+    def test_drop_states_dollars_and_percentage(self):
+        # Dollars lead — the $2 materiality rule is denominated in dollars.
         ctx = price_alert._context("Protein", CURRENT, WATCH, "drop", None)
-        assert "Down about 30%" in ctx and "$60.00" in ctx
+        assert "Down $18.00 (about 30%)" in ctx and "$60.00" in ctx
+
+    def test_rise_says_up_not_down(self):
+        # A rise must never be described as a drop; $60 -> $63.50 is +$3.50.
+        ctx = price_alert._context("Protein", {"price": 63.50, "merchant": "Zappos"},
+                                   WATCH, "rise", None)
+        assert "Up $3.50 (about 6%)" in ctx
+        assert "Down" not in ctx
 
     def test_target_hit(self):
         watch = dict(WATCH, target_price=45.0)
@@ -46,7 +54,23 @@ class TestContextFacts:
     def test_no_baseline_no_percentage(self):
         watch = dict(WATCH, baseline_price=None)
         ctx = price_alert._context("Protein", CURRENT, watch, "drop", None)
-        assert "Down about" not in ctx
+        assert "Down" not in ctx
+
+    def test_rise_prompt_does_not_claim_the_watch_hit(self):
+        # "your price watch just hit" on a price INCREASE reads as good news.
+        from unittest.mock import patch, MagicMock
+        seen = {}
+        def _capture(**kw):
+            seen.update(kw)
+            m = MagicMock(); m.content = [MagicMock(text="shake went up to 63.50")]
+            return m
+        with patch("price_alert.client.messages.create", side_effect=_capture), \
+             patch("price_alert._build_system", return_value="sys"):
+            price_alert.draft_price_alert("Protein", {"price": 63.50, "merchant": "Z"},
+                                          WATCH, "rise")
+        prompt = seen["messages"][0]["content"]
+        assert "just hit" not in prompt
+        assert "went UP" in prompt
 
 
 class TestDrafting:
