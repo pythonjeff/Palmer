@@ -7,7 +7,7 @@ from smstext import _sms_clean
 from datafeeds import _search_raw
 from userprofile import _all_interests, _is_duplicate_subject, _user_already_covered
 from db import get_all_profiles, upsert_profile, save_message, claim_daily_guard
-from watches import corroborated, _canonical_domain
+from sources import corroborated, canonical_domain
 from rubrics import classify_genre, rubric_for
 
 
@@ -217,7 +217,7 @@ def run_alert_checks():
 
             if not corroborated(all_raw):
                 upsert_profile(phone, {"alert_sent_date": None})
-                domains = {_canonical_domain(r.get("url", "")) for r in all_raw}
+                domains = {canonical_domain(r.get("url", "")) for r in all_raw}
                 domains.discard("")
                 print(f"No alert for {phone}: no corroboration ({len(domains)} domain(s))")
                 continue

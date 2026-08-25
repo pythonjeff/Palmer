@@ -1,13 +1,11 @@
-import json
 import urllib.request
 import urllib.error
-from pathlib import Path
-from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta, date as _date
 
 from llm import client, HAIKU_MODEL
 from smstext import _sms_clean
 from datafeeds import _search_raw
+from sources import source_tier, canonical_domain, corroborated
 from userprofile import _is_duplicate_subject, _user_already_covered
 from db import (
     get_active_watches, update_watch_alerted, get_messages_after,
@@ -16,69 +14,6 @@ from db import (
 from rubrics import classify_genre, rubric_for
 
 DAILY_ALERT_MAX = 4
-
-# Source-tier helpers are shared with alerts.py so both news pipelines rank the
-# same way. They live here (not in agent.py) because trusted_sources.json is
-# purely a news-quality concern.
-
-def _load_trusted_sources() -> tuple[set[str], set[str]]:
-    with open(Path(__file__).parent / "trusted_sources.json") as f:
-        data = json.load(f)
-    tier1 = {d["domain"] for d in data["domains"] if d["tier"] == 1}
-    tier2 = {d["domain"] for d in data["domains"] if d["tier"] == 2}
-    return tier1, tier2
-
-
-_TIER1_DOMAINS, _TIER2_DOMAINS = _load_trusted_sources()
-
-
-def _canonical_domain(url: str) -> str:
-    """Collapse subdomains to a canonical form for corroboration counting.
-    Prefers a known trusted domain if the host matches; otherwise last two labels."""
-    try:
-        host = (urlparse(url).hostname or "").lower().lstrip(".")
-    except Exception:
-        return ""
-    if not host:
-        return ""
-    for d in _TIER1_DOMAINS | _TIER2_DOMAINS:
-        if host == d or host.endswith("." + d):
-            return d
-    parts = host.split(".")
-    if len(parts) >= 2:
-        return ".".join(parts[-2:])
-    return host
-
-
-def _source_tier(url: str) -> int:
-    """1 = premier newsroom or official (.gov/.edu), 2 = mainstream, 3 = other."""
-    try:
-        host = (urlparse(url).hostname or "").lower().lstrip(".")
-    except Exception:
-        return 3
-    if not host:
-        return 3
-    if any(host == d or host.endswith("." + d) for d in _TIER1_DOMAINS):
-        return 1
-    if host.endswith(".gov") or host.endswith(".edu"):
-        return 1
-    if any(host == d or host.endswith("." + d) for d in _TIER2_DOMAINS):
-        return 2
-    return 3
-
-
-def corroborated(results: list[dict]) -> bool:
-    """Do these results clear the shared news-quality bar?
-    Pass if >= 2 distinct canonical domains agree OR a single tier-1 source appears.
-    Single unknown-domain hits are how rumor/spam/fake alerts leak through."""
-    if not results:
-        return False
-    domains = {_canonical_domain(r.get("url", "")) for r in results}
-    domains.discard("")
-    if any(_source_tier(r.get("url", "")) == 1 for r in results):
-        return True
-    return len(domains) >= 2
-
 
 def _daily_ok(watch: dict, cap: int = DAILY_ALERT_MAX) -> bool:
     """True if this watch is under the daily alert cap (UTC date).
@@ -220,7 +155,7 @@ def _best_result(results: list[dict]) -> dict | None:
     tier-1 newsroom beats a higher-scoring blog."""
     ranked = sorted(
         results,
-        key=lambda r: (_source_tier(r.get("url", "")), -(r.get("score") or 0)),
+        key=lambda r: (source_tier(r.get("url", "")), -(r.get("score") or 0)),
     )
     for r in ranked:
         url = r.get("url", "")
@@ -286,7 +221,7 @@ def run_watches():
                 continue
 
             if not corroborated(all_raw):
-                domains = {_canonical_domain(r.get("url", "")) for r in all_raw}
+                domains = {canonical_domain(r.get("url", "")) for r in all_raw}
                 domains.discard("")
                 print(f"Watch {watch['id']}: no corroboration ({len(domains)} domain(s), no tier-1), skipping")
                 continue

@@ -142,13 +142,15 @@ def _fetch_headlines(profile: dict) -> list[dict]:
     inspects), the page links straight to the source — the reader taps it. A
     topic whose only coverage is an unranked domain is dropped for the day
     rather than shown as a "Today" story with a weak citation. This is the
-    same tier gate watches.py/alerts.py use before firing an alert; the page
-    never had it wired in, so it was one search-result-ranking step behind
-    the bar the rest of the product already holds itself to.
+    same tier gate the rest of the product holds itself to; the page never had
+    it wired in, so it was one search-result-ranking step behind that bar.
+    Palmer Home is the only caller that passes ``trusted_only`` — conversation
+    and the morning briefing keep tier 3 as a last resort, because an
+    obscure-but-real source beats "nothing found" when someone asked.
     """
     from datafeeds import _search_raw
     from morning import _is_directive, _rotated_topics, _WEATHER_KEYWORDS, _TRAFFIC_KEYWORDS
-    from watches import _source_tier, _canonical_domain
+    from sources import canonical_domain
     from timeutil import local_today
     from tickers import resolve_topic_asset
     auto = _WEATHER_KEYWORDS + _TRAFFIC_KEYWORDS
@@ -163,15 +165,20 @@ def _fetch_headlines(profile: dict) -> list[dict]:
     out = []
     for topic in _rotated_topics(topics, local_today(profile.get("timezone"))):
         try:
-            results = _search_raw(topic, days=1, max_age_hours=24, min_score=0.5)
-            trusted = [r for r in results if _source_tier(r.get("url", "")) <= 2]
-            if not trusted:
+            # trusted_only: the page is the one surface where an untrusted row is
+            # worse than no row. It is a short list the user reads top to bottom
+            # with the source name showing, so a single content farm in it taints
+            # the whole card — and unlike a conversation reply, nobody asked a
+            # question that has to be answered. A dropped topic just doesn't
+            # appear today.
+            results = _search_raw(topic, days=1, max_age_hours=24, min_score=0.5,
+                                  trusted_only=True)
+            if not results:
                 continue
-            trusted.sort(key=lambda r: (_source_tier(r.get("url", "")), -(r.get("score") or 0)))
-            top = trusted[0]
+            top = results[0]
             out.append({"title": (top.get("title") or "")[:110],
                         "url": top.get("url"),
-                        "source": _canonical_domain(top.get("url", "")),
+                        "source": canonical_domain(top.get("url", "")),
                         "topic": topic})
         except Exception as e:
             print(f"home headlines failed for {topic!r}: {e}")

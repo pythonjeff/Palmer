@@ -12,6 +12,7 @@ it unpatched makes a real Tavily call and the suite quietly starts costing money
 and seconds.
 """
 import time
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import datafeeds
@@ -400,35 +401,58 @@ class TestRebuild:
 
 class TestHeadlineSourcing:
     """Today only shows a story when a trusted domain covered it — the same
-    tier gate watches.py uses before firing an alert. A topic whose only
-    coverage is an unranked domain gets no story that day, not a weak one."""
+    tier gate every other news surface goes through. A topic whose only
+    coverage is an unranked domain gets no story that day, not a weak one.
+
+    These patch Tavily's transport rather than `_search_raw`, because
+    `_search_raw` is now where the gate lives: `home._fetch_headlines` passes
+    `trusted_only=True` and trusts the ordering it gets back. Mocking
+    `_search_raw` would mock away the thing under test and pass no matter what
+    the filter did.
+    """
 
     TOPIC_PROFILE = {"city": "Kirkwood, MO", "timezone": "America/Chicago",
                      "morning_topics": ["SpaceX news"]}
 
-    def test_untrusted_only_result_is_dropped(self):
-        results = [{"title": "SpaceX did a thing", "url": "https://randomblog.example/x",
-                    "score": 0.9}]
-        with patch.object(datafeeds, "_search_raw", return_value=results):
+    @staticmethod
+    def _fresh(results):
+        """Tavily payload dated now, so the recency window keeps every row."""
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return {"results": [dict(r, published_date=stamp) for r in results]}
+
+    def _headlines(self, results):
+        with patch.object(datafeeds._tavily, "search",
+                          return_value=self._fresh(results)) as search:
             out = home._fetch_headlines(self.TOPIC_PROFILE)
+        return out, search
+
+    def test_untrusted_only_result_is_dropped(self):
+        out, _ = self._headlines([
+            {"title": "SpaceX did a thing", "url": "https://randomblog.example/x",
+             "score": 0.9}])
         assert out == [], "an unranked-domain-only result must not become a story"
 
     def test_trusted_domain_result_is_kept(self):
-        results = [{"title": "SpaceX launches Starship again", "url": "https://apnews.com/x",
-                    "score": 0.9}]
-        with patch.object(datafeeds, "_search_raw", return_value=results):
-            out = home._fetch_headlines(self.TOPIC_PROFILE)
+        out, _ = self._headlines([
+            {"title": "SpaceX launches Starship again", "url": "https://apnews.com/x",
+             "score": 0.9}])
         assert out and out[0]["source"] == "apnews.com"
 
     def test_untrusted_result_never_wins_over_a_trusted_one(self):
         """Highest Tavily score picked the untrusted blog post before this gate
         existed — score must not override the tier filter."""
-        results = [{"title": "blog take", "url": "https://randomblog.example/x", "score": 0.95},
-                   {"title": "AP story", "url": "https://apnews.com/y", "score": 0.6}]
-        with patch.object(datafeeds, "_search_raw", return_value=results):
-            out = home._fetch_headlines(self.TOPIC_PROFILE)
+        out, _ = self._headlines([
+            {"title": "blog take", "url": "https://randomblog.example/x", "score": 0.95},
+            {"title": "AP story", "url": "https://apnews.com/y", "score": 0.6}])
         assert out and out[0]["source"] == "apnews.com"
 
     def test_no_results_at_all_is_not_an_error(self):
-        with patch.object(datafeeds, "_search_raw", return_value=[]):
-            assert home._fetch_headlines(self.TOPIC_PROFILE) == []
+        out, _ = self._headlines([])
+        assert out == []
+
+    def test_page_asks_for_trusted_only(self):
+        """The page is the only caller that passes it; conversation and the
+        morning briefing keep tier 3 as a last resort."""
+        with patch.object(datafeeds, "_search_raw", return_value=[]) as search:
+            home._fetch_headlines(self.TOPIC_PROFILE)
+        assert search.call_args.kwargs.get("trusted_only") is True

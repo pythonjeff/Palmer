@@ -12,6 +12,7 @@ from datetime import datetime, timezone, timedelta, date as _date
 import requests as _requests
 from tavily import TavilyClient
 
+import sources
 from smstext import _parse_published
 
 
@@ -37,11 +38,25 @@ _CRYPTO_IDS = {
 _tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
 def _search_raw(query: str, days: int = 1, max_age_hours: float = 12,
-                min_score: float = 0.5) -> list[dict]:
-    """Return Tavily result dicts filtered by recency and quality, sorted best-first."""
+                min_score: float = 0.5, trusted_only: bool = False) -> list[dict]:
+    """Return Tavily result dicts filtered for recency and source quality,
+    best-source-first.
+
+    Source quality is applied here rather than in each caller because this is
+    the one place every news surface goes through — watch alerts, the morning
+    briefing, Palmer Home, and the conversation search all end up here, and
+    they were previously each free to do their own ranking or none at all.
+
+    `max_results` is 10, not 5. Tavily bills per search, not per result, and
+    the recency window throws most of a page away — a 5-result pull that loses
+    three to the 12-hour cutoff leaves the tier sort nothing to choose between,
+    which is how a lone content farm ends up as the best available source.
+
+    The relevance floor is per-source rather than flat; see sources.meets_score.
+    `trusted_only` drops tier 3 entirely; see sources.rank."""
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(_tavily.search, query, topic="news", days=days, max_results=5)
+            future = ex.submit(_tavily.search, query, topic="news", days=days, max_results=10)
             response = future.result(timeout=15)
         results = response.get("results", [])
         now = datetime.now(timezone.utc)
@@ -49,18 +64,24 @@ def _search_raw(query: str, days: int = 1, max_age_hours: float = 12,
         for r in results:
             pub = _parse_published(r.get("published_date"))
             if pub and now - pub <= timedelta(hours=max_age_hours):
-                if (r.get("score") or 0) >= min_score:
+                if sources.meets_score(r.get("url", ""), r.get("score"), min_score):
                     kept.append(r)
-        kept.sort(key=lambda r: r.get("score") or 0, reverse=True)
-        return kept
+        return sources.rank(kept, trusted_only=trusted_only)
     except Exception:
         return []
 
 def _search(query: str, days: int = 7, require_date: bool = False,
             max_age_hours: float | None = None) -> str:
+    """The conversation-facing search. Returns prose for the drafting model.
+
+    Junk sources are dropped and the rest ordered best-source-first, same as
+    every other news path. Each story is labelled with its domain — the model
+    was previously handed a flat list with no provenance at all, so it could
+    not tell a wire report from a content farm and had no way to attribute
+    anything it repeated."""
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(_tavily.search, query, topic="news", days=days, max_results=5)
+            future = ex.submit(_tavily.search, query, topic="news", days=days, max_results=10)
             response = future.result(timeout=15)
         results = response.get("results", [])
         if require_date or max_age_hours is not None:
@@ -74,11 +95,13 @@ def _search(query: str, days: int = 7, require_date: bool = False,
                     continue
                 kept.append(r)
             results = kept
+        results = sources.rank(results)
         if not results:
             return "No results found."
         return "\n\n".join(
-            f"{r['title']}\nPublished: {r.get('published_date', 'unknown')}\n{r['content']}"
-            for r in results
+            f"[{sources.canonical_domain(r.get('url', '')) or 'unknown source'}] {r['title']}\n"
+            f"Published: {r.get('published_date', 'unknown')}\n{r['content']}"
+            for r in results[:5]
         )
     except concurrent.futures.TimeoutError:
         return "Search timed out."

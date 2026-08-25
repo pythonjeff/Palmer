@@ -62,19 +62,22 @@ smstext.py      _sms_clean, shorten_message, _normalize_hhmm, _parse_published
 prompts.py      SYSTEM_PROMPT, EXTRACT_PROMPT, CONSOLIDATE_PROMPT
 tools_def.py    TOOLS schema
 weather.py      geocoding, NWS (US) + Open-Meteo (rest of world)
+sources.py      news source quality: blocklist, tiers, relevance floor, corroboration
 datafeeds.py    Tavily search, crypto/stock prices, GIFs, media
 tickers.py      morning topic -> tradeable symbol (Markets section)
 userprofile.py  profile extract/consolidate + the two cross-send dedup gates
 agent.py        _build_system, get_reply, tool dispatch, save_assistant_turn
 ```
 
-Dependencies run strictly downward: `llm`/`netutil` ← `smstext`/`weather`/`datafeeds` ← `userprofile` ← `agent`. Each module imports standalone; keep it that way.
+Dependencies run strictly downward: `llm`/`netutil`/`sources` ← `smstext`/`weather`/`datafeeds` ← `userprofile` ← `agent`. Each module imports standalone; keep it that way.
+
+`sources.py` imports nothing from Palmer at all — that is what lets `datafeeds` use it. The tier helpers used to live in `watches.py`, which `datafeeds` sits below, so filtering at the search call would have been a cycle.
 
 `agent.py` exports exactly `_build_system` (used by every module that sends a user-facing message) plus `get_reply`/`save_assistant_turn` for `main.py`. It is no longer a grab-bag facade — don't add re-exports to it.
 
 Underscore prefixes still mean "internal to Palmer", not "private to this module" — `smstext._sms_clean` is imported by six modules. Grep before renaming.
 
-**Patching in tests follows the code, not the name.** `patch("agent.client")` stopped working when functions moved out; patch the module the function actually lives in (`patch("userprofile.client")`). A dead patch target does not fail loudly — it lets the test make real API calls. Watch the suite runtime: it should be ~3.5s, and a jump means something is hitting the network.
+**Patching in tests follows the code, not the name.** `patch("agent.client")` stopped working when functions moved out; patch the module the function actually lives in (`patch("userprofile.client")`). A dead patch target does not fail loudly — it lets the test make real API calls. Watch the suite runtime: 643 tests in ~4s, and a jump means something is hitting the network.
 
 ### Scheduler cadence (main.py)
 ```
@@ -190,12 +193,29 @@ The system prompt in `agent.py` hard-routes user asks to specific tools. Never m
 
 If you add a new tool, follow the same discipline: one data source per tool, and update the `USE THE RIGHT TOOL` block in `SYSTEM_PROMPT` so Claude routes correctly.
 
-### Watches: two source-quality gates
-`watches.py` and `alerts.py` both filter search results before firing a text:
-1. **Trusted-domain ranking** — `trusted_sources.json` classifies domains as tier 1 (AP/Reuters/BBC/NYT/WSJ/Bloomberg/ESPN etc., plus `.gov`/`.edu`) or tier 2 (mainstream). Tier picks which URL to send.
-2. **Corroboration** — a watch will not fire unless ≥ 2 distinct canonical domains agree, OR ≥ 1 tier-1 source confirms.
+### Source quality is one gate, applied at the search call
+Every news fact and every news link Palmer sends — watch alerts, the morning briefing, Palmer Home, and the conversation `web_search` — comes out of `datafeeds._search_raw` or `datafeeds._search`. Both apply `sources.py` before returning, so quality is decided in one place rather than by each caller.
 
-Plus a strict criticality gate, 12-hour recency, per-watch cooldown (default 4h), a `DAILY_ALERT_MAX` cap, and a dedup check against recent alert summaries. When editing this pipeline, keep all gates — removing any one produced noisy or bad alerts historically.
+It used to be per-caller, and the callers disagreed: `watches.py` ranked by tier, `home._fetch_headlines` sorted but then took `results[0]` regardless, and the conversation search did nothing at all and dropped the URL besides. Filtering at the search call is what makes a change here reach every surface at once.
+
+`sources.py` deliberately imports nothing from Palmer. The helpers were in `watches.py`, which imports `datafeeds` — so putting the filter where the search happens required moving them below it.
+
+Four gates, cheapest first:
+
+1. **Blocklist** (`is_blocked`) — dropped outright, never ranked. Two structural kinds: press-release wires (`prnewswire`, `globenewswire`, `einpresswire`…), where the "article" is a paid placement wearing a news layout, and republishing aggregators (`msn.com`, `biztoc`, `newsbreak`, `news.google.com`…), whose copy is a worse link than the original that is almost always sitting next to it in the same result set. **Keep this structural.** Do not add an outlet because its reporting is weak — that judgment ages badly in a JSON file the way the `PRIVATE_COMPANIES` denylist did in `tickers.py`. Demote by leaving it off the allowlist instead.
+2. **Relevance floor** (`meets_score`) — tier 3 must clear `min_score`; trusted sources get `TRUSTED_SCORE_RELIEF` (0.15) of slack. This is not politeness. The floor runs *before* the tier sort, and Tavily's score measures query-text match, which is precisely what an SEO content farm is built to win — so a flat floor cut the Reuters piece at 0.45 and kept the farm at 0.90, and the tier sort never got the chance to undo it. Ranking was already in place and still could not save the good source, because the good source was gone before ranking ran.
+3. **Tier ordering** (`source_tier`, applied by `rank`) — 1 = premier newsroom, wire, or official (`.gov`/`.edu` at runtime), 2 = mainstream and reputable specialist, 3 = everything else. Sorts by `(tier, -score)` so a wire report beats a higher-scoring blog. `rank(trusted_only=True)` drops tier 3 entirely; **only Palmer Home passes it**, because the page is a short curated list read top to bottom with the source name showing, so one bad row taints the card — and unlike a conversation reply, nobody asked a question that has to be answered. Conversation and the morning briefing keep tier 3 as a last resort: an obscure-but-real source beats "nothing found".
+4. **Corroboration** (`corroborated`) — a watch or daily alert will not fire unless ≥ 2 distinct canonical domains agree, OR ≥ 1 tier-1 source confirms. Single unknown-domain hits are how rumor and spam leak through.
+
+Suffix matching is on a dot boundary in both directions, so `notreuters.com` and `reuters.com.evil.example` are both tier 3. Without that a domain launders itself into tier 1 and nothing looks wrong until it is.
+
+`_search_raw` pulls **10** candidates, not 5. Tavily bills per search, not per result, and the recency window throws most of a page away — a 5-result pull that loses three to the 12-hour cutoff leaves the tier sort nothing to choose between, which is how a lone content farm ends up as the best available source.
+
+`trusted_sources.json` is meant to be hand-edited with no code change, which makes its shape a runtime dependency: bare lowercase hosts, no scheme or path or `www.`, no duplicates, and **no domain in both `domains` and `blocked`** (blocking runs first, so such a domain is silently blocked while reading as trusted). `test_sources.py::TestSourceListIntegrity` enforces all of it, and requires every blocked entry to carry a `why` — that field is the guardrail keeping the list structural.
+
+Watches then add their own gates on top of the shared ones: a strict criticality rubric, 12-hour recency, `_url_reachable` (HEAD, 405 counts as alive) so a dead top link falls through to the next result, per-watch cooldown (default 4h), a `DAILY_ALERT_MAX` cap, and a dedup check against recent alert summaries. When editing this pipeline, keep all gates — removing any one produced noisy or bad alerts historically.
+
+**The morning briefing and `web_search` label each story with its domain** (`[reuters.com] headline`). The drafting model was previously handed a flat list with no provenance, so it could not tell a wire report from a content farm and had no way to attribute anything it repeated.
 
 ### Landmarks vs. addresses in the traffic pipeline
 TomTom's geocoder is a mapping API, not a search engine, and mis-ranks landmark names (e.g. "White House", "Fenway", "LAX"). `traffic.py` and the `get_travel_time` tool run landmark destinations through Sonnet to resolve them to street addresses *before* geocoding. Preserve this indirection when touching routing code.

@@ -109,20 +109,21 @@ _TOPIC_MAX_AGE_HOURS = 24
 def _topic_digest(topic: str) -> str | None:
     """Recent, source-ranked stories for one topic, or None when nothing solid.
 
-    _search returns whatever Tavily ranked first and drops the URL, so the
-    drafting model had no idea whether a line came from Reuters or a content
-    farm. This reuses the same tier-then-score ordering watches.py uses to pick
-    what is worth alerting on, and returns None rather than the string "No
-    results found." so a thin topic is left out of the data entirely instead of
-    being handed to the model to silently skip."""
-    from watches import _source_tier, _canonical_domain
+    _search_raw now drops blocked sources and returns best-source-first, so the
+    ordering that used to happen here is gone. What stays is the [domain] label:
+    the drafting model had no idea whether a line came from Reuters or a content
+    farm, and it needs that to decide what to state flatly and what to hedge.
+
+    Returns None rather than the string "No results found." so a thin topic is
+    left out of the data entirely instead of being handed to the model to
+    silently skip."""
+    from sources import canonical_domain
     results = _search_raw(topic, days=1, max_age_hours=_TOPIC_MAX_AGE_HOURS, min_score=0.5)
     if not results:
         return None
-    results.sort(key=lambda r: (_source_tier(r.get("url", "")), -(r.get("score") or 0)))
     lines = []
     for r in results[:_STORIES_PER_TOPIC]:
-        domain = _canonical_domain(r.get("url", "")) or "unknown source"
+        domain = canonical_domain(r.get("url", "")) or "unknown source"
         lines.append(f"[{domain}] {r.get('title','')}\n{r.get('content','')}")
     return "\n\n".join(lines)
 
