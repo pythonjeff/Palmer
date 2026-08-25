@@ -29,12 +29,52 @@ app = FastAPI()
 _SCHEDULER_ENABLED = os.environ.get("PALMER_NO_SCHEDULER") != "1"
 
 _scheduler = BackgroundScheduler()
+
+# INTERVAL vs CRON: an interval job's first run is scheduled at start + interval,
+# and that clock restarts on every dyno boot — i.e. every deploy. The error is
+# proportional to the period, so the short jobs below stay on "interval" (losing
+# up to 30 minutes is immaterial) while everything at an hour or longer is on
+# fixed clock times, so its cadence is a property of the clock rather than of
+# the deploy history. run_price_watches (further down) is the case that made
+# this concrete: at 12h it only ran on days production was left alone.
+#
+# misfire_grace_time throughout: APScheduler's default is 1 SECOND, so a tick
+# delayed behind a slow job is dropped outright rather than run late.
+#
+# Every cron job pins timezone=Etc/UTC rather than inheriting it. A bare
+# BackgroundScheduler() takes the PROCESS timezone, which is Etc/UTC on the
+# dyno but whatever the developer's machine is set to locally — so an
+# unpinned grid means local runs and tests silently disagree with prod, and
+# a TZ config var would rotate the whole schedule with nothing looking wrong.
 _scheduler.add_job(send_due_reminders, "interval", minutes=1)
 _scheduler.add_job(send_morning_messages, "interval", minutes=5)
 _scheduler.add_job(run_watches, "interval", minutes=30)
-_scheduler.add_job(run_alert_checks, "interval", minutes=60)
-_scheduler.add_job(send_missing_data_asks, "interval", minutes=60)
-_scheduler.add_job(run_followups, "interval", hours=4)
+
+# Gated to 13:00-21:00 in the USER's timezone, at most one alert per user per
+# day. Hourly-on-the-hour gives every user ~9 attempts inside their own window.
+# Cron also repairs a latent trap in the no-timezone fallback path, which tests
+# `utcnow().hour == <assigned hour>` — an exact match that a drifting interval
+# grid can skip past entirely, silently costing that user every daily alert.
+_scheduler.add_job(run_alert_checks, "cron", minute=0,
+                   timezone="Etc/UTC", misfire_grace_time=1800)
+
+# :30 rather than :00 so this and run_alert_checks don't land in the same second
+# — both fan out over every profile and call a model, on one dyno.
+_scheduler.add_job(send_missing_data_asks, "cron", minute=30,
+                   timezone="Etc/UTC", misfire_grace_time=1800)
+
+# Every 2 hours, NOT at hand-picked UTC hours. _should_send_followup gates on a
+# 13:00-19:00 window in each user's own timezone, and users already span two
+# zones — a */2 grid keeps landing inside every such window as more timezones
+# are added, where fixed hours would silently stop covering someone.
+#
+# This was "interval, hours=4" against a 6h window: 1.5 ticks of margin, and
+# the phase reset on top meant that on a day with several deploys the job could
+# skip entirely. A quiet tick logs nothing, so that failed invisibly.
+# Cost is flat — 12 ticks/day of one get_all_profiles() query each; the Haiku
+# and Sonnet calls sit behind the per-user daily claim, not behind the tick.
+_scheduler.add_job(run_followups, "cron", hour="*/2",
+                   timezone="Etc/UTC", misfire_grace_time=3600)
 # SerpAPI: 12h cadence keeps the starter plan (5000 searches/mo) comfortable
 # while leaving headroom for Amazon watches (dual-source: Google Shopping +
 # amazon_product engine both go through this same tick).
