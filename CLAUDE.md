@@ -87,8 +87,10 @@ run_watches              every 30 min
 run_alert_checks         every 60 min
 send_missing_data_asks   every 60 min  (asks users with no city so mornings can target them; DATA_ASK_DRY_RUN=1 to preview)
 run_followups            every 4 hr
-run_price_watches        every 12 hr   (SerpAPI Google Shopping + Amazon; establishes baseline on first check, alerts on target-hit or ≥15% drop)
+run_price_watches        00:00 + 16:00 UTC (cron, NOT interval — see below; SerpAPI Google Shopping + Amazon; baseline seeded at watch creation, alerts on target-hit or a drop clearing both a 5% and a $2 bar, then re-baselines)
 ```
+
+**`run_price_watches` is on a cron trigger, and must stay one.** An APScheduler interval job's first run is scheduled at `start + interval`, and that clock restarts on every dyno boot — which means every deploy. At a twice-daily cadence it made the job a function of deploy history rather than of the clock: on a day with four deploys it never ran at all, and since a tick that finds no qualifying price change logs nothing, it failed invisibly. The two slots are 16h and 8h apart rather than evenly split, deliberately — the budget constraint is runs per day, while the hour is the part users feel, and no strict 12h split lands in waking hours for both timezones served. `test_price_watches.py::TestPriceWatchSchedule` guards the phase-independence property.
 
 Morning briefings are sent by APScheduler at each user's chosen local time (default 7:00). No Heroku Scheduler job is required; if one runs `send_morning.py`, the per-user sent-date guard prevents double-sends.
 

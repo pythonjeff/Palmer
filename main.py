@@ -38,7 +38,37 @@ _scheduler.add_job(run_followups, "interval", hours=4)
 # SerpAPI: 12h cadence keeps the starter plan (5000 searches/mo) comfortable
 # while leaving headroom for Amazon watches (dual-source: Google Shopping +
 # amazon_product engine both go through this same tick).
-_scheduler.add_job(run_price_watches, "interval", hours=12)
+#
+# CRON, NOT INTERVAL — and that distinction is load-bearing at this cadence.
+# An interval job's first run is scheduled at start + interval, and the clock
+# restarts on every dyno boot, which means every deploy. Ship twice in one
+# afternoon and a 12h interval job never runs at all; this one only fired on
+# days production was left alone for 12 straight hours. A quiet tick logs
+# nothing, so it failed invisibly. Fixed UTC hours make the cadence a property
+# of the clock instead of a property of the deploy history.
+#
+# TWICE DAILY, NOT EVERY 12 HOURS — the slots are 16h and 8h apart, not
+# evenly split, and that is deliberate. The budget constraint above is runs
+# per day, which two slots satisfy at any spacing; the hour is the part users
+# feel, since these are unprompted texts. A strict 12h split puts the two
+# slots at H and H+12, and across the two timezones on record there is no H
+# where both land in waking hours — Chicago and LA are 2h apart, which
+# squeezes the feasible window to nothing. Even spacing would have to be paid
+# for with a 10pm text, so it isn't.
+#
+# 00:00 and 16:00 UTC are daytime in both zones, winter and summer: 16:00 is
+# 11am CDT / 9am PDT (10am CST / 8am PST), 00:00 is 7pm CDT / 5pm PDT (6pm
+# CST / 4pm PST). Timezone is pinned rather than inherited from the process —
+# the dyno happens to be Etc/UTC today, but a TZ config var would silently
+# rotate the whole schedule.
+#
+# misfire_grace_time: if a tick is delayed (a long earlier job holding the
+# thread), run it late rather than dropping it. APScheduler's default of 1s
+# would skip the slot entirely and wait for the next one.
+_scheduler.add_job(
+    run_price_watches, "cron", hour="0,16", timezone="Etc/UTC",
+    misfire_grace_time=3600,
+)
 if _SCHEDULER_ENABLED:
     _scheduler.start()
 else:

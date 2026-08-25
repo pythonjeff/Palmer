@@ -288,3 +288,65 @@ class TestBrowseShop:
         with patch("serpapi.API_KEY", ""):
             out = browse_shop("Madewell tees")
         assert "unavailable" in out.lower()
+
+
+class TestPriceWatchSchedule:
+    """run_price_watches must be on a fixed-hour cron, not an interval.
+
+    An interval job's first run is start + interval, and the clock restarts on
+    every dyno boot — i.e. every deploy. At a 12h cadence that meant the job
+    only ever ran on days production was left alone for 12 straight hours; on a
+    day with four deploys it never ran at all, and a tick that finds nothing
+    logs nothing, so it failed silently. The property under test is that the
+    fire times are a function of the clock, not of when the process started."""
+
+    def _trigger(self):
+        from unittest.mock import patch
+        with patch("apscheduler.schedulers.background.BackgroundScheduler.start"):
+            import main
+        from shopping import run_price_watches
+        jobs = [j for j in main._scheduler.get_jobs() if j.func is run_price_watches]
+        assert len(jobs) == 1, "expected exactly one run_price_watches job"
+        return jobs[0].trigger
+
+    def test_is_a_cron_trigger(self):
+        from apscheduler.triggers.cron import CronTrigger
+        assert isinstance(self._trigger(), CronTrigger)
+
+    def test_phase_is_independent_of_process_start(self):
+        # The regression an interval trigger would reintroduce: boot at two
+        # different moments and the schedule must not move.
+        from datetime import datetime, timedelta, timezone
+        trigger = self._trigger()
+        boot_a = datetime(2026, 8, 25, 3, 17, tzinfo=timezone.utc)
+        boot_b = boot_a + timedelta(hours=5, minutes=42)  # a later deploy
+        assert (trigger.get_next_fire_time(None, boot_a)
+                == trigger.get_next_fire_time(None, boot_b))
+
+    def test_runs_exactly_twice_a_day(self):
+        # The SerpAPI budget is denominated in runs per day, not in evenness of
+        # spacing — these slots are 16h and 8h apart on purpose (see main.py).
+        from datetime import datetime, timedelta, timezone
+        trigger = self._trigger()
+        start = datetime(2026, 8, 25, 0, 0, tzinfo=timezone.utc)
+        fire, fires = None, []
+        while True:
+            fire = trigger.get_next_fire_time(fire, start if fire is None else fire + timedelta(seconds=1))
+            if fire >= start + timedelta(days=1):
+                break
+            fires.append(fire)
+        assert len(fires) == 2, fires
+
+    def test_fires_during_waking_hours_for_served_timezones(self):
+        # These are unprompted texts. Both user timezones on record must land in
+        # daytime, or the cadence is correct and the experience still bad.
+        from datetime import datetime, timedelta, timezone
+        from zoneinfo import ZoneInfo
+        trigger = self._trigger()
+        fire = None
+        for _ in range(4):
+            start = datetime(2026, 8, 25, 1, 0, tzinfo=timezone.utc) if fire is None else fire + timedelta(seconds=1)
+            fire = trigger.get_next_fire_time(fire, start)
+            for tz in ("America/Chicago", "America/Los_Angeles"):
+                hour = fire.astimezone(ZoneInfo(tz)).hour
+                assert 8 <= hour <= 21, f"{fire} is {hour}:00 in {tz}"
