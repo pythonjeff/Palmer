@@ -42,12 +42,17 @@ TOOLS = [
     },
     {
         "name": "set_reminder",
-        "description": "Save a reminder for the user to be sent at a future time. Call this whenever the user asks to be reminded about something.",
+        "description": "Save a reminder to be sent at a future time. Call this whenever the user asks to be reminded about something.\n\nOne-time by default. If they want it to REPEAT, pass recurrence — never file a repeating ask as a single reminder and leave it at that, because it will fire once and then be silent forever with nothing to tell them it stopped. 'every day at 7', 'each morning', 'every Monday', 'on weekdays' all take recurrence.\n\nA repeating ask for INFORMATION — a daily score, a price, news on a topic — is not this tool. That is update_morning_briefing, which is the recurring content list. Use set_reminder with recurrence for a nudge to do something ('take your meds', 'move the car', 'call your mom'). Roughly: if Palmer has to go look something up to write the message, it belongs in the morning update.\n\ndue_at is the FIRST occurrence; a recurring reminder repeats from there at the same local wall-clock time.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "text": {"type": "string", "description": "What to remind the user about"},
-                "due_at": {"type": "string", "description": "ISO 8601 UTC datetime when to send the reminder (e.g. 2026-07-21T20:00:00Z)"},
+                "due_at": {"type": "string", "description": "ISO 8601 UTC datetime for the FIRST (or only) send, e.g. 2026-07-21T20:00:00Z"},
+                "recurrence": {
+                    "type": "string",
+                    "enum": ["daily", "weekdays", "weekly"],
+                    "description": "Omit for a one-time reminder. 'daily' = every day, 'weekdays' = Mon-Fri only, 'weekly' = same day each week (taken from due_at). The local time of day is preserved across daylight-saving changes.",
+                },
             },
             "required": ["text", "due_at"],
         },
@@ -101,7 +106,7 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "cancel_reminders",
-        "description": "Cancel pending reminders that haven't fired yet. If text_match is given, cancels only reminders whose text contains that phrase. If omitted, cancels all pending reminders for this user.",
+        "description": "Cancel pending reminders that haven't fired yet, including recurring ones — cancelling a repeating reminder stops it for good, it does not just skip the next one. If text_match is given, cancels only reminders whose text contains that phrase. If omitted, cancels all pending reminders for this user.",
         "input_schema": {
             "type": "object",
             "properties": {

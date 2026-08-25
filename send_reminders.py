@@ -38,18 +38,54 @@ Rules:
 
 
 def send_due_reminders():
+    """Deliver claimed reminders, then re-arm the recurring ones.
+
+    In-batch dedup rather than the _is_duplicate_subject gate the other
+    proactive senders use, and that difference is deliberate. A reminder is
+    something the user explicitly asked to receive at a named time, so
+    suppressing it because Palmer happened to mention the topic six hours ago
+    would defeat the request — a missed reminder is worse than the duplicate it
+    would prevent. The failure actually observed was four near-identical rows
+    firing in the same minute, which is a within-tick problem, so the guard is
+    scoped to the tick.
+    """
     from sms_util import send_sms
+    from db import rearm_reminder, _similar_reminder_text, _parse_due
+    from timeutil import next_occurrence
+
     reminders = claim_due_reminders()
     if not reminders:
         return
 
+    already: dict[str, list[str]] = {}
     for r in reminders:
         try:
-            profile = get_profile(r["phone"])
-            body = _personalize_reminder(r["phone"], r["text"], profile)
-            send_sms(r["phone"], body)
-            save_message(r["phone"], "assistant", body)
-            print(f"Sent reminder {r['id']} to {r['phone']}: {body}")
+            phone = r["phone"]
+            if any(_similar_reminder_text(prev, r["text"]) for prev in already.get(phone, ())):
+                # A redundant row is left claimed and NOT re-armed, so a
+                # recurring duplicate retires itself instead of colliding with
+                # its twin every period.
+                print(f"Reminder {r['id']}: duplicate of another due this tick, dropping")
+                continue
+
+            profile = get_profile(phone)
+            body = _personalize_reminder(phone, r["text"], profile)
+            sent = send_sms(phone, body)
+            if sent:
+                save_message(phone, "assistant", body)
+            already.setdefault(phone, []).append(r["text"])
+            print(f"Sent reminder {r['id']} to {phone}: {body}")
+
+            # Re-arm regardless of whether the send succeeded. The claim already
+            # consumed this occurrence, so bailing here on a Twilio hiccup would
+            # silently end a standing reminder — the opposite of the daily-guard
+            # jobs, where releasing the claim is right because the claim IS the
+            # delivery record and a later tick can retry the same occurrence.
+            if r.get("recurrence"):
+                base = _parse_due(r.get("due_at"))
+                nxt = next_occurrence(base, r["recurrence"], profile.get("timezone")) if base else None
+                if nxt and rearm_reminder(r["id"], nxt.isoformat()):
+                    print(f"Reminder {r['id']} re-armed ({r['recurrence']}) for {nxt.isoformat()}")
         except Exception as e:
             print(f"Failed reminder {r['id']} to {r['phone']}: {e}")
 

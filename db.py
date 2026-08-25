@@ -117,6 +117,18 @@ def init_db():
             except Exception:
                 pass  # already exists
 
+    reminders_new_cols = [
+        "recurrence TEXT",  # NULL = one-shot; see timeutil.RECURRENCES
+    ]
+    for col_def in reminders_new_cols:
+        if _DATABASE_URL:
+            cur.execute(f"ALTER TABLE reminders ADD COLUMN IF NOT EXISTS {col_def}")
+        else:
+            try:
+                cur.execute(f"ALTER TABLE reminders ADD COLUMN {col_def}")
+            except Exception:
+                pass  # already exists
+
     price_watches_new_cols = [
         "source TEXT NOT NULL DEFAULT 'shopping'",
         "asin TEXT",
@@ -300,20 +312,79 @@ def claim_daily_guard(phone: str, field: str, value: str) -> bool:
     return True
 
 
-def save_reminder(phone: str, text: str, due_at: str):
-    normalized = text.lower().strip().rstrip("!")
+# Function words plus recurrence words. The recurrence words are stripped
+# because cadence is a column now, so "daily" inside the text is noise that
+# would otherwise make "Daily X update" look unlike "X update".
+_REMINDER_STOPWORDS = {
+    "a", "an", "the", "to", "for", "of", "and", "or", "is", "it", "on", "at",
+    "in", "my", "me", "you", "your", "user", "about", "how", "did", "go",
+    "went", "get", "that", "this", "with", "please", "remind", "reminder",
+    "daily", "weekly", "every", "each", "day",
+}
+
+
+def _reminder_tokens(text: str) -> set:
+    cleaned = "".join(c if c.isalnum() else " " for c in (text or "").lower())
+    return {t for t in cleaned.split() if t and t not in _REMINDER_STOPWORDS}
+
+
+def _similar_reminder_text(a: str, b: str, threshold: float = 0.5) -> bool:
+    """Token-overlap (Jaccard) similarity, no model call — this runs on the
+    write path inside a live conversation turn.
+
+    Exact-match dedup was not enough because the text is drafted by a model, so
+    near-identical-but-not-identical is the expected case rather than the
+    exception: two rows that differed only by an em-dash vs a hyphen both got
+    stored, and the user was texted twice in the same minute."""
+    ta, tb = _reminder_tokens(a), _reminder_tokens(b)
+    if not ta or not tb:
+        return (a or "").strip().lower() == (b or "").strip().lower()
+    return len(ta & tb) / len(ta | tb) >= threshold
+
+
+def _parse_due(value) -> datetime | None:
+    """Parse a stored/incoming due_at. Tolerates the trailing 'Z' form the tool
+    schema asks for as well as offset forms already in the table."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def save_reminder(phone: str, text: str, due_at: str, recurrence: str | None = None):
+    """Store a reminder, skipping one that duplicates a pending reminder.
+
+    A duplicate is same-time AND similar-text; the old guard was similar-text
+    alone (in fact exact-text), ignoring due_at entirely, which was wrong in both
+    directions. It let four rephrasings of one ask through at the same minute,
+    and it would silently drop a legitimate second "call mom" set for next week
+    while the first was still pending.
+    """
     conn = _conn()
     cur = conn.cursor()
     cur.execute(
-        f"SELECT id FROM reminders WHERE phone = {PH} AND LOWER(TRIM(REPLACE(text, '!', ''))) = {PH} AND sent = 0",
-        (phone, normalized),
+        f"SELECT id, text, due_at FROM reminders WHERE phone = {PH} AND sent = 0",
+        (phone,),
     )
-    if cur.fetchone():
-        conn.close()
-        return
+    target = _parse_due(due_at)
+    for row in cur.fetchall():
+        existing = _parse_due(row["due_at"])
+        if target is None or existing is None:
+            continue
+        # Same minute: the model re-drafting the same ask lands on the same
+        # timestamp, so time is the strong signal and text disambiguates two
+        # genuinely different reminders that happen to share a slot.
+        if abs((existing - target).total_seconds()) <= 60 and _similar_reminder_text(row["text"], text):
+            conn.close()
+            return
     cur.execute(
-        f"INSERT INTO reminders (phone, text, due_at) VALUES ({PH}, {PH}, {PH})",
-        (phone, text, due_at),
+        f"INSERT INTO reminders (phone, text, due_at, recurrence) VALUES ({PH}, {PH}, {PH}, {PH})",
+        (phone, text, due_at, recurrence),
     )
     conn.commit()
     conn.close()
@@ -322,15 +393,20 @@ def save_reminder(phone: str, text: str, due_at: str):
 def cancel_reminders(phone: str, text_match: str = None) -> int:
     conn = _conn()
     cur = conn.cursor()
+    # recurrence = NULL as well as sent = 1: marking it sent alone would be
+    # undone by the next re-arm, and it is also what makes a cancel that lands
+    # between claim and re-arm stick (see rearm_reminder).
     if text_match:
         pattern = f"%{text_match.lower().strip()}%"
         cur.execute(
-            f"UPDATE reminders SET sent = 1 WHERE phone = {PH} AND LOWER(text) LIKE {PH} AND sent = 0",
+            f"UPDATE reminders SET sent = 1, recurrence = NULL "
+            f"WHERE phone = {PH} AND LOWER(text) LIKE {PH} AND sent = 0",
             (phone, pattern),
         )
     else:
         cur.execute(
-            f"UPDATE reminders SET sent = 1 WHERE phone = {PH} AND sent = 0",
+            f"UPDATE reminders SET sent = 1, recurrence = NULL "
+            f"WHERE phone = {PH} AND sent = 0",
             (phone,),
         )
     count = cur.rowcount
@@ -352,14 +428,14 @@ def claim_due_reminders() -> list[dict]:
                 SELECT id FROM reminders WHERE due_at <= %s AND sent = 0
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING id, phone, text
+            RETURNING id, phone, text, due_at, recurrence
             """,
             (now,),
         )
         rows = cur.fetchall()
     else:
         cur.execute(
-            "SELECT id, phone, text FROM reminders WHERE due_at <= ? AND sent = 0",
+            "SELECT id, phone, text, due_at, recurrence FROM reminders WHERE due_at <= ? AND sent = 0",
             (now,),
         )
         rows = cur.fetchall()
@@ -368,7 +444,30 @@ def claim_due_reminders() -> list[dict]:
             cur.execute(f"UPDATE reminders SET sent = 1 WHERE id IN ({','.join(['?'] * len(ids))})", ids)
     conn.commit()
     conn.close()
-    return [{"id": r["id"], "phone": r["phone"], "text": r["text"]} for r in rows]
+    return [{"id": r["id"], "phone": r["phone"], "text": r["text"],
+             "due_at": r["due_at"], "recurrence": r["recurrence"]} for r in rows]
+
+
+def rearm_reminder(reminder_id: int, next_due_at: str) -> bool:
+    """Re-arm a recurring reminder for its next occurrence. Returns False if the
+    row is no longer recurring.
+
+    The `recurrence IS NOT NULL` guard is what closes the cancel/re-arm race.
+    Claiming and cancelling both set sent = 1, so a cancelled row is
+    indistinguishable from a claimed one by `sent` alone — but cancel_reminders
+    also nulls recurrence, so a reminder cancelled in the window between claim
+    and re-arm stays dead instead of being resurrected."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"UPDATE reminders SET due_at = {PH}, sent = 0 "
+        f"WHERE id = {PH} AND recurrence IS NOT NULL",
+        (next_due_at, reminder_id),
+    )
+    changed = cur.rowcount
+    conn.commit()
+    conn.close()
+    return bool(changed)
 
 
 def save_watch(phone: str, description: str, queries: list[str], cooldown_hours: int = 4) -> int:

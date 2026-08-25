@@ -356,8 +356,14 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 gif_url = _get_gif(b.input["query"])
                 result = f"GIF queued: {gif_url}" if gif_url else "No GIF found for that query."
             elif b.name == "set_reminder":
-                save_reminder(phone_number, b.input["text"], b.input["due_at"])
-                result = f"Reminder saved for {b.input['due_at']}."
+                recurrence = b.input.get("recurrence")
+                save_reminder(phone_number, b.input["text"], b.input["due_at"], recurrence)
+                if recurrence:
+                    result = (f"Recurring reminder saved ({recurrence}), first send "
+                              f"{b.input['due_at']}. It repeats at the same local time "
+                              f"until they cancel it.")
+                else:
+                    result = f"Reminder saved for {b.input['due_at']}."
             elif b.name == "update_morning_briefing":
                 profile = get_profile(phone_number)
                 topics = list(profile.get("morning_topics") or [])
