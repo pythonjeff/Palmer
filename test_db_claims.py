@@ -136,3 +136,40 @@ class TestClaimPriceWatchAlert:
         assert db.claim_price_watch_alert(watch_id, 12) is True
         db.release_price_watch_claim(watch_id)
         assert db.claim_price_watch_alert(watch_id, 12) is True
+
+
+class TestPriceWatchRebaseline:
+    """update_price_watch_alerted must move baseline_price to the alerted price.
+
+    baseline_price is otherwise written exactly once, by set_price_watch_baseline
+    at watch creation, and never again — so a price that settles below the drop
+    bar keeps re-qualifying on every tick. The per-day cap bounds that to
+    PRICE_DAILY_ALERT_MAX texts, then resets the next day, forever.
+    _is_duplicate_subject can't catch it either: 6h window, 12h cadence."""
+
+    def _watch(self):
+        wid = db.save_price_watch("+15551234567", "Core Power Elite Chocolate 12pk")
+        db.set_price_watch_baseline(wid, 50.98, "https://amazon.com/dp/X", "Amazon")
+        return wid
+
+    def test_alert_moves_the_baseline(self, tmp_path, monkeypatch):
+        _fresh_db(tmp_path, monkeypatch)
+        wid = self._watch()
+        db.update_price_watch_alerted(
+            wid, 47.98, "https://amazon.com/dp/X", "Amazon", "shake's down to 47.98")
+        row = [w for w in db.get_active_price_watches() if w["id"] == wid][0]
+        assert float(row["baseline_price"]) == 47.98
+        assert float(row["last_seen_price"]) == 47.98
+
+    def test_same_price_no_longer_qualifies_after_alert(self, tmp_path, monkeypatch):
+        _fresh_db(tmp_path, monkeypatch)
+        from shopping import _should_alert
+        wid = self._watch()
+        row = [w for w in db.get_active_price_watches() if w["id"] == wid][0]
+        assert _should_alert(row, 47.98) == "drop"
+
+        db.update_price_watch_alerted(
+            wid, 47.98, "https://amazon.com/dp/X", "Amazon", "shake's down to 47.98")
+        row = [w for w in db.get_active_price_watches() if w["id"] == wid][0]
+        assert _should_alert(row, 47.98) == ""      # already told, don't repeat
+        assert _should_alert(row, 45.00) == "drop"  # a further move still fires

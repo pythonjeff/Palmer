@@ -190,12 +190,12 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "add_price_watch",
-        "description": "Start tracking a product's price via Google Shopping (cheapest across merchants: Target, Nordstrom, Best Buy, etc.). Palmer checks every 12 hours and texts when the price hits the user's target OR drops at least 15% from the price at watch creation. Use for general product tracking. If the user is clearly on Amazon or names a category where Amazon is the obvious channel (supplements, protein, coffee, household staples), use add_amazon_watch instead. Extract a clean product_name (brand + model, size/color if they specified). If they gave a target price, pass it as target_price.",
+        "description": "Start tracking a product's price via Google Shopping (cheapest across merchants: Target, Nordstrom, Best Buy, etc.). Palmer checks every 12 hours and texts when the price hits the user's target OR drops meaningfully from the price at watch creation (at least 5%, and at least $2, so cheap items don't alert on churn). Use for general product tracking. If the user is clearly on Amazon or names a category where Amazon is the obvious channel (supplements, protein, coffee, household staples), use add_amazon_watch instead. Extract a clean product_name (brand + model, size/color if they specified). If they gave a target price, pass it as target_price.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "product_name": {"type": "string", "description": "Clean product query, e.g. 'Nike Pegasus 40 men's', 'Sony WH-1000XM5 headphones', 'Lululemon Align 25\" leggings'. Keep brand + model. Include size/color only if the user specified."},
-                "target_price": {"type": "number", "description": "Optional target price in currency units. Alert fires when current price is at or below this. Omit if the user didn't name a target."},
+                "target_price": {"type": "number", "description": "Optional target price in currency units. Alert fires when current price is at or below this. Pass it whenever the user names a number in any form ('under $40', 'if it gets to 35', 'below fifty bucks') — a target is what makes the watch fire on their terms rather than on the generic drop bar. Omit only if they truly named none."},
                 "currency": {"type": "string", "description": "Currency code, default 'USD'. Only override if the user is clearly outside the US."},
             },
             "required": ["product_name"],
@@ -203,12 +203,12 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "add_amazon_watch",
-        "description": "Watch ONE specific Amazon listing for price drops. Use when the user says 'on Amazon', mentions Prime, or names a category where Amazon is the obvious channel (supplements, protein powder, coffee, paper goods, household staples that swing hard on Amazon). Palmer resolves the item to an Amazon ASIN and tracks that exact listing across ticks — so alerts stay pinned to the right seller and pack size. Palmer checks every 12 hours and texts when the price hits the user's target OR drops at least 15% from the baseline. Distinct from add_price_watch, which searches Google Shopping across many merchants. Cancel via cancel_price_watch — one id space.",
+        "description": "Watch ONE specific Amazon listing for price drops. Use when the user says 'on Amazon', mentions Prime, or names a category where Amazon is the obvious channel (supplements, protein powder, coffee, paper goods, household staples that swing hard on Amazon). Palmer resolves the item to an Amazon ASIN and tracks that exact listing across ticks — so alerts stay pinned to the right seller and pack size. Palmer checks every 12 hours and texts when the price hits the user's target OR drops meaningfully from the baseline (at least 5%, and at least $2, so cheap items don't alert on churn). Distinct from add_price_watch, which searches Google Shopping across many merchants. Cancel via cancel_price_watch — one id space.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "product_query": {"type": "string", "description": "The item description in the user's words ('Optimum Nutrition Gold Standard whey chocolate 5lb', 'Kirkland fish oil 400 count'), OR a raw Amazon URL (amazon.com/dp/… or a.co/d/… / amzn.to/… shortener) — Palmer will resolve URLs to the exact listing directly. Keep brand + variant/size/flavor when the user gave them."},
-                "target_price": {"type": "number", "description": "Optional target price in USD. Alert fires when current price is at or below this. Omit if the user didn't name a target."},
+                "target_price": {"type": "number", "description": "Optional target price in USD. Alert fires when current price is at or below this. Pass it whenever the user names a number in any form ('under $40', 'if it gets to 35', 'below fifty bucks') — a target is what makes the watch fire on their terms rather than on the generic drop bar. Omit only if they truly named none."},
             },
             "required": ["product_query"],
         },

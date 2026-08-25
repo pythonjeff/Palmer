@@ -696,6 +696,15 @@ def release_price_watch_claim(watch_id: int):
 
 
 def update_price_watch_alerted(watch_id: int, price: float, url: str, merchant: str, summary: str):
+    """Record a fired alert. Also RE-BASELINES to the alerted price: the user has
+    now been told about this level, so the next alert must clear the drop bar
+    again from here rather than re-reporting the same discount forever. Without
+    this the baseline is written once at creation and never moves, so a price
+    that settles below the bar keeps qualifying on every tick — bounded only by
+    the daily cap, which resets each day. That stayed hidden while the bar was
+    15% (rare, usually transient); at a 5% bar it would surface as a daily
+    repeat. _is_duplicate_subject cannot cover it — its window is 6h and the
+    price-watch cadence is 12h."""
     now = datetime.now(timezone.utc).isoformat()
     today = datetime.now(timezone.utc).date().isoformat()
     conn = _conn()
@@ -704,13 +713,14 @@ def update_price_watch_alerted(watch_id: int, price: float, url: str, merchant: 
         f"""UPDATE price_watches SET
             last_alerted = {PH},
             last_alert_summary = {PH},
+            baseline_price = {PH},
             last_seen_price = {PH},
             last_seen_url = {PH},
             last_seen_merchant = {PH},
             daily_alert_count = CASE WHEN daily_alert_date = {PH} THEN daily_alert_count + 1 ELSE 1 END,
             daily_alert_date = {PH}
         WHERE id = {PH}""",
-        (now, summary, price, url, merchant, today, today, watch_id),
+        (now, summary, price, price, url, merchant, today, today, watch_id),
     )
     conn.commit()
     conn.close()

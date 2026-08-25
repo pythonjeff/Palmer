@@ -18,7 +18,14 @@ from datetime import datetime, timezone
 import serpapi
 from llm import client, HAIKU_MODEL
 
-DROP_THRESHOLD = 0.85  # alert when current <= baseline * DROP_THRESHOLD (i.e. >=15% off)
+# A drop earns a text when it clears BOTH a proportional and an absolute bar,
+# whichever is larger. A single percentage is wrong at both ends of the price
+# range: 15% of a $51 grocery item is $7.65, which consumables essentially never
+# swing in one move, so those watches could never fire at all; but 5% of a $12
+# item is $0.60, which is churn. Percentage governs anything expensive, the
+# dollar floor suppresses noise on cheap items.
+DROP_PCT = 0.05      # at least this fraction off the baseline
+DROP_MIN_ABS = 2.00  # ...and at least this much in absolute currency units
 PRICE_DAILY_ALERT_MAX = 3  # per-watch cap; guards against a price that
 # oscillates across the threshold from firing indefinitely on the 12h cadence.
 
@@ -341,8 +348,11 @@ def _should_alert(watch: dict, current_price: float) -> str:
     baseline = watch.get("baseline_price")
     if target is not None and current_price <= float(target):
         return "target"
-    if baseline is not None and current_price <= float(baseline) * DROP_THRESHOLD:
-        return "drop"
+    if baseline is not None:
+        baseline = float(baseline)
+        required = max(baseline * DROP_PCT, DROP_MIN_ABS)
+        if baseline - current_price >= required:
+            return "drop"
     return ""
 
 
