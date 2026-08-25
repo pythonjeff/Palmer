@@ -194,7 +194,8 @@ def _tracking(phone: str, profile: dict | None = None) -> dict:
     for a row the caller is already holding."""
     from db import get_user_watches, get_user_price_watches
     try:
-        watches = [{"description": w.get("description"), "cooldown_hours": w.get("cooldown_hours")}
+        watches = [{"description": w.get("description"), "cooldown_hours": w.get("cooldown_hours"),
+                    "url": w.get("last_alert_url"), "source": w.get("last_alert_domain")}
                    for w in (get_user_watches(phone) or [])]
     except Exception:
         watches = []
@@ -202,7 +203,8 @@ def _tracking(phone: str, profile: dict | None = None) -> dict:
         prices = [{"product": w.get("product_name"),
                    "target": float(w["target_price"]) if w.get("target_price") is not None else None,
                    "last_seen": float(w["last_seen_price"]) if w.get("last_seen_price") is not None else None,
-                   "source": w.get("source")}
+                   "url": w.get("last_seen_url"),
+                   "merchant": w.get("last_seen_merchant")}
                   for w in (get_user_price_watches(phone) or [])]
     except Exception:
         prices = []

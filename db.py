@@ -105,6 +105,8 @@ def init_db():
         "recent_summaries TEXT",
         "genre TEXT",
         "story_state TEXT",
+        "last_alert_url TEXT",
+        "last_alert_domain TEXT",
     ]
     for col_def in watches_new_cols:
         if _DATABASE_URL:
@@ -416,14 +418,18 @@ def get_user_watches(phone: str) -> list[dict]:
     conn = _conn()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, description, cooldown_hours, last_alerted, genre FROM watches WHERE phone = %s AND active = 1" if _DATABASE_URL
-        else "SELECT id, description, cooldown_hours, last_alerted, genre FROM watches WHERE phone = ? AND active = 1",
+        "SELECT id, description, cooldown_hours, last_alerted, genre, last_alert_url, last_alert_domain "
+        "FROM watches WHERE phone = %s AND active = 1" if _DATABASE_URL
+        else "SELECT id, description, cooldown_hours, last_alerted, genre, last_alert_url, last_alert_domain "
+             "FROM watches WHERE phone = ? AND active = 1",
         (phone,),
     )
     rows = cur.fetchall()
     conn.close()
     return [{"id": r["id"], "description": r["description"], "cooldown_hours": r["cooldown_hours"],
-             "last_alerted": r["last_alerted"], "genre": r["genre"]} for r in rows]
+             "last_alerted": r["last_alerted"], "genre": r["genre"],
+             "last_alert_url": r["last_alert_url"], "last_alert_domain": r["last_alert_domain"]}
+            for r in rows]
 
 
 def set_watch_genre(watch_id: int, genre: str):
@@ -467,7 +473,8 @@ def claim_watch_alert(watch_id: int, cooldown_hours: float) -> bool:
     return claimed
 
 
-def update_watch_alerted(watch_id: int, summary: str, recent_summaries: list[str]):
+def update_watch_alerted(watch_id: int, summary: str, recent_summaries: list[str],
+                          url: str | None = None, domain: str | None = None):
     now = datetime.now(timezone.utc).isoformat()
     today = datetime.now(timezone.utc).date().isoformat()
     conn = _conn()
@@ -478,9 +485,11 @@ def update_watch_alerted(watch_id: int, summary: str, recent_summaries: list[str
             last_alert_summary = {PH},
             recent_summaries = {PH},
             daily_alert_count = CASE WHEN daily_alert_date = {PH} THEN daily_alert_count + 1 ELSE 1 END,
-            daily_alert_date = {PH}
+            daily_alert_date = {PH},
+            last_alert_url = {PH},
+            last_alert_domain = {PH}
         WHERE id = {PH}""",
-        (now, summary, json.dumps(recent_summaries), today, today, watch_id),
+        (now, summary, json.dumps(recent_summaries), today, today, url, domain, watch_id),
     )
     conn.commit()
     conn.close()
@@ -606,7 +615,8 @@ def get_user_price_watches(phone: str) -> list[dict]:
     cur = conn.cursor()
     cur.execute(
         f"SELECT id, product_name, target_price, currency, baseline_price, last_seen_price, "
-        f"cooldown_hours, last_alerted FROM price_watches WHERE phone = {PH} AND active = 1",
+        f"last_seen_url, last_seen_merchant, cooldown_hours, last_alerted "
+        f"FROM price_watches WHERE phone = {PH} AND active = 1",
         (phone,),
     )
     rows = cur.fetchall()
@@ -619,6 +629,8 @@ def get_user_price_watches(phone: str) -> list[dict]:
             "currency": r["currency"],
             "baseline_price": r["baseline_price"],
             "last_seen_price": r["last_seen_price"],
+            "last_seen_url": r["last_seen_url"],
+            "last_seen_merchant": r["last_seen_merchant"],
             "cooldown_hours": r["cooldown_hours"],
             "last_alerted": r["last_alerted"],
         }

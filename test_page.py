@@ -92,3 +92,64 @@ class TestNameMissing:
 
     def test_name_is_escaped(self):
         assert "<script>" not in _render(name="<script>alert(1)</script>")
+
+
+class TestWatchingSection:
+    """'Palmer is watching' is a row of keyword chips, each linked to a source
+    when one is known — a watch's last-fired article, a price watch's last-seen
+    merchant page, or (for topics) the matching 'Today' headline."""
+
+    def test_absent_when_nothing_is_tracked(self):
+        html = _render(tracking={"watches": [], "price_watches": [], "topics": []})
+        assert "Palmer is watching" not in html
+
+    def test_watch_with_a_url_renders_as_a_linked_chip(self):
+        html = _render(tracking={"watches": [{"description": "Iran and US strikes",
+                                               "url": "https://apnews.com/x", "source": "apnews.com"}],
+                                  "price_watches": [], "topics": []})
+        assert 'href="https://apnews.com/x"' in html
+        assert 'class="chip link"' in html
+
+    def test_watch_without_a_url_renders_as_a_plain_chip(self):
+        html = _render(tracking={"watches": [{"description": "brand new watch", "url": None}],
+                                  "price_watches": [], "topics": []})
+        assert "brand new watch" in html
+        assert 'class="chip link"' not in html
+
+    def test_watch_description_is_truncated(self):
+        long_desc = "x" * 80
+        html = _render(tracking={"watches": [{"description": long_desc, "url": None}],
+                                  "price_watches": [], "topics": []})
+        assert long_desc not in html
+        assert "…" in html
+
+    def test_watches_are_capped(self):
+        many = [{"description": f"watch{i}", "url": None} for i in range(10)]
+        html = _render(tracking={"watches": many, "price_watches": [], "topics": []})
+        assert html.count("class=chip>watch") == page.WATCH_CHIP_CAP
+
+    def test_price_watch_shows_current_price_when_seen(self):
+        html = _render(tracking={"watches": [], "topics": [],
+                                  "price_watches": [{"product": "AirPods Pro", "last_seen": 220.0,
+                                                     "target": 199.0, "url": "https://amazon.com/x"}]})
+        assert "$220.00" in html
+        assert 'href="https://amazon.com/x"' in html
+
+    def test_topic_links_to_its_matching_headline(self):
+        html = _render(tracking={"watches": [], "price_watches": [], "topics": ["SpaceX news"]},
+                       headlines=[{"title": "Starship launch", "url": "https://apnews.com/y",
+                                   "topic": "SpaceX news"}])
+        assert 'href="https://apnews.com/y"' in html
+        assert "SpaceX news" in html
+
+    def test_topic_without_a_matching_headline_is_unlinked(self):
+        html = _render(tracking={"watches": [], "price_watches": [], "topics": ["some obscure topic"]},
+                       headlines=[])
+        assert "some obscure topic" in html
+        assert 'class="chip link"' not in html
+
+    def test_morning_time_moves_to_the_label_annotation(self):
+        html = _render(tracking={"watches": [], "price_watches": [], "topics": ["news"],
+                                  "morning_time": "7:00 AM"})
+        assert "7:00 AM" in html
+        assert "in your morning update" not in html, "old per-row phrasing should be gone"

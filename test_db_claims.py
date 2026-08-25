@@ -68,6 +68,44 @@ class TestClaimWatchAlert:
         assert db.claim_watch_alert(watch_id, 4) is True
         assert db.claim_watch_alert(watch_id, 4) is False
 
+
+class TestWatchAlertUrlPersistence:
+    """The 'Palmer is watching' page section links a watch to the article that
+    fired it, so update_watch_alerted must round-trip the URL/domain, not just
+    the dedup title, and a watch that has never fired must stay linkless."""
+
+    def test_update_watch_alerted_persists_url_and_domain(self, tmp_path, monkeypatch):
+        _fresh_db(tmp_path, monkeypatch)
+        phone = "+15551234567"
+        watch_id = db.save_watch(phone, "test watch", ["test query"], cooldown_hours=4)
+        db.update_watch_alerted(watch_id, "summary", [], url="https://apnews.com/x", domain="apnews.com")
+        row = db.get_user_watches(phone)[0]
+        assert row["last_alert_url"] == "https://apnews.com/x"
+        assert row["last_alert_domain"] == "apnews.com"
+
+    def test_update_watch_alerted_without_url_leaves_columns_null(self, tmp_path, monkeypatch):
+        _fresh_db(tmp_path, monkeypatch)
+        phone = "+15551234567"
+        watch_id = db.save_watch(phone, "test watch", ["test query"], cooldown_hours=4)
+        db.update_watch_alerted(watch_id, "summary", [])
+        row = db.get_user_watches(phone)[0]
+        assert row["last_alert_url"] is None
+        assert row["last_alert_domain"] is None
+
+
+class TestGetUserPriceWatches:
+    """last_seen_url/last_seen_merchant already existed on the row and were
+    already populated by set_price_watch_baseline — they just weren't selected."""
+
+    def test_baseline_url_and_merchant_round_trip(self, tmp_path, monkeypatch):
+        _fresh_db(tmp_path, monkeypatch)
+        phone = "+15551234567"
+        watch_id = db.save_price_watch(phone, "AirPods Pro", target_price=199.0)
+        db.set_price_watch_baseline(watch_id, 220.0, "https://www.amazon.com/x", "amazon.com")
+        row = db.get_user_price_watches(phone)[0]
+        assert row["last_seen_url"] == "https://www.amazon.com/x"
+        assert row["last_seen_merchant"] == "amazon.com"
+
     def test_reclaim_after_cooldown_succeeds(self, tmp_path, monkeypatch):
         _fresh_db(tmp_path, monkeypatch)
         watch_id = db.save_watch("+15551234567", "test topic", ["test query"], cooldown_hours=4)

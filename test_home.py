@@ -399,6 +399,44 @@ class TestRebuild:
         assert t["topics"], "topics come from the profile and should survive"
 
 
+class TestTrackingLinks:
+    """The 'Palmer is watching' page section links out to a source — watches
+    expose the URL/domain that fired their last alert, price watches expose
+    the merchant page they last saw a price on."""
+
+    def test_watch_exposes_its_last_alert_url_and_domain(self):
+        with patch("db.get_user_watches", return_value=[
+                {"description": "Iran and US strikes", "cooldown_hours": 4,
+                 "last_alert_url": "https://apnews.com/x", "last_alert_domain": "apnews.com"}]), \
+             patch("db.get_user_price_watches", return_value=[]), \
+             patch.object(home, "get_profile", return_value=PROFILE):
+            t = home._tracking("+1555")
+        assert t["watches"][0]["url"] == "https://apnews.com/x"
+        assert t["watches"][0]["source"] == "apnews.com"
+
+    def test_watch_never_alerted_has_no_url(self):
+        with patch("db.get_user_watches", return_value=[
+                {"description": "brand new watch", "cooldown_hours": 4,
+                 "last_alert_url": None, "last_alert_domain": None}]), \
+             patch("db.get_user_price_watches", return_value=[]), \
+             patch.object(home, "get_profile", return_value=PROFILE):
+            t = home._tracking("+1555")
+        assert t["watches"][0]["url"] is None
+
+    def test_price_watch_exposes_url_and_merchant_not_the_dead_engine_field(self):
+        with patch("db.get_user_watches", return_value=[]), \
+             patch("db.get_user_price_watches", return_value=[
+                {"product_name": "AirPods Pro", "target_price": 199.0, "last_seen_price": 220.0,
+                 "last_seen_url": "https://www.amazon.com/x", "last_seen_merchant": "amazon.com",
+                 "source": "amazon"}]), \
+             patch.object(home, "get_profile", return_value=PROFILE):
+            t = home._tracking("+1555")
+        pw = t["price_watches"][0]
+        assert pw["url"] == "https://www.amazon.com/x"
+        assert pw["merchant"] == "amazon.com"
+        assert "source" not in pw, "the price-watch engine tag must not leak into the page payload"
+
+
 class TestHeadlineSourcing:
     """Today only shows a story when a trusted domain covered it — the same
     tier gate every other news surface goes through. A topic whose only

@@ -268,7 +268,9 @@ def run_watches():
             # Use title for dedup context (shorter than full alert with URL)
             title = (top.get("title") or alert)[:120]
             recent = (watch["recent_summaries"] + [title])[-3:]
-            update_watch_alerted(watch["id"], title, recent)
+            alert_url = top.get("url") or None
+            alert_domain = canonical_domain(alert_url) if alert_url else None
+            update_watch_alerted(watch["id"], title, recent, url=alert_url, domain=alert_domain)
             # Fold the alert into the rolling story state so the next tick's
             # scorer sees 'the user already knows this — reply YES only if
             # advancing.' Failure is silent — the alert already went out.

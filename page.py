@@ -48,6 +48,8 @@ body{background:var(--paper);color:var(--ink);font:16px/1.5 var(--serif);
  font-family:var(--mono);font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink2)}
 .chip.cool{color:var(--cool);border-color:var(--cool)}
 .chip.warm{color:var(--warm);border-color:var(--warm)}
+.chip.link{border-color:var(--ink);color:var(--ink)}
+.chip.link:active{opacity:.55}
 .card{padding:20px 0;border-bottom:1px solid var(--rule)}
 .label{color:var(--ink);font-family:var(--serif);font-size:13px;letter-spacing:.13em;
  font-weight:700;text-transform:uppercase;display:flex;justify-content:space-between;align-items:baseline}
@@ -65,9 +67,6 @@ a.row:active{opacity:.55}
 .chev{color:var(--ink2);flex:0 0 auto}
 .as{color:var(--ink2);font-family:var(--mono);font-size:10px;font-weight:400;
  letter-spacing:.05em;text-transform:uppercase}
-.trk{padding:12px 0;border-top:1px solid var(--rule)}
-.trk:first-of-type{border-top:0}
-.trk .t{font-family:var(--serif);font-size:15px}
 .ask{display:block;border:1px solid var(--ink);padding:15px 16px;margin-top:18px}
 .ask:active{opacity:.55}
 .ask .h{font-family:var(--serif);font-weight:700;font-size:15px}
@@ -152,6 +151,31 @@ def _price_link(p: dict) -> str:
 
 _CHEV = ('<svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" '
          'stroke="currentColor" stroke-width="2.5"><path d="M9 6l6 6-6 6"/></svg>')
+
+# "Palmer is watching" caps: watches/price watches are user-authored and
+# usually few (1-3 typical), so 4 comfortably shows "everything" for most
+# users while bounding the worst case. Topics keeps the section's prior cap.
+WATCH_CHIP_CAP = 4
+PWATCH_CHIP_CAP = 4
+TOPIC_CHIP_CAP = 6
+CHIP_TEXT_MAX = 40
+
+
+def _chip_text(s: str, limit: int = CHIP_TEXT_MAX) -> str:
+    """Keyword-length chip text. Watch descriptions are short user-authored
+    phrases but nothing enforces that at write time, so this is the backstop."""
+    s = (s or "").strip()
+    return s if len(s) <= limit else s[:limit - 1].rstrip() + "…"
+
+
+def _chip(e, text: str, url: str | None) -> str:
+    """One tag/pill: an ink-bordered link when a source URL exists, a plain
+    muted chip otherwise. `e` is the caller's html.escape closure."""
+    label = e(_chip_text(text))
+    if url:
+        return (f'<a class="chip link" href="{e(url)}" target="_blank" '
+                f'rel="noopener noreferrer">{label} &#8599;</a>')
+    return f'<span class=chip>{label}</span>'
 
 
 def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
@@ -299,24 +323,31 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
     pwatches = tracking.get("price_watches") or []
     topics = tracking.get("topics") or []
     if watches or pwatches or topics:
-        out.append('<div class=card><div class=label>Palmer is watching</div>')
-        for w in watches:
-            out.append(f'<div class=trk><div class=t>{e(w.get("description", ""))}</div>'
-                       f'<div class=src>news watch</div></div>')
-        for w in pwatches:
-            bits = []
-            if w.get("last_seen") is not None:
-                bits.append(f'now ${w["last_seen"]:,.2f}')
-            if w.get("target") is not None:
-                bits.append(f'target ${w["target"]:,.2f}')
-            out.append(f'<div class=trk><div class=t>{e(w.get("product", ""))}</div>'
-                       f'<div class=src>{e(" · ".join(bits) or "price watch")}</div></div>')
-        if topics:
-            out.append(f'<div class=trk><div class=t>{e(", ".join(topics[:6]))}</div>'
-                       f'<div class=src>in your morning update'
-                       f'{e(" · " + tracking["morning_time"]) if tracking.get("morning_time") else ""}'
-                       f'</div></div>')
-        out.append("</div>")
+        ann = ""
+        if topics and tracking.get("morning_time"):
+            ann = f'<span class=as>morning &middot; {e(tracking["morning_time"])}</span>'
+        out.append(f'<div class=card><div class=label>Palmer is watching{ann}</div><div class=chips>')
+        for w in watches[:WATCH_CHIP_CAP]:
+            out.append(_chip(e, w.get("description", ""), w.get("url")))
+        for w in pwatches[:PWATCH_CHIP_CAP]:
+            product = _chip_text(w.get("product", ""), 28)
+            price, target = w.get("last_seen"), w.get("target")
+            if price is not None:
+                text = f'{product} ${price:,.2f}'
+            elif target is not None:
+                text = f'{product} → ${target:,.2f}'
+            else:
+                text = product
+            out.append(_chip(e, text, w.get("url")))
+        head_by_topic = {}
+        for h in heads:
+            key = h.get("topic")
+            if key and key not in head_by_topic:
+                head_by_topic[key] = h
+        for topic in topics[:TOPIC_CHIP_CAP]:
+            h = head_by_topic.get(topic)
+            out.append(_chip(e, topic, h.get("url") if h else None))
+        out.append("</div></div>")
 
     out.append('<div class=foot>Palmer keeps this current<br>tap anything to open the source</div>')
     out.append("</div></body></html>")

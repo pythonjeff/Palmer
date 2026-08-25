@@ -92,6 +92,23 @@ class TestWatchesSubjectDedup:
         mock_send.assert_called_once()
         mock_update.assert_called_once()
 
+    def test_alert_persists_the_fired_url_and_domain(self):
+        """The 'Palmer is watching' page section links a watch to the article
+        that fired it — update_watch_alerted must be called with that URL/domain,
+        not just the dedup title."""
+        with patch("watches.get_active_watches", return_value=[_watch()]), \
+             patch("watches._search_raw", return_value=_RAW_RESULTS), \
+             patch("watches._check_watch_hit", return_value=True), \
+             patch("watches._best_result", return_value=_RAW_RESULTS[0]), \
+             patch("watches._is_duplicate_subject", return_value=False), \
+             patch("watches.claim_watch_alert", return_value=True), \
+             patch("watches.update_watch_alerted") as mock_update, \
+             patch("sms_util.send_sms"):
+            watches.run_watches()
+        _, kwargs = mock_update.call_args
+        assert kwargs["url"] == "https://example1.com/a"
+        assert kwargs["domain"] == "example1.com"
+
 
 class TestAlertsSubjectDedup:
     def _profile(self):
