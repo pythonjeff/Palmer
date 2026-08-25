@@ -3,3 +3,10 @@ palmer.db
 venv/
 __pycache__/
 *.pyc
+
+# Local npm install of claude-code — not a Palmer dependency.
+# A committed package.json also makes Heroku detect a Node buildpack
+# and break the Python deploy.
+node_modules/
+package.json
+package-lock.json
