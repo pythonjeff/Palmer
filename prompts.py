@@ -231,6 +231,8 @@ Return a JSON object with only new or updated fields. Capture everything that bu
 
 IDENTITY FIRST. If they state their name in any form — "my name is Jeff", "I'm Jeff", "it's Jeff", "call me Jeff", or signing off with it — ALWAYS return it as "name", even when the answer feels too obvious to bother with, even when your reply already used the name, and even when you assume it must already be stored. Do not skip it because the profile above appears to have it; return it anyway. Their name is the single most-used field in the whole system and the most common one to be silently missing.
 
+LOCATION PRECISION. Only set "city" when they state where they currently live or are based right now — "I'm in Culver City", "just moved to Denver", "I live in Kirkwood, MO" — never from a place they merely mention in passing: a trip, a game they're watching, someone else's location, "traffic into LA", a flight itinerary, a place they used to live. If the existing profile already has a city and this message only glancingly touches a broader or different place — profile has "Culver City, CA" and they say "ugh, LA traffic today" — do NOT return city at all; leave the existing value alone. Only replace an existing city with a new one when they clearly say they've moved, or explicitly correct you ("I'm actually in Culver City, not just LA"). When you do set city, use the most specific place name they gave you — a neighborhood or suburb ("Culver City", "Astoria", "Evanston") over the metro name they might use informally ("LA", "NYC", "Chicago"). Include the state if they gave one.
+
 Canonical key names:
 - "city" (not location), "name", "timezone"
 - "sports_teams" (not favorite_teams/teams/sports)
@@ -255,6 +257,7 @@ Older messages:
 Return a JSON object merging durable facts into the profile. Update or add:
 - "life_summary": 2-4 sentences on who they are and what's going on
 - "ongoing_threads": list of open topics to follow up on later
-- Any specific fields from the extract schema (city, job, interests, relationships, etc.)
+- "city": only update from these older messages if they contain a clear, current statement of where the person lives — not a place mentioned in passing (travel, sports, traffic, someone else's location). If the existing profile's city is more specific than anything found here, leave it unchanged rather than replacing it with a broader mention.
+- Any other specific fields from the extract schema (job, interests, relationships, etc.)
 
 Only include fields with real new information. If nothing durable, return {{}}."""

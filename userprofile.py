@@ -167,6 +167,9 @@ def _apply_profile_updates(phone: str, profile: dict, updates: dict) -> dict:
         return profile
     updates = _canonical_updates(updates)
     new_city = updates.get("city")
+    old_city = profile.get("city")
+    if new_city and old_city and new_city != old_city:
+        print(f"profile: city changing for {phone!r}: {old_city!r} -> {new_city!r}")
     if new_city and not profile.get("timezone") and "timezone" not in updates:
         tz = _derive_timezone(new_city)
         if tz:

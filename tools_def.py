@@ -19,11 +19,11 @@ TOOLS = [
     },
     {
         "name": "get_weather",
-        "description": "Get accurate weather — current conditions or multi-day forecast. Use for ANY weather question. Pass the user's city from their profile if they don't specify a location.",
+        "description": "Get accurate weather — current conditions or multi-day forecast. Use for ANY weather question, never web_search.\n\nIf the user doesn't specify a location, pass their city from the profile block above — the exact value stored there, not a broader region you infer from conversation. If the user names a neighborhood, suburb, or specific city ('Culver City', 'Astoria', 'Evanston'), pass that exact place — never substitute the metro area it belongs to ('Los Angeles' for 'Culver City', 'New York' for 'Astoria', 'Chicago' for 'Evanston'). The geocoder takes the top fuzzy match for whatever string you send with no disambiguation of its own, so a vaguer name can silently return a different, nearby place's weather. If you genuinely don't know which specific place the user means, ask rather than guessing broader.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "location": {"type": "string", "description": "City name, e.g. 'Chicago' or 'New York'"},
+                "location": {"type": "string", "description": "The most specific place name known — a neighborhood/suburb/city exactly as the user or their profile states it, e.g. 'Culver City' not 'Los Angeles', 'Astoria' not 'New York'. Add state/country only to disambiguate a name that exists in multiple places."},
                 "when": {"type": "string", "description": "When: 'now', 'today', 'tomorrow', 'this weekend', 'next saturday', or a date like '2026-08-02'. Defaults to today."},
             },
             "required": ["location"],

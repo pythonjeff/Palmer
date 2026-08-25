@@ -151,3 +151,35 @@ class TestNameIsExtracted:
     def test_name_is_still_an_allowed_field(self):
         from userprofile import PROFILE_FIELDS
         assert "name" in PROFILE_FIELDS
+
+
+class TestCityPrecisionIsExtracted:
+    """A generic city mention ("LA traffic today") was overwriting a specific,
+    correct one ("Culver City, CA") already on file, because EXTRACT_PROMPT had
+    no rule distinguishing "where they live" from "a place they mentioned"."""
+
+    def test_the_schema_has_a_location_precision_rule(self):
+        from prompts import EXTRACT_PROMPT
+        assert "LOCATION PRECISION" in EXTRACT_PROMPT
+
+    def test_it_excludes_passing_mentions(self):
+        from prompts import EXTRACT_PROMPT
+        low = EXTRACT_PROMPT.lower()
+        for phrase in ("in passing", "traffic into la", "leave the existing value alone"):
+            assert phrase in low
+
+    def test_consolidate_prompt_also_guards_city(self):
+        from prompts import CONSOLIDATE_PROMPT
+        low = CONSOLIDATE_PROMPT.lower()
+        assert '"city"' in low and "leave it unchanged" in low
+
+
+class TestCityChangeIsLogged:
+    def test_city_regression_prints_old_and_new(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t3.db", raising=False)
+        db.init_db()
+        db.upsert_profile("+1557", {"city": "Culver City, CA"})
+        profile = db.get_profile("+1557")
+        userprofile._apply_profile_updates("+1557", profile, {"city": "Los Angeles"})
+        out = capsys.readouterr().out
+        assert "Culver City, CA" in out and "Los Angeles" in out
