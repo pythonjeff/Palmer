@@ -299,6 +299,36 @@ def _normalize_price_topic(topic: str) -> str:
     return f"{topic} ({symbol})" if symbol else topic
 
 
+# Weather topics name a place, and that place is the one every weather pull uses.
+_WEATHER_TOPIC_WORDS = ("weather", "forecast", "temperature")
+
+
+def _city_from_weather_topic(topic: str) -> str | None:
+    """The city a weather topic names, when it names one.
+
+    `profile["city"]` is not just where the user lives — it is the only input to
+    every weather pull Palmer makes (`home._fetch_weather`, the morning line,
+    the text briefing). A user who says "make my morning weather Culver City"
+    is setting that location, but they say it to update_morning_briefing, which
+    only ever wrote the topic string. The city field kept its old, broader value
+    and the page went on fetching the old city's forecast — which is how a user
+    in Culver City got three consecutive mornings of Los Angeles temperatures
+    with Culver City's name on them.
+
+    EXTRACT_PROMPT cannot cover this: its LOCATION PRECISION rule deliberately
+    only writes city from a statement of residence or an explicit correction,
+    and "I want weather for X" is neither. So the write has to happen here.
+
+    Costs a model call, on the same terms as _normalize_price_topic: topics are
+    added rarely and read on every page view, so this runs on save and never on
+    the read path."""
+    if not topic or not any(w in topic.lower() for w in _WEATHER_TOPIC_WORDS):
+        return None
+    # Local import: morning imports _build_system from here at module level.
+    from morning import _infer_city_from_topics
+    return _infer_city_from_topics([topic])
+
+
 def get_reply(phone_number: str, message: str, media_url: str = None, history: list[dict] | None = None, is_new_user: bool = False) -> tuple[str, str | None]:
     """Generate a reply. Returns (text, gif_url) — gif_url is None if no GIF was queued."""
     messages = history if history is not None else get_history(phone_number, limit=HISTORY_LIMIT)
@@ -367,13 +397,24 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
             elif b.name == "update_morning_briefing":
                 profile = get_profile(phone_number)
                 topics = list(profile.get("morning_topics") or [])
+                new_city = None
                 for item in (b.input.get("add") or []):
                     item = _normalize_price_topic(item)
+                    if new_city is None:
+                        new_city = _city_from_weather_topic(item)
                     if not any(item.lower() in t.lower() or t.lower() in item.lower() for t in topics):
                         topics.append(item)
                 for item in (b.input.get("remove") or []):
                     topics = [t for t in topics if item.lower() not in t.lower()]
                 updates: dict = {"morning_topics": topics, "morning_onboarded": True}
+                # Asking for a city's weather sets the city every weather pull
+                # uses. Timezone is deliberately left alone — it is only derived
+                # when absent, so this moves the forecast without moving the
+                # hour their morning arrives.
+                if new_city and new_city != profile.get("city"):
+                    updates["city"] = new_city
+                    print(f"city set from weather topic for {phone_number}: "
+                          f"{profile.get('city')!r} -> {new_city!r}")
                 if "enabled" in b.input:
                     updates["morning_enabled"] = b.input["enabled"]
                 upsert_profile(phone_number, updates)
@@ -382,7 +423,11 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 # cooldown lapses, which reads as "it didn't work".
                 try:
                     from home import invalidate
-                    invalidate(phone_number, ("prices",))
+                    # weather too when the city moved: the page caches it for 10
+                    # minutes, and a stale stamp would serve the old city's
+                    # forecast right after the user corrected it.
+                    invalidate(phone_number,
+                               ("prices", "weather") if updates.get("city") else ("prices",))
                 except Exception as e:
                     print(f"home.invalidate after briefing update failed: {e}")
                 topic_str = ", ".join(topics) if topics else "none"

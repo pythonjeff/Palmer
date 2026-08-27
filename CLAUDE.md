@@ -158,6 +158,41 @@ Two properties are load-bearing:
 
 Every failure falls back to the full text briefing (`generate_morning`, still used by `/preview?full=1`): no APP_URL, an empty page, or a failed draft. A user never gets a link to nothing.
 
+**The forecast is named by the geocode that produced it, never by the profile.**
+`_payload_digest` labels the weather line with `weather["resolved"]` — the place
+`weather_snapshot` actually fetched — falling back to `payload["city"]` only when
+that is absent. The two agree right up until `profile["city"]` drifts, and on that
+day this is the difference between a visible error and a lie: a user in Culver City
+got three consecutive mornings of Los Angeles temperatures (98, 100, 102 against
+local highs of 88, 89, 90) carrying the name Culver City. `weather.py` was innocent
+throughout — it forecast exactly the city it was handed.
+
+Two independent defects stacked, and both halves of the fix matter:
+
+- **Write.** He set his weather location by saying "I want the weather updates to be
+  specific to Culver City California", which routes to `update_morning_briefing` —
+  and that only ever wrote the topic string, so `profile["city"]` kept its older,
+  broader value. `EXTRACT_PROMPT` could not catch it either: LOCATION PRECISION
+  deliberately writes `city` only from a statement of residence or an explicit
+  correction, and a weather preference is neither. `agent._city_from_weather_topic`
+  now derives the city where the user actually sets it, on save, never on read —
+  same terms as `_normalize_price_topic`. It leaves `timezone` alone (that is only
+  derived when absent) so correcting a forecast cannot move the hour the morning
+  arrives, and it expires the cached `weather` section as well as `prices`, or the
+  10-minute stamp serves the old city's numbers immediately after the correction.
+- **Read.** The drafter was handed `Weather in Los Angeles: high 102` and wrote
+  "102 in Culver City today" anyway, reconciling the number against the Culver City
+  strings throughout the profile in its system prompt. Nothing stopped it: the line
+  prompt's only data rule was about numbers. The text briefing has carried the city
+  rule from the start ("name the city the forecast is for, exactly as it appears in
+  the data"); the one-line path that replaced it as the daily send never inherited
+  it, and now does.
+
+The write fix governs how often the city is wrong; the read fix governs what a wrong
+value can do. Only the second holds against a write path nobody has enumerated yet —
+"102 in Los Angeles" is read as wrong in one second, where the same number under the
+right city name is unfalsifiable from the message. `test_weather_city.py` guards both.
+
 ### One voice: all user-facing text goes through `_build_system`
 Anything the user reads is drafted with `agent._build_system(phone)` as the system prompt, on `SONNET_MODEL`. That is what carries SYSTEM_PROMPT, the CALIBRATION section, the user's `communication_style`, and their reaction history — so Palmer sounds like the same person everywhere.
 

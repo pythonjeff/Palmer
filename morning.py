@@ -365,7 +365,14 @@ def _payload_digest(payload: dict) -> str:
             bits.append(f"high {w['high']:.0f}, low {w['low']:.0f}")
         if w.get("rain_pct"):
             bits.append(f"{w['rain_pct']}% rain")
-        lines.append(f"Weather in {payload.get('city') or 'their city'}: " + ", ".join(bits))
+        # Label the forecast with the place it was actually fetched for, not the
+        # profile's city string. The two agree until profile["city"] drifts, and
+        # on the day it drifts this is what stops a Los Angeles temperature from
+        # going out under the name Culver City. `resolved` comes back from the
+        # same geocode that produced these numbers, so the name and the number
+        # cannot disagree.
+        where = w.get("resolved") or payload.get("city") or "their city"
+        lines.append(f"Weather in {where}: " + ", ".join(bits))
     t = payload.get("traffic") or {}
     if t.get("live_min"):
         delay = t.get("delay_min") or 0
@@ -435,6 +442,7 @@ Rules:
 - Write ONLY the sentence. The link is attached automatically after it. Do not write a URL, and do not leave a placeholder like [link] or (url) where you think one goes - anything like that ships to them as literal text.
 - Do not end with a question. The page is the ask.
 - Use the numbers from the data verbatim if you use one at all.
+- If you mention the weather, name the city exactly as the data writes it, and never pair a number with any other place. Their profile may call where they live something broader or narrower than the forecast does - the data wins. If the two disagree, the data is the one that was actually measured.
 - Palmer's voice. Plain ASCII, no emoji, no markdown, no bullets, no sign-off."""
 
     def _draft(correction: str = "") -> str:
