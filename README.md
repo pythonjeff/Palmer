@@ -52,7 +52,7 @@ Palmer is dry, quick, and observant. It's not an assistant and it's not a brand 
 | SMS/MMS | Twilio |
 | Web server | FastAPI on Heroku |
 | News + web search | Tavily |
-| Weather | OpenWeatherMap |
+| Weather | NWS (US), Open-Meteo (elsewhere) |
 | Traffic + routing | TomTom (Traffic Flow, Traffic Incidents, Routing, Search geocoding) |
 | Product prices + sale watches | SerpAPI Google Shopping |
 | Crypto prices | CoinGecko |
@@ -144,4 +144,4 @@ GET /preview?phone=+15551234567         # generate morning briefing without send
 - Proactive outbound is scheduled: **mornings** at each user's local time (5-min tick, catch-up window, per-day guard), **breaking-news alerts** every 60 min (score ≥ 8, 1–9pm local send window), **follow-ups** every 4h (Haiku picks one ongoing thread, Sonnet drafts, 1–7pm window, 3-day gap guard), and **missing-data asks** every 60 min for users onboarded without a city so mornings can target them (7-day cooldown, US-daytime UTC window; `DATA_ASK_DRY_RUN=1` to preview).
 - Reminder delivery uses `FOR UPDATE SKIP LOCKED` on Postgres — safe for multiple scheduler ticks, no double-sends.
 - Twilio webhook signatures (HMAC-SHA1) validated on every inbound request. All DB queries parameterized and scoped to phone number.
-- Tool routing is hard: `get_weather` → OWM only, `get_price` → CoinGecko/yfinance only, traffic tools → TomTom only, product price watches → SerpAPI only, web search → Tavily news mode. No overlap, no hallucinated data.
+- Tool routing is hard: `get_weather` → NWS/Open-Meteo only, `get_price` → CoinGecko/yfinance only, traffic tools → TomTom only, product price watches → SerpAPI only, web search → Tavily news mode. No overlap, no hallucinated data.

@@ -119,15 +119,19 @@ class TestSnapshots:
     """Structured returns are additive — the prose paths must be untouched."""
 
     def test_weather_snapshot_shape(self):
+        """The Open-Meteo branch, reached via non-US coords — US locations go to
+        NWS now (see test_weather_source.py). Patching _fetch_openmeteo alone is
+        not enough to keep this offline: with US coords it would route to NWS and
+        make a real call."""
         payload = {"current": {"temperature_2m": 81.0, "apparent_temperature": 84.0,
                                "weather_code": 3, "wind_speed_10m": 7.0,
                                "relative_humidity_2m": 55},
                    "daily": {"temperature_2m_max": [83.0], "temperature_2m_min": [64.0],
                              "precipitation_probability_max": [20],
                              "wind_gusts_10m_max": [12.0]}}
-        with patch.object(weather_mod, "_geocode", return_value=(38.5, -90.4, "Kirkwood, Missouri")), \
+        with patch.object(weather_mod, "_geocode", return_value=(48.86, 2.35, "Paris")), \
              patch.object(weather_mod, "_fetch_openmeteo", return_value=payload):
-            s = weather_mod.weather_snapshot("Kirkwood, MO")
+            s = weather_mod.weather_snapshot("Paris")
         assert s["temp_now"] == 81.0 and s["high"] == 83.0 and s["weather_code"] == 3
         assert s["description"]
 

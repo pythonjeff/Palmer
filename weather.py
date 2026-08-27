@@ -1,5 +1,5 @@
 """Weather: geocoding, NWS (US) and Open-Meteo (everywhere else)."""
-from datetime import datetime, timedelta, date as _date
+from datetime import datetime, timedelta, timezone, date as _date
 
 from netutil import _http_get_json_retry
 
@@ -82,22 +82,100 @@ def _resolve_day_delta(when: str, when_lower: str, tz: str | None = None) -> int
     except Exception:
         return None
 
+# Grid cells don't move either. /points is a pure coordinate -> grid lookup, so
+# cache it for the dyno's lifetime the way _geocode is cached — it saves a round
+# trip on every prose report and every snapshot refresh.
+_nws_points_cache: dict[tuple[float, float], dict] = {}
+
+
+def _nws_headers() -> dict:
+    return {"User-Agent": _NWS_USER_AGENT, "Accept": "application/geo+json"}
+
+
+def _nws_points(lat: float, lon: float) -> dict:
+    key = (round(lat, 4), round(lon, 4))
+    if key in _nws_points_cache:
+        return _nws_points_cache[key]
+    points = _http_get_json_retry(
+        f"https://api.weather.gov/points/{lat:.4f},{lon:.4f}",
+        params={}, timeout=8, headers=_nws_headers(),
+    )
+    props = (points or {}).get("properties") or {}
+    if not props.get("forecast"):
+        raise RuntimeError("NWS points response missing forecast URL")
+    _nws_points_cache[key] = props
+    return props
+
+
+def _mph(speed: str | None) -> float | None:
+    """NWS gives wind as prose ("5 to 10 mph"); the card and page format it as a
+    number. Take the top of a range — that is the figure people plan around."""
+    import re as _re
+    nums = _re.findall(r"\d+", speed or "")
+    return float(nums[-1]) if nums else None
+
+
+def _grid_now(series: dict) -> float | None:
+    """The gridpoint value covering now.
+
+    Entries are contiguous and ordered, so the last one that has already started
+    is the current one — which avoids parsing ISO-8601 durations (PT1H, P1DT6H)
+    just to find that out."""
+    now = datetime.now(timezone.utc)
+    best = None
+    for v in (series or {}).get("values") or []:
+        try:
+            start = datetime.fromisoformat((v.get("validTime") or "").split("/")[0])
+        except ValueError:
+            continue
+        if start <= now:
+            best = v.get("value")
+        else:
+            break
+    return best
+
+
+def _grid_max_today(series: dict, tz: str | None) -> float | None:
+    """Largest gridpoint value starting on the user's local today."""
+    from timeutil import local_today as _lt
+    target = _lt(tz)
+    vals = []
+    for v in (series or {}).get("values") or []:
+        try:
+            start = datetime.fromisoformat((v.get("validTime") or "").split("/")[0])
+        except ValueError:
+            continue
+        if start.astimezone(_zone(tz)).date() == target and v.get("value") is not None:
+            vals.append(v["value"])
+    return max(vals) if vals else None
+
+
+def _zone(tz: str | None):
+    from zoneinfo import ZoneInfo
+    try:
+        return ZoneInfo(tz) if tz else timezone.utc
+    except Exception:
+        return timezone.utc
+
+
+def _c_to_f(c: float | None) -> float | None:
+    return None if c is None else c * 9 / 5 + 32
+
+
+def _kmh_to_mph(k: float | None) -> float | None:
+    return None if k is None else k * 0.621371
+
+
 def _nws_report(lat: float, lon: float, resolved: str, when: str, when_lower: str,
                 is_now: bool, is_today: bool, tz: str | None = None) -> str:
     """US-only weather via api.weather.gov (NWS). Raises on any failure so the
     caller can fall back to Open-Meteo. `tz` scopes 'tomorrow'/weekday parsing to
     the user's local today (still respects NWS's own local-timezone startTime
     on the primary path)."""
-    headers = {"User-Agent": _NWS_USER_AGENT, "Accept": "application/geo+json"}
-    points = _http_get_json_retry(
-        f"https://api.weather.gov/points/{lat:.4f},{lon:.4f}",
-        params={}, timeout=8, headers=headers,
-    )
-    props = (points or {}).get("properties") or {}
+    headers = _nws_headers()
+    props = _nws_points(lat, lon)
     forecast_url = props.get("forecast")
     hourly_url = props.get("forecastHourly")
-    if not forecast_url:
-        raise RuntimeError("NWS points response missing forecast URL")
 
     forecast = _http_get_json_retry(forecast_url, params={}, timeout=10, headers=headers)
     periods = (forecast.get("properties") or {}).get("periods") or []
@@ -212,18 +290,101 @@ def _fetch_openmeteo(lat: float, lon: float) -> dict:
     )
 
 
-def weather_snapshot(location: str, tz: str | None = None) -> dict | None:
-    """Structured weather for the visual dashboard. None on any failure.
+def _nws_snapshot(lat: float, lon: float, resolved: str, tz: str | None = None) -> dict:
+    """Structured US weather from NWS. Raises on any failure so weather_snapshot
+    can fall back to Open-Meteo.
 
-    Deliberately always uses Open-Meteo, even for US locations where
-    _weather_report prefers NWS. The two sources are good at different jobs:
-    NWS writes better US narrative text ("isolated showers between 4pm and
-    5pm"), which is why the prose path wants it, while Open-Meteo returns clean
-    numbers plus a WMO `weather_code` that maps directly to which art to draw.
-    Prose keeps NWS; the dashboard uses this. Fully additive — no existing
-    branch changes, so the text briefing cannot regress."""
+    NWS is a forecaster product, not a raw model: the local office adjusts model
+    output for terrain and marine layer. That is the whole reason this exists.
+    For one August day in Culver City the raw models spread from 82 to 97 —
+    MeteoFrance 83, JMA 82, ICON 90, GEM 94, GFS 96, ECMWF 97, OpenWeatherMap 96
+    — because how far the marine layer pushes inland decides the answer and the
+    models disagree about it. NWS said 90 and Google (weather.com, also
+    human-tuned) said 87. The page had been showing raw GFS, so it read 96 while
+    the same user asking in chat got 90."""
+    headers = _nws_headers()
+    props = _nws_points(lat, lon)
+    forecast = _http_get_json_retry(props["forecast"], params={}, timeout=10, headers=headers)
+    periods = (forecast.get("properties") or {}).get("periods") or []
+    if not periods:
+        raise RuntimeError("NWS forecast returned no periods")
+
+    def _pdate(iso):
+        try:
+            return _date.fromisoformat((iso or "")[:10])
+        except Exception:
+            return None
+
+    today = _pdate(periods[0].get("startTime")) or _date.today()
+    todays = [p for p in periods if _pdate(p.get("startTime")) == today] or periods[:2]
+    day = next((p for p in todays if p.get("isDaytime")), None)
+    night = next((p for p in todays if not p.get("isDaytime")), None)
+    primary = day or night or todays[0]
+
+    hour = {}
+    if props.get("forecastHourly"):
+        try:
+            h = _http_get_json_retry(props["forecastHourly"], params={}, timeout=8, headers=headers)
+            hp = (h.get("properties") or {}).get("periods") or []
+            hour = hp[0] if hp else {}
+        except Exception:
+            hour = {}
+
+    # apparentTemperature and windGust live only on the gridpoint feed, in degC
+    # and km/h. Both are chips rather than the headline number, so a failure here
+    # drops the chip instead of the forecast.
+    feels = gusts = None
+    try:
+        grid = _http_get_json_retry(props["forecastGridData"], params={}, timeout=10,
+                                    headers=headers).get("properties") or {}
+        feels = _c_to_f(_grid_now(grid.get("apparentTemperature")))
+        gusts = _kmh_to_mph(_grid_max_today(grid.get("windGust"), tz))
+    except Exception as e:
+        print(f"NWS gridpoint extras unavailable for {resolved!r}: {type(e).__name__}: {e}")
+
+    pop = ((primary.get("probabilityOfPrecipitation") or {}).get("value"))
+    return {
+        "resolved": resolved,
+        "temp_now": hour.get("temperature", primary.get("temperature")),
+        "feels_like": feels,
+        "humidity": (hour.get("relativeHumidity") or {}).get("value"),
+        "wind": _mph(hour.get("windSpeed") or primary.get("windSpeed")),
+        "weather_code": None,
+        "description": (hour.get("shortForecast") or primary.get("shortForecast") or "").strip().lower(),
+        "high": day.get("temperature") if day else None,
+        "low": night.get("temperature") if night else None,
+        "rain_pct": int(round(pop)) if pop is not None else None,
+        "gusts": gusts,
+        "source": "nws",
+    }
+
+
+def weather_snapshot(location: str, tz: str | None = None) -> dict | None:
+    """Structured weather for the page, the card and the morning line. None on
+    any failure.
+
+    One source per user, and the same one the prose path uses: NWS where it has
+    coverage, Open-Meteo everywhere else. It used to be Open-Meteo everywhere,
+    which meant a US user's page and their chat answer came from different
+    sources and disagreed — 96 on the page against 90 in the thread, for the
+    same city on the same morning.
+
+    That split was justified by Open-Meteo's WMO `weather_code` mapping "directly
+    to which art to draw". The newspaper redesign removed the illustrated art
+    (see cards.py), so the reason had already lapsed — nothing outside this
+    module reads `weather_code` any more, and NWS covers every field the card
+    and page actually render.
+
+    Open-Meteo remains the fallback and is not going anywhere: it is the only
+    one of the two with coverage outside the US, and it catches an NWS outage."""
     try:
         lat, lon, resolved = _geocode(location)
+        if _is_us_coords(lat, lon):
+            try:
+                return _nws_snapshot(lat, lon, resolved, tz)
+            except Exception as e:
+                print(f"NWS snapshot failed for {location!r}, falling back: "
+                      f"{type(e).__name__}: {e}")
         data = _fetch_openmeteo(lat, lon)
         curr, daily = data["current"], data["daily"]
         code = curr.get("weather_code")
@@ -239,6 +400,7 @@ def weather_snapshot(location: str, tz: str | None = None) -> dict | None:
             "low": daily["temperature_2m_min"][0],
             "rain_pct": daily["precipitation_probability_max"][0],
             "gusts": (daily.get("wind_gusts_10m_max") or [None])[0],
+            "source": "open-meteo",
         }
     except Exception as e:
         print(f"weather_snapshot failed for {location!r}: {type(e).__name__}: {e}")
