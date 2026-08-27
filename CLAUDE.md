@@ -147,14 +147,16 @@ every morning) is `update_morning_briefing`, not a reminder. `set_reminder` with
 `recurrence` is a repeating **nudge to do something**. If Palmer has to look
 something up to write the message, it belongs in the morning update.
 
-### The morning update is a link, not a briefing
-`morning._compose_morning` sends ONE message: a single Palmer-drafted sentence, then the user's Palmer Home URL. The briefing itself is the page. It used to be the full text briefing plus a second text carrying the link — that said everything twice and burned two segments.
+### The morning update is basics plus a link, not a full briefing
+`morning._compose_morning` sends ONE message: a short Palmer-drafted text carrying the basics, then the user's Palmer Home URL. Every user gets the same shape — today's weather, the commute if they have an address on file, and 1-2 things newly open or worth catching nearby this week — so a user who never taps the link still gets those three every day. Anything beyond that (their tracked topics, prices, headlines) lives on the page only. It used to be a single one-line teaser ("here's a reason to tap"), and before that the full text briefing plus a second text carrying the link — both said less or said everything twice; this is the middle point.
 
 Two properties are load-bearing:
 - **The URL is last and alone.** Message apps only draw the rich link preview when the message carries exactly one URL at a boundary, and that preview is most of the value. Nothing may follow it — not a period, not a sign-off.
 - **`carries_link` gates the status callback.** A link message is sent with `add_status_callback=False`, because the `/sms-status` shorten-and-retry would truncate the URL into garbage.
 
-`generate_morning_line` drafts the sentence on Sonnet through `_build_system` like every other user-facing message. Two rules are enforced in code rather than trusted to the prompt, because the model breaks both: `_strip_link_placeholder` removes "[link]"-style stand-ins and any invented URL, and `_NAMES_THE_LINK` triggers exactly one redraft when the line says "page"/"link"/"dashboard" — that phrasing turns a text from a friend into a push notification.
+`generate_morning_line` drafts the text on Sonnet through `_build_system` like every other user-facing message. It builds a REQUIRED list from what the payload actually has (weather is basically always there once a city is known; commute only when `traffic` is populated, which only happens when the profile has an address; opening only when `opening_snapshot` returned rows) and tells the model every item on that list must appear — with real specifics, not a vague gesture at the category — plus at most one more sentence about something else on the page if it's genuinely notable. Two rules are enforced in code rather than trusted to the prompt, because the model breaks both: `_strip_link_placeholder` removes "[link]"-style stand-ins and any invented URL, and `_NAMES_THE_LINK` triggers exactly one redraft when the line says "page"/"link"/"dashboard" — that phrasing turns a text from a friend into a push notification.
+
+Opening is no longer opt-in for this reason — `home._fetch_opening` fetches it by default for any user with a city (a user can still be excluded with `morning_prefs.opening = False`). It shipped off at first specifically so a bad metro's rows could be caught with `preview_opening.py` before anyone saw them; that review still matters, it just now happens after rollout instead of gating it.
 
 Every failure falls back to the full text briefing (`generate_morning`, still used by `/preview?full=1`): no APP_URL, an empty page, or a failed draft. A user never gets a link to nothing.
 
@@ -303,9 +305,12 @@ Three things are load-bearing:
   locally pushed screens off the page entirely — which is not the section that
   was asked for.
 
-It ships **off** — `morning_prefs["opening"] is True` to enable, nested so it
-needs no `PROFILE_FIELDS` entry. The risk here is taste, not correctness, so
-judge it per metro with `preview_opening.py` before flipping the default.
+It ships **on** by default — the morning text is required to carry 1-2 opening
+highlights for every user, so this can no longer be opt-in. `morning_prefs["opening"]
+is False` excludes a specific user, nested so it needs no `PROFILE_FIELDS` entry.
+The risk here is taste, not correctness, so a bad metro is still worth checking
+with `preview_opening.py` — that review now happens after rollout rather than
+gating it.
 
 TMDB's terms require the notice *"This product uses the TMDB API but is not
 endorsed or certified by TMDB"* wherever their data appears; `page.py` renders it

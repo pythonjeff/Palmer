@@ -143,10 +143,16 @@ def _local_day(tz_name: str | None) -> str:
 
 
 def _price_link(p: dict) -> str:
-    label = p.get("label", "")
+    # `symbol` is the real coingecko id / Yahoo ticker (added to the payload by
+    # datafeeds.price_snapshot). `label` is a display string for humans — "S&P
+    # 500", "Avalanche", "Btc" — and building the link from it instead 404s for
+    # every index and most of _CRYPTO_IDS, where the slug the site actually
+    # uses doesn't match a naive lowercase of the label. Older cached payloads
+    # written before `symbol` existed fall back to the label as before.
+    symbol = p.get("symbol") or p.get("label", "")
     if p.get("is_crypto"):
-        return f"https://www.coingecko.com/en/coins/{quote(label.lower())}"
-    return f"https://finance.yahoo.com/quote/{quote(label.upper())}"
+        return f"https://www.coingecko.com/en/coins/{quote(symbol.lower())}"
+    return f"https://finance.yahoo.com/quote/{quote(symbol.upper())}"
 
 
 _CHEV = ('<svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" '

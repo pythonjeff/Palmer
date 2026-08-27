@@ -151,7 +151,7 @@ class _Resp:
     def __init__(self, t): self.content = [_Block(t)]
 
 
-def _draft_returning(*texts):
+def _draft_returning(*texts, payload=None):
     """Run the drafter against a scripted sequence of model outputs."""
     calls = []
 
@@ -163,7 +163,7 @@ def _draft_returning(*texts):
          patch.object(morning, "_build_system", return_value="sys"), \
          patch.object(morning, "_recent_assistant_texts", return_value=[]), \
          patch.object(morning.client.messages, "create", side_effect=_create):
-        return morning.generate_morning_line("+1555", PAYLOAD), calls
+        return morning.generate_morning_line("+1555", payload if payload is not None else PAYLOAD), calls
 
 
 class TestNamingTheLink:
@@ -233,6 +233,44 @@ class TestLineDiscipline:
 
     def test_the_prompt_also_warns_against_placeholders(self):
         assert "placeholder" in TestPrompt()._prompt()["messages"][0]["content"].lower()
+
+
+class TestRequiredContent:
+    """Every user's morning text carries the same basics — weather, commute
+    when they have an address on file, and 1-2 opening highlights — before
+    the link. Nothing here checks the model's actual output (that would just
+    be re-testing the mock); it checks that the prompt tells the model which
+    of those are mandatory, based on what the payload actually has."""
+
+    def _required_block(self, payload):
+        body = _draft_returning("Cool and clear, 22 min in, and Mamele's just opened.",
+                                 payload=payload)[1][0]["messages"][0]["content"]
+        return body
+
+    def test_weather_commute_and_opening_are_all_required_when_present(self):
+        payload = dict(PAYLOAD, opening=[{"title": "Mamele's", "subtitle": "new deli"}])
+        body = self._required_block(payload)
+        assert "so every one of them must appear" in body
+        assert "today's weather" in body
+        assert "the commute" in body
+        assert "newly open" in body
+
+    def test_commute_is_not_required_without_an_address(self):
+        payload = {k: v for k, v in PAYLOAD.items() if k != "traffic"}
+        body = self._required_block(payload)
+        assert "so every one of them must appear" in body
+        assert "the commute" not in body
+
+    def test_opening_is_not_required_without_data(self):
+        payload = {k: v for k, v in PAYLOAD.items() if k != "headlines"}
+        assert "opening" not in payload
+        body = self._required_block(payload)
+        assert "newly open" not in body
+
+    def test_no_structured_data_falls_back_to_a_plain_greeting_instruction(self):
+        body = self._required_block({})
+        assert "plain greeting is correct" in body
+        assert "so every one of them must appear" not in body
 
 
 class TestPrompt:

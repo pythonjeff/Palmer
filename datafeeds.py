@@ -148,6 +148,12 @@ def price_snapshot(asset: str, label: str | None = None) -> dict | None:
                 "pct_24h": data.get("usd_24h_change") or 0.0,
                 "pct_7d": data.get("usd_7d_change") or 0.0,
                 "series": series, "is_crypto": True,
+                # The actual CoinGecko coin id, e.g. "avalanche-2" for a topic
+                # that matched on "avax" or "avalanche" — page._price_link needs
+                # this to build a working coingecko.com URL. The display label
+                # ("Avalanche", "Btc") is not that id for most of _CRYPTO_IDS,
+                # so a link built from the label 404s.
+                "symbol": coin_id,
             }
 
         import yfinance as yf
@@ -167,6 +173,10 @@ def price_snapshot(asset: str, label: str | None = None) -> dict | None:
             "pct_24h": ((current - prev) / prev * 100) if prev else 0.0,
             "pct_7d": ((current - first) / first * 100) if first else 0.0,
             "series": closes, "is_crypto": False,
+            # The real Yahoo ticker, e.g. "^GSPC" for a topic that resolved to
+            # the S&P 500 — the label reads "S&P 500" for humans, but a Yahoo
+            # quote URL built from that string 404s. See the crypto branch.
+            "symbol": asset.upper(),
         }
     except Exception as e:
         print(f"price_snapshot failed for {asset!r}: {type(e).__name__}: {e}")

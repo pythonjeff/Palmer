@@ -222,6 +222,13 @@ class TestLabels:
     def test_crypto_labels_readably(self):
         assert resolve("bitcoin")[1] == "Bitcoin"
 
+    def test_crypto_alias_labels_readably_too(self):
+        """"Btc"/"Avax" (a naive title-case of the matched alias) used to reach
+        the page. The coingecko id behind the alias decides the real name."""
+        assert resolve("add BTC to my markets")[1] == "Bitcoin"
+        assert resolve("avax price")[1] == "Avalanche"
+        assert resolve("what's XRP at")[1] == "XRP"
+
 
 class TestPriceTopicGate:
     """Gates the paid fallback so ordinary news topics never trigger one."""

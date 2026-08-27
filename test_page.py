@@ -34,6 +34,26 @@ class TestNameKnown:
         assert "doesn't know your name" in _render(name="   ")
 
 
+class TestPriceLinks:
+    """The Markets row links out to coingecko.com / finance.yahoo.com. Those
+    links must be built from the real coingecko id / Yahoo ticker (`symbol`),
+    not the human-readable `label` — "S&P 500" and "Avalanche" are not the
+    slugs those sites use, so a link built from the label 404s."""
+
+    def test_crypto_link_uses_symbol_not_label(self):
+        p = {"label": "Avalanche", "symbol": "avalanche-2", "is_crypto": True}
+        assert page._price_link(p) == "https://www.coingecko.com/en/coins/avalanche-2"
+
+    def test_stock_link_uses_symbol_not_label(self):
+        p = {"label": "S&P 500", "symbol": "^GSPC", "is_crypto": False}
+        assert page._price_link(p) == "https://finance.yahoo.com/quote/%5EGSPC"
+
+    def test_falls_back_to_label_when_symbol_is_missing(self):
+        """A payload cached before `symbol` existed still renders a link."""
+        p = {"label": "NVDA", "is_crypto": False}
+        assert page._price_link(p) == "https://finance.yahoo.com/quote/NVDA"
+
+
 class TestPreviewTitle:
     """The og:title is the headline of the link preview in the thread — and the
     user-visible proof that Palmer stored the name rather than just reading it
