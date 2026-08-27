@@ -234,6 +234,22 @@ Company names are gated behind a price word, indices are not. Without that gate 
 
 `cards.MAX_PRICES` is the shared cap. Four columns fit the card's width but the sparklines start overdrawing the price text, so three is the real limit; `home._fetch_prices` imports the constant rather than keeping its own, since the card and the page render from one payload and must not disagree about how much of it survives.
 
+### Section labels are one word
+Every card label on Palmer Home is a single word — currently `Commute`,
+`Markets`, `News`, `Watching`. New sections follow the rule; there is no second
+tier for "just this one".
+
+It reads as a masthead rather than prose. "Today" and "Palmer is watching" used
+to sit beside "Commute" and "Markets", which made the column a mix of headings
+and a sentence, and the sentence was the one that looked like a product talking
+about itself.
+
+`cards.py` uses the same words in caps so the MMS preview and the page read as
+one publication — the two render from one payload and must not disagree about
+what a section is called. `test_page.py::TestSectionLabelsAreOneWord` reads the
+labels out of `page.py`'s markup and fails on a space in any of them, and also
+checks the card image kept in step.
+
 ### One list drives the morning and the page
 `morning_topics` is the single source for both the morning update and Palmer Home. A topic that resolves to a ticker becomes a live Markets row; everything else becomes a followed subject. So "add Apple stock to markets", "put Nvidia on my site" and "add Bitcoin to my morning" are all the same operation — `update_morning_briefing` — and its description and the `USE THE RIGHT TOOL` block say so explicitly, because users do not know they are one list.
 

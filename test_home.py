@@ -400,7 +400,7 @@ class TestRebuild:
 
 
 class TestTrackingLinks:
-    """The 'Palmer is watching' page section links out to a source — watches
+    """The 'Watching' page section links out to a source — watches
     expose the URL/domain that fired their last alert, price watches expose
     the merchant page they last saw a price on."""
 

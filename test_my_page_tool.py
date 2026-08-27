@@ -120,7 +120,7 @@ class TestPriceTopicNormalization:
     """"add Nvidia to my site" has to end up as something the Markets section
     can resolve. The drafting model often writes the ticker itself and
     sometimes doesn't, and the failure was silent — the topic appeared under
-    "Palmer is watching" with no price anywhere."""
+    "Watching" with no price anywhere."""
 
     def test_a_topic_the_map_already_covers_is_untouched(self):
         """No model call: it already resolves."""

@@ -94,14 +94,52 @@ class TestNameMissing:
         assert "<script>" not in _render(name="<script>alert(1)</script>")
 
 
+class TestSectionLabelsAreOneWord:
+    """Every card label on the page is a single word.
+
+    "Today" and "Palmer is watching" used to sit beside "Commute" and "Markets",
+    so the column read as a mix of headings and a sentence. One word each is the
+    rule now — it is a masthead, not prose, and the card image (cards.py) uses
+    the same words so the MMS preview and the page read as one publication.
+    """
+
+    def _labels(self) -> list[str]:
+        import inspect, re
+        import page as page_mod
+        # Labels are written straight into the markup, so read them from source
+        # rather than rendering every possible payload permutation.
+        src = inspect.getsource(page_mod)
+        return [m.strip() for m in re.findall(r"<div class=label>([^<{\']*)", src) if m.strip()]
+
+    def test_the_page_actually_has_labels_to_check(self):
+        assert len(self._labels()) >= 4, "regex stopped matching the markup"
+
+    def test_every_label_is_a_single_word(self):
+        for label in self._labels():
+            assert " " not in label, f"section label {label!r} must be one word"
+
+    def test_the_renamed_sections_use_the_new_words(self):
+        labels = self._labels()
+        assert "News" in labels and "Watching" in labels
+        assert "Today" not in labels
+
+    def test_the_card_image_uses_the_same_words(self):
+        """cards.py and page.py render from one payload and must not disagree
+        about what a section is called."""
+        import inspect
+        import cards
+        src = inspect.getsource(cards)
+        assert '"NEWS"' in src and '"TODAY"' not in src
+
+
 class TestWatchingSection:
-    """'Palmer is watching' is a row of keyword chips, each linked to a source
-    when one is known — a watch's last-fired article, a price watch's last-seen
-    merchant page, or (for topics) the matching 'Today' headline."""
+    """'Watching' is a row of keyword chips, each linked to a source when one
+    is known — a watch's last-fired article, a price watch's last-seen merchant
+    page, or (for topics) the matching 'News' headline."""
 
     def test_absent_when_nothing_is_tracked(self):
         html = _render(tracking={"watches": [], "price_watches": [], "topics": []})
-        assert "Palmer is watching" not in html
+        assert ">Watching" not in html
 
     def test_watch_with_a_url_renders_as_a_linked_chip(self):
         html = _render(tracking={"watches": [{"description": "Iran and US strikes",
