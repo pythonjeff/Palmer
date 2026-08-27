@@ -220,6 +220,29 @@ class TestTheCurationPromptKnowsTheDate:
         assert "St. Louis" in body
 
 
+class TestSubtitleDoesNotRepeatWhen:
+    """Real output on a live page: subtitle "Rock The Pageant, Friday" sitting
+    directly above a when/source line reading "Friday, August 29 ·
+    ticketmaster.com" — the day appeared in both fields for every event row
+    that week. The prompt must say plainly not to do that."""
+
+    def _prompt_for(self, candidates):
+        opening._clear_caches()
+        with patch.object(opening, "client") as cl:
+            cl.messages.create.return_value = _resp({"rows": []})
+            opening._curate("St. Louis", candidates)
+            return cl.messages.create.call_args.kwargs["messages"][0]["content"]
+
+    def test_prompt_forbids_repeating_the_day_between_fields(self):
+        body = self._prompt_for([{"title": "Todd Rundgren", "url": "https://t.com/1",
+                                  "blurb": "Rock The Pageant 2026-08-29"}]).lower()
+        assert "must never say the same thing twice" in body
+
+    def test_prompt_tells_subtitle_to_leave_the_day_to_when(self):
+        body = self._prompt_for([{"title": "x", "url": "https://t.com/1", "blurb": "b"}]).lower()
+        assert "the day already goes in `when`" in body
+
+
 class TestScreensBypassTheLocalGate:
     """Screens were being run through the local-openings curation prompt, whose
     rules reject anything "outside the metro" — so every movie was thrown away
