@@ -87,9 +87,10 @@ cp .env.example .env
 | `TWILIO_PHONE_NUMBER` | Your Twilio number (+15551234567) |
 | `TAVILY_API_KEY` | app.tavily.com |
 | `GIPHY_API_KEY` | developers.giphy.com (free) |
-| `OWM_API_KEY` | openweathermap.org (free tier) |
+| `TMDB_API_KEY` | themoviedb.org (free, non-commercial) — Opening section |
+| `TICKETMASTER_API_KEY` | developer.ticketmaster.com (free, 5k calls/day) — Opening section |
 | `TOMTOM_API_KEY` | developer.tomtom.com (free tier, ~2,500 requests/day) |
-| `SERP_API_KEY` | serpapi.com (100 free searches/mo, $50/mo for 5,000) |
+| `SERP_API_KEY` | serpapi.com (free plan is 250 searches/mo; paid from $50/mo for 5,000) |
 | `APP_URL` | Your deployed app URL (for Twilio status callbacks) |
 | `DATABASE_URL` | Postgres connection string (auto-set by Heroku) |
 
@@ -112,7 +113,7 @@ ngrok http 8000
 heroku create
 heroku addons:create heroku-postgresql:essential-0
 heroku config:set ANTHROPIC_API_KEY=... TWILIO_ACCOUNT_SID=... TWILIO_AUTH_TOKEN=... \
-  TWILIO_PHONE_NUMBER=... TAVILY_API_KEY=... GIPHY_API_KEY=... OWM_API_KEY=... \
+  TWILIO_PHONE_NUMBER=... TAVILY_API_KEY=... GIPHY_API_KEY=... \
   TOMTOM_API_KEY=... APP_URL=...
 heroku config:set WEB_CONCURRENCY=1
 git push heroku main

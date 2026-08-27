@@ -3,124 +3,830 @@
   "notes": "Curated source list. Tier 1 = premier newsrooms, wires, and primary/official publishers (.gov/.edu applied at runtime). Tier 2 = mainstream and reputable specialist outlets. Anything not listed is tier 3 — allowed as a last resort in conversation and the morning briefing, never on Palmer Home. 'blocked' is dropped outright at the search call. Topics tag intended domain expertise; not used at runtime yet, reserved for future topic-aware tiering. Edit this file to add or remove sources — no code change needed.",
   "blocked_notes": "Structural junk, not an editorial verdict on quality. Two kinds: (1) press-release wires, where the 'article' is a paid placement wearing a news layout, and (2) republishing aggregators, whose copy of a story is a worse link than the original that is almost always in the same result set. Do not add outlets here because their reporting is weak — that judgment ages badly. Demote them to tier 3 by leaving them off the allowlist instead.",
   "domains": [
-    {"domain": "apnews.com",           "tier": 1, "topics": ["general"]},
-    {"domain": "reuters.com",          "tier": 1, "topics": ["general", "finance", "politics"]},
-    {"domain": "afp.com",              "tier": 1, "topics": ["general"]},
-    {"domain": "bbc.com",              "tier": 1, "topics": ["general"]},
-    {"domain": "bbc.co.uk",            "tier": 1, "topics": ["general"]},
-    {"domain": "npr.org",              "tier": 1, "topics": ["general"]},
-    {"domain": "pbs.org",              "tier": 1, "topics": ["general"]},
-    {"domain": "nytimes.com",          "tier": 1, "topics": ["general"]},
-    {"domain": "washingtonpost.com",   "tier": 1, "topics": ["general", "politics"]},
-    {"domain": "wsj.com",              "tier": 1, "topics": ["general", "finance"]},
-    {"domain": "bloomberg.com",        "tier": 1, "topics": ["finance"]},
-    {"domain": "ft.com",               "tier": 1, "topics": ["finance"]},
-    {"domain": "cnbc.com",             "tier": 1, "topics": ["finance"]},
-    {"domain": "economist.com",        "tier": 1, "topics": ["general", "finance"]},
-    {"domain": "propublica.org",       "tier": 1, "topics": ["general", "politics"]},
-    {"domain": "aljazeera.com",        "tier": 1, "topics": ["general"]},
-    {"domain": "c-span.org",           "tier": 1, "topics": ["politics"]},
-    {"domain": "nature.com",           "tier": 1, "topics": ["science"]},
-    {"domain": "science.org",          "tier": 1, "topics": ["science"]},
-    {"domain": "nejm.org",             "tier": 1, "topics": ["health"]},
-    {"domain": "thelancet.com",        "tier": 1, "topics": ["health"]},
-    {"domain": "espn.com",             "tier": 1, "topics": ["sports"]},
-    {"domain": "theathletic.com",      "tier": 1, "topics": ["sports"]},
-
-    {"domain": "cnn.com",              "tier": 2, "topics": ["general"]},
-    {"domain": "nbcnews.com",          "tier": 2, "topics": ["general"]},
-    {"domain": "cbsnews.com",          "tier": 2, "topics": ["general"]},
-    {"domain": "abcnews.go.com",       "tier": 2, "topics": ["general"]},
-    {"domain": "theguardian.com",      "tier": 2, "topics": ["general"]},
-    {"domain": "usatoday.com",         "tier": 2, "topics": ["general"]},
-    {"domain": "latimes.com",          "tier": 2, "topics": ["general"]},
-    {"domain": "chicagotribune.com",   "tier": 2, "topics": ["general"]},
-    {"domain": "bostonglobe.com",      "tier": 2, "topics": ["general"]},
-    {"domain": "sfchronicle.com",      "tier": 2, "topics": ["general"]},
-    {"domain": "csmonitor.com",        "tier": 2, "topics": ["general"]},
-    {"domain": "time.com",             "tier": 2, "topics": ["general"]},
-    {"domain": "theatlantic.com",      "tier": 2, "topics": ["general"]},
-    {"domain": "newyorker.com",        "tier": 2, "topics": ["general"]},
-    {"domain": "axios.com",            "tier": 2, "topics": ["general", "politics"]},
-    {"domain": "semafor.com",          "tier": 2, "topics": ["general", "politics"]},
-    {"domain": "vox.com",              "tier": 2, "topics": ["general"]},
-    {"domain": "politico.com",         "tier": 2, "topics": ["politics"]},
-    {"domain": "thehill.com",          "tier": 2, "topics": ["politics"]},
-    {"domain": "rollcall.com",         "tier": 2, "topics": ["politics"]},
-    {"domain": "dw.com",               "tier": 2, "topics": ["general"]},
-    {"domain": "france24.com",         "tier": 2, "topics": ["general"]},
-    {"domain": "cbc.ca",               "tier": 2, "topics": ["general"]},
-    {"domain": "theglobeandmail.com",  "tier": 2, "topics": ["general"]},
-    {"domain": "abc.net.au",           "tier": 2, "topics": ["general"]},
-    {"domain": "smh.com.au",           "tier": 2, "topics": ["general"]},
-    {"domain": "japantimes.co.jp",     "tier": 2, "topics": ["general"]},
-    {"domain": "scmp.com",             "tier": 2, "topics": ["general"]},
-    {"domain": "thehindu.com",         "tier": 2, "topics": ["general"]},
-
-    {"domain": "marketwatch.com",      "tier": 2, "topics": ["finance"]},
-    {"domain": "barrons.com",          "tier": 2, "topics": ["finance"]},
-    {"domain": "forbes.com",           "tier": 2, "topics": ["finance"]},
-    {"domain": "fortune.com",          "tier": 2, "topics": ["finance"]},
-    {"domain": "businessinsider.com",  "tier": 2, "topics": ["general", "finance"]},
-    {"domain": "theinformation.com",   "tier": 2, "topics": ["tech", "finance"]},
-
-    {"domain": "techcrunch.com",       "tier": 2, "topics": ["tech"]},
-    {"domain": "arstechnica.com",      "tier": 2, "topics": ["tech"]},
-    {"domain": "theverge.com",         "tier": 2, "topics": ["tech"]},
-    {"domain": "wired.com",            "tier": 2, "topics": ["tech"]},
-    {"domain": "technologyreview.com", "tier": 2, "topics": ["tech", "science"]},
-    {"domain": "theregister.com",      "tier": 2, "topics": ["tech"]},
-    {"domain": "404media.co",          "tier": 2, "topics": ["tech"]},
-    {"domain": "engadget.com",         "tier": 2, "topics": ["tech"]},
-    {"domain": "tomshardware.com",     "tier": 2, "topics": ["tech"]},
-    {"domain": "venturebeat.com",      "tier": 2, "topics": ["tech"]},
-
-    {"domain": "scientificamerican.com","tier": 2, "topics": ["science"]},
-    {"domain": "newscientist.com",     "tier": 2, "topics": ["science"]},
-    {"domain": "quantamagazine.org",   "tier": 2, "topics": ["science"]},
-    {"domain": "sciencenews.org",      "tier": 2, "topics": ["science"]},
-    {"domain": "statnews.com",         "tier": 2, "topics": ["health"]},
-
-    {"domain": "si.com",               "tier": 2, "topics": ["sports"]},
-    {"domain": "cbssports.com",        "tier": 2, "topics": ["sports"]},
-    {"domain": "foxsports.com",        "tier": 2, "topics": ["sports"]},
-    {"domain": "theringer.com",        "tier": 2, "topics": ["sports"]},
-    {"domain": "sports.yahoo.com",     "tier": 2, "topics": ["sports"]},
-    {"domain": "mlb.com",              "tier": 2, "topics": ["sports"]},
-    {"domain": "nba.com",              "tier": 2, "topics": ["sports"]},
-    {"domain": "nfl.com",              "tier": 2, "topics": ["sports"]},
-    {"domain": "nhl.com",              "tier": 2, "topics": ["sports"]},
-
-    {"domain": "variety.com",          "tier": 2, "topics": ["entertainment"]},
-    {"domain": "hollywoodreporter.com","tier": 2, "topics": ["entertainment"]},
-    {"domain": "deadline.com",         "tier": 2, "topics": ["entertainment"]},
-    {"domain": "rollingstone.com",     "tier": 2, "topics": ["entertainment"]},
-    {"domain": "pitchfork.com",        "tier": 2, "topics": ["entertainment"]},
-    {"domain": "polygon.com",          "tier": 2, "topics": ["gaming"]},
-    {"domain": "eurogamer.net",        "tier": 2, "topics": ["gaming"]},
-    {"domain": "ign.com",              "tier": 2, "topics": ["gaming"]}
+    {
+      "domain": "404media.co",
+      "tier": 2,
+      "topics": [
+        "tech"
+      ]
+    },
+    {
+      "domain": "abc.net.au",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "abcnews.go.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "afp.com",
+      "tier": 1,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "aljazeera.com",
+      "tier": 1,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "apnews.com",
+      "tier": 1,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "arstechnica.com",
+      "tier": 2,
+      "topics": [
+        "tech"
+      ]
+    },
+    {
+      "domain": "axios.com",
+      "tier": 2,
+      "topics": [
+        "general",
+        "politics"
+      ]
+    },
+    {
+      "domain": "barrons.com",
+      "tier": 2,
+      "topics": [
+        "finance"
+      ]
+    },
+    {
+      "domain": "bbc.co.uk",
+      "tier": 1,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "bbc.com",
+      "tier": 1,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "billboard.com",
+      "tier": 2,
+      "topics": [
+        "entertainment"
+      ]
+    },
+    {
+      "domain": "bloomberg.com",
+      "tier": 1,
+      "topics": [
+        "finance"
+      ]
+    },
+    {
+      "domain": "bostonglobe.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "businessinsider.com",
+      "tier": 2,
+      "topics": [
+        "general",
+        "finance"
+      ]
+    },
+    {
+      "domain": "c-span.org",
+      "tier": 1,
+      "topics": [
+        "politics"
+      ]
+    },
+    {
+      "domain": "cbc.ca",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "cbsnews.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "cbssports.com",
+      "tier": 2,
+      "topics": [
+        "sports"
+      ]
+    },
+    {
+      "domain": "chicagoreader.com",
+      "tier": 2,
+      "topics": [
+        "local"
+      ]
+    },
+    {
+      "domain": "chicagotribune.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "cnbc.com",
+      "tier": 1,
+      "topics": [
+        "finance"
+      ]
+    },
+    {
+      "domain": "cnn.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "csmonitor.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "dallasnews.com",
+      "tier": 2,
+      "topics": [
+        "local"
+      ]
+    },
+    {
+      "domain": "deadline.com",
+      "tier": 2,
+      "topics": [
+        "entertainment"
+      ]
+    },
+    {
+      "domain": "denverpost.com",
+      "tier": 2,
+      "topics": [
+        "local"
+      ]
+    },
+    {
+      "domain": "dw.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "eater.com",
+      "tier": 2,
+      "topics": [
+        "local"
+      ]
+    },
+    {
+      "domain": "economist.com",
+      "tier": 1,
+      "topics": [
+        "general",
+        "finance"
+      ]
+    },
+    {
+      "domain": "engadget.com",
+      "tier": 2,
+      "topics": [
+        "tech"
+      ]
+    },
+    {
+      "domain": "espn.com",
+      "tier": 1,
+      "topics": [
+        "sports"
+      ]
+    },
+    {
+      "domain": "eurogamer.net",
+      "tier": 2,
+      "topics": [
+        "gaming"
+      ]
+    },
+    {
+      "domain": "forbes.com",
+      "tier": 2,
+      "topics": [
+        "finance"
+      ]
+    },
+    {
+      "domain": "fortune.com",
+      "tier": 2,
+      "topics": [
+        "finance"
+      ]
+    },
+    {
+      "domain": "foxsports.com",
+      "tier": 2,
+      "topics": [
+        "sports"
+      ]
+    },
+    {
+      "domain": "france24.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "ft.com",
+      "tier": 1,
+      "topics": [
+        "finance"
+      ]
+    },
+    {
+      "domain": "hollywoodreporter.com",
+      "tier": 2,
+      "topics": [
+        "entertainment"
+      ]
+    },
+    {
+      "domain": "ign.com",
+      "tier": 2,
+      "topics": [
+        "gaming"
+      ]
+    },
+    {
+      "domain": "japantimes.co.jp",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "laist.com",
+      "tier": 2,
+      "topics": [
+        "local"
+      ]
+    },
+    {
+      "domain": "latimes.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "marketwatch.com",
+      "tier": 2,
+      "topics": [
+        "finance"
+      ]
+    },
+    {
+      "domain": "mlb.com",
+      "tier": 2,
+      "topics": [
+        "sports"
+      ]
+    },
+    {
+      "domain": "nature.com",
+      "tier": 1,
+      "topics": [
+        "science"
+      ]
+    },
+    {
+      "domain": "nba.com",
+      "tier": 2,
+      "topics": [
+        "sports"
+      ]
+    },
+    {
+      "domain": "nbcnews.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "nejm.org",
+      "tier": 1,
+      "topics": [
+        "health"
+      ]
+    },
+    {
+      "domain": "newscientist.com",
+      "tier": 2,
+      "topics": [
+        "science"
+      ]
+    },
+    {
+      "domain": "newyorker.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "nfl.com",
+      "tier": 2,
+      "topics": [
+        "sports"
+      ]
+    },
+    {
+      "domain": "nhl.com",
+      "tier": 2,
+      "topics": [
+        "sports"
+      ]
+    },
+    {
+      "domain": "npr.org",
+      "tier": 1,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "nytimes.com",
+      "tier": 1,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "pbs.org",
+      "tier": 1,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "phillyvoice.com",
+      "tier": 2,
+      "topics": [
+        "local"
+      ]
+    },
+    {
+      "domain": "pitchfork.com",
+      "tier": 2,
+      "topics": [
+        "entertainment"
+      ]
+    },
+    {
+      "domain": "politico.com",
+      "tier": 2,
+      "topics": [
+        "politics"
+      ]
+    },
+    {
+      "domain": "polygon.com",
+      "tier": 2,
+      "topics": [
+        "gaming"
+      ]
+    },
+    {
+      "domain": "propublica.org",
+      "tier": 1,
+      "topics": [
+        "general",
+        "politics"
+      ]
+    },
+    {
+      "domain": "quantamagazine.org",
+      "tier": 2,
+      "topics": [
+        "science"
+      ]
+    },
+    {
+      "domain": "reuters.com",
+      "tier": 1,
+      "topics": [
+        "general",
+        "finance",
+        "politics"
+      ]
+    },
+    {
+      "domain": "rollcall.com",
+      "tier": 2,
+      "topics": [
+        "politics"
+      ]
+    },
+    {
+      "domain": "rollingstone.com",
+      "tier": 2,
+      "topics": [
+        "entertainment"
+      ]
+    },
+    {
+      "domain": "science.org",
+      "tier": 1,
+      "topics": [
+        "science"
+      ]
+    },
+    {
+      "domain": "sciencenews.org",
+      "tier": 2,
+      "topics": [
+        "science"
+      ]
+    },
+    {
+      "domain": "scientificamerican.com",
+      "tier": 2,
+      "topics": [
+        "science"
+      ]
+    },
+    {
+      "domain": "scmp.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "seattletimes.com",
+      "tier": 2,
+      "topics": [
+        "local"
+      ]
+    },
+    {
+      "domain": "semafor.com",
+      "tier": 2,
+      "topics": [
+        "general",
+        "politics"
+      ]
+    },
+    {
+      "domain": "sfchronicle.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "sfgate.com",
+      "tier": 2,
+      "topics": [
+        "local"
+      ]
+    },
+    {
+      "domain": "si.com",
+      "tier": 2,
+      "topics": [
+        "sports"
+      ]
+    },
+    {
+      "domain": "smh.com.au",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "sports.yahoo.com",
+      "tier": 2,
+      "topics": [
+        "sports"
+      ]
+    },
+    {
+      "domain": "statnews.com",
+      "tier": 2,
+      "topics": [
+        "health"
+      ]
+    },
+    {
+      "domain": "stltoday.com",
+      "tier": 2,
+      "topics": [
+        "local"
+      ]
+    },
+    {
+      "domain": "techcrunch.com",
+      "tier": 2,
+      "topics": [
+        "tech"
+      ]
+    },
+    {
+      "domain": "technologyreview.com",
+      "tier": 2,
+      "topics": [
+        "tech",
+        "science"
+      ]
+    },
+    {
+      "domain": "theathletic.com",
+      "tier": 1,
+      "topics": [
+        "sports"
+      ]
+    },
+    {
+      "domain": "theatlantic.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "theglobeandmail.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "theguardian.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "thehill.com",
+      "tier": 2,
+      "topics": [
+        "politics"
+      ]
+    },
+    {
+      "domain": "thehindu.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "theinformation.com",
+      "tier": 2,
+      "topics": [
+        "tech",
+        "finance"
+      ]
+    },
+    {
+      "domain": "thelancet.com",
+      "tier": 1,
+      "topics": [
+        "health"
+      ]
+    },
+    {
+      "domain": "theregister.com",
+      "tier": 2,
+      "topics": [
+        "tech"
+      ]
+    },
+    {
+      "domain": "theringer.com",
+      "tier": 2,
+      "topics": [
+        "sports"
+      ]
+    },
+    {
+      "domain": "theverge.com",
+      "tier": 2,
+      "topics": [
+        "tech"
+      ]
+    },
+    {
+      "domain": "thrillist.com",
+      "tier": 2,
+      "topics": [
+        "local"
+      ]
+    },
+    {
+      "domain": "time.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "timeout.com",
+      "tier": 2,
+      "topics": [
+        "local"
+      ]
+    },
+    {
+      "domain": "timeoutnewyork.com",
+      "tier": 2,
+      "topics": [
+        "local"
+      ]
+    },
+    {
+      "domain": "tomshardware.com",
+      "tier": 2,
+      "topics": [
+        "tech"
+      ]
+    },
+    {
+      "domain": "usatoday.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "variety.com",
+      "tier": 2,
+      "topics": [
+        "entertainment"
+      ]
+    },
+    {
+      "domain": "venturebeat.com",
+      "tier": 2,
+      "topics": [
+        "tech"
+      ]
+    },
+    {
+      "domain": "vox.com",
+      "tier": 2,
+      "topics": [
+        "general"
+      ]
+    },
+    {
+      "domain": "vulture.com",
+      "tier": 2,
+      "topics": [
+        "entertainment"
+      ]
+    },
+    {
+      "domain": "washingtonpost.com",
+      "tier": 1,
+      "topics": [
+        "general",
+        "politics"
+      ]
+    },
+    {
+      "domain": "wired.com",
+      "tier": 2,
+      "topics": [
+        "tech"
+      ]
+    },
+    {
+      "domain": "wsj.com",
+      "tier": 1,
+      "topics": [
+        "general",
+        "finance"
+      ]
+    }
   ],
   "blocked": [
-    {"domain": "prnewswire.com",       "why": "press release wire"},
-    {"domain": "businesswire.com",     "why": "press release wire"},
-    {"domain": "globenewswire.com",    "why": "press release wire"},
-    {"domain": "accesswire.com",       "why": "press release wire"},
-    {"domain": "einpresswire.com",     "why": "press release wire"},
-    {"domain": "einnews.com",          "why": "press release wire"},
-    {"domain": "prweb.com",            "why": "press release wire"},
-    {"domain": "newswire.com",         "why": "press release wire"},
-    {"domain": "openpr.com",           "why": "press release wire"},
-    {"domain": "prlog.org",            "why": "press release wire"},
-    {"domain": "issuewire.com",        "why": "press release wire"},
-    {"domain": "24-7pressrelease.com", "why": "press release wire"},
-    {"domain": "msn.com",              "why": "republishing aggregator"},
-    {"domain": "news.google.com",      "why": "republishing aggregator"},
-    {"domain": "biztoc.com",           "why": "republishing aggregator"},
-    {"domain": "newsbreak.com",        "why": "republishing aggregator"},
-    {"domain": "headtopics.com",       "why": "republishing aggregator"},
-    {"domain": "flipboard.com",        "why": "republishing aggregator"},
-    {"domain": "inkl.com",             "why": "republishing aggregator"},
-    {"domain": "smartnews.com",        "why": "republishing aggregator"},
-    {"domain": "newser.com",           "why": "republishing aggregator"}
+    {
+      "domain": "prnewswire.com",
+      "why": "press release wire"
+    },
+    {
+      "domain": "businesswire.com",
+      "why": "press release wire"
+    },
+    {
+      "domain": "globenewswire.com",
+      "why": "press release wire"
+    },
+    {
+      "domain": "accesswire.com",
+      "why": "press release wire"
+    },
+    {
+      "domain": "einpresswire.com",
+      "why": "press release wire"
+    },
+    {
+      "domain": "einnews.com",
+      "why": "press release wire"
+    },
+    {
+      "domain": "prweb.com",
+      "why": "press release wire"
+    },
+    {
+      "domain": "newswire.com",
+      "why": "press release wire"
+    },
+    {
+      "domain": "openpr.com",
+      "why": "press release wire"
+    },
+    {
+      "domain": "prlog.org",
+      "why": "press release wire"
+    },
+    {
+      "domain": "issuewire.com",
+      "why": "press release wire"
+    },
+    {
+      "domain": "24-7pressrelease.com",
+      "why": "press release wire"
+    },
+    {
+      "domain": "msn.com",
+      "why": "republishing aggregator"
+    },
+    {
+      "domain": "news.google.com",
+      "why": "republishing aggregator"
+    },
+    {
+      "domain": "biztoc.com",
+      "why": "republishing aggregator"
+    },
+    {
+      "domain": "newsbreak.com",
+      "why": "republishing aggregator"
+    },
+    {
+      "domain": "headtopics.com",
+      "why": "republishing aggregator"
+    },
+    {
+      "domain": "flipboard.com",
+      "why": "republishing aggregator"
+    },
+    {
+      "domain": "inkl.com",
+      "why": "republishing aggregator"
+    },
+    {
+      "domain": "smartnews.com",
+      "why": "republishing aggregator"
+    },
+    {
+      "domain": "newser.com",
+      "why": "republishing aggregator"
+    }
   ]
 }

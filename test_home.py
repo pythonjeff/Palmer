@@ -7,9 +7,11 @@ loaded. That bound is enforced by a `headlines_tried` stamp written whether the
 search succeeds, comes back empty, or raises — so every test below that touches
 headlines asserts on the stamp, not just on the data.
 
-Every test that lets a section go stale MUST patch `_fetch_headlines`. Leaving
-it unpatched makes a real Tavily call and the suite quietly starts costing money
-and seconds.
+Every test that lets a section go stale MUST patch the fetcher for it —
+`_fetch_headlines` and `_fetch_opening` are both paid. Leaving either unpatched
+makes a real call and the suite quietly starts costing money and seconds. Note
+`_payload` merges `fetched` rather than replacing it, so a test that stales one
+section does not accidentally stale every section added later.
 """
 import time
 from datetime import datetime, timezone
@@ -29,10 +31,18 @@ def _payload(**over):
     p = {"phone": "+1555", "city": "Kirkwood, MO",
          "weather": {"temp_now": 80}, "traffic": {"live_min": 17}, "prices": [],
          "headlines": [{"title": "old news"}],
+         "opening": [],
          "fetched": {"weather": now, "traffic": now, "prices": now,
-                     "headlines": now, "headlines_tried": now},
+                     "headlines": now, "headlines_tried": now,
+                     "opening": now, "opening_tried": now},
          "built_at": now}
+    # `fetched` merges rather than replaces: a test saying "weather is stale,
+    # news is recent" is not also saying "this payload predates every section
+    # added since". Replacing it wholesale meant a new section had no stamp,
+    # so its paid fetch fired for real and the suite quietly went to the network.
+    fetched = dict(p["fetched"], **over.pop("fetched", {}))
     p.update(over)
+    p["fetched"] = fetched
     return p
 
 

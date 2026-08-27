@@ -38,7 +38,7 @@ python send_reminders.py
 PALMER_NO_SCHEDULER=1 python -c "import main"
 ```
 
-`.env` variables (see README for full table): `ANTHROPIC_API_KEY`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`, `TAVILY_API_KEY`, `OWM_API_KEY`, `TOMTOM_API_KEY`, `GIPHY_API_KEY`, `APP_URL`, `DATABASE_URL` (optional locally — falls back to SQLite `palmer.db`).
+`.env` variables (see README for full table): `ANTHROPIC_API_KEY`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`, `TAVILY_API_KEY`, `SERP_API_KEY`, `TMDB_API_KEY`, `TICKETMASTER_API_KEY`, `TOMTOM_API_KEY`, `GIPHY_API_KEY`, `APP_URL`, `DATABASE_URL` (optional locally — falls back to SQLite `palmer.db`).
 
 ## Architecture that spans multiple files
 
@@ -233,6 +233,62 @@ Company names are gated behind a price word, indices are not. Without that gate 
 **A stale model must not veto live data.** `SYSTEM_PROMPT` forbids claiming a company is private, delisted, or hasn't IPO'd from memory, and `get_price` resolves company names through `tickers.resolve_asset_name` so the tool answers rather than 404ing on `"SPACEX"`. Palmer was refusing to add SpaceX and explaining it was private, which was simply false — and the failed lookup had confirmed its prior.
 
 `cards.MAX_PRICES` is the shared cap. Four columns fit the card's width but the sparklines start overdrawing the price text, so three is the real limit; `home._fetch_prices` imports the constant rather than keeping its own, since the card and the page render from one payload and must not disagree about how much of it survives.
+
+### Opening: metro-scoped weekly content
+`opening.py` feeds the `Opening` card — what is newly open or worth catching near
+the user this week, plus a couple of movies/shows. Three sources, **none of them
+SerpAPI**: Tavily for local press, Ticketmaster Discovery for dated events, TMDB
+for releases.
+
+SerpAPI was the obvious first guess and both candidate engines failed. Do not
+retry them. `google_events` returns `events_results_state: "Fully empty"` for
+every query, including SerpAPI's own documented Austin example with the
+`location` parameter. `google_local` works but is a proximity search with no
+`opened_date` field — asking it for "new restaurants" near Culver City returns
+Applebee's. Neither is an openings feed, and the account's free tier (250
+searches/month, already ~40% spent on price watches) could not have carried a
+per-user daily fetch regardless.
+
+**The section is metro-scoped and weekly, and that is the entire cost model.**
+"New restaurants in LA" is identical for every LA user; "movies out this week" is
+identical for everyone. `_local_cache` keys on a coarse lat/lon bucket (0.5°,
+~35mi, so Culver City and Woodland Hills share one fetch) plus ISO week;
+`_screen_cache` keys on the week alone. Two users in a metro cost one fetch, and
+adding users to a covered metro costs nothing. Same in-process pattern as
+`trends.py`, safe for the same reason — `WEB_CONCURRENCY=1`.
+
+Three things are load-bearing:
+
+- **Suburbs are dead ends for news search.** "New restaurants opening in Culver
+  City" returns nothing; the same query for Los Angeles returns the LA Times.
+  Nobody writes an openings column for a suburb. `_metro` resolves city → metro
+  on Haiku, once per city, cached — deliberately *not* a lookup table, which is
+  the mistake `tickers.py` made twice with `PRIVATE_COMPANIES`. Ticketmaster
+  sidesteps the problem entirely by taking `latlong` + radius instead of a name.
+- **The local outlets had to be added to `trusted_sources.json`.** Palmer Home
+  passes `trusted_only=True`, and Eater, Time Out, LAist, Thrillist and the city
+  dailies were all tier 3 — so before they were added the section returned
+  nothing, every time. `canonical_domain` folds subdomains, so one `eater.com`
+  entry covers `la.eater.com` and the rest.
+- **`_curate` is the taste gate, and it is the whole feature.** The upstreams are
+  a firehose: local press runs dining-week promos and listicles beside real
+  openings. Keyword filtering cannot work — the difference between "Mamele's
+  opened on Washington" and "15 best brunch spots" is editorial, not lexical. The
+  prompt applies a *different* test per kind, which matters: "would a paper run
+  this as 'X opens'" is right for a restaurant and wrong for a concert, and an
+  early version of it silently deleted every event. A sponsor's name on a real
+  festival is not an ad, and an annual festival in its Nth year is still a
+  festival.
+
+It ships **off** — `morning_prefs["opening"] is True` to enable, nested so it
+needs no `PROFILE_FIELDS` entry. The risk here is taste, not correctness, so
+judge it per metro with `preview_opening.py` before flipping the default.
+
+TMDB's terms require the notice *"This product uses the TMDB API but is not
+endorsed or certified by TMDB"* wherever their data appears; `page.py` renders it
+only when a screen row is actually present. **TMDB is free for non-commercial use
+only** — the same clause shape as Open-Meteo, and a question the day Palmer
+charges.
 
 ### Section labels are one word
 Every card label on Palmer Home is a single word — currently `Commute`,

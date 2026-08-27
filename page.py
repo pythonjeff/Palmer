@@ -155,6 +155,7 @@ _CHEV = ('<svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="non
 # "Watching" caps: watches/price watches are user-authored and
 # usually few (1-3 typical), so 4 comfortably shows "everything" for most
 # users while bounding the worst case. Topics keeps the section's prior cap.
+OPENING_ROW_CAP = 4
 WATCH_CHIP_CAP = 4
 PWATCH_CHIP_CAP = 4
 TOPIC_CHIP_CAP = 6
@@ -319,6 +320,25 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
                 out.append(f'<div class=row>{inner}</div>')
         out.append("</div>")
 
+    opening = payload.get("opening") or []
+    if opening:
+        out.append('<div class=card><div class=label>Opening'
+                   f'<span class=as>{e(_ago(fetched.get("opening")))}</span></div>')
+        for o in opening[:OPENING_ROW_CAP]:
+            sub = o.get("subtitle") or ""
+            # when and source share one muted line: "Friday - ticketmaster.com".
+            meta = " &middot; ".join(x for x in (o.get("when") or "", o.get("source") or "") if x)
+            inner = (f'<div><div class=tick>{e(o.get("title", ""))}</div>'
+                     f'{f"<div class=src>{e(sub)}</div>" if sub else ""}'
+                     f'{f"<div class=src>{e(meta)}</div>" if meta else ""}</div>')
+            url = o.get("url")
+            if url:
+                out.append(f'<a class=row href="{e(url)}" target="_blank" rel="noopener noreferrer">'
+                           f'{inner}{_CHEV}</a>')
+            else:
+                out.append(f'<div class=row>{inner}</div>')
+        out.append("</div>")
+
     watches = tracking.get("watches") or []
     pwatches = tracking.get("price_watches") or []
     topics = tracking.get("topics") or []
@@ -349,6 +369,12 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
             out.append(_chip(e, topic, h.get("url") if h else None))
         out.append("</div></div>")
 
-    out.append('<div class=foot>Palmer keeps this current<br>tap anything to open the source</div>')
+    out.append('<div class=foot>Palmer keeps this current<br>tap anything to open the source')
+    # Required by TMDB's terms wherever their data is shown. Rendered only when
+    # a screen row is actually on the page, so a user whose Opening section is
+    # all local does not get an unexplained third-party notice.
+    if any(o.get("kind") == "screen" for o in opening):
+        out.append('<br>This product uses the TMDB API but is not endorsed or certified by TMDB.')
+    out.append('</div>')
     out.append("</div></body></html>")
     return "".join(out)
