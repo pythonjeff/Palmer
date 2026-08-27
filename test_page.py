@@ -34,6 +34,23 @@ class TestNameKnown:
         assert "doesn't know your name" in _render(name="   ")
 
 
+class TestOpeningMetaSeparator:
+    """The when/source line renders a middle dot between its two parts. A live
+    page showed the literal text "&middot;" instead of "·" — e() ran on the
+    already-built line, escaping the entity's own "&" into "&amp;", which the
+    browser then displays as "&middot;" rather than decoding it."""
+
+    def test_renders_an_actual_middle_dot_not_the_entity_name(self):
+        html = _render(opening=[{"title": "Todd Rundgren", "when": "Friday",
+                                 "source": "ticketmaster.com"}])
+        assert "&middot;" in html, "the entity itself must still be emitted"
+        assert "&amp;middot;" not in html, "double-escaping ships literal text instead of a dot"
+
+    def test_the_untrusted_parts_are_still_escaped(self):
+        html = _render(opening=[{"title": "x", "when": "<script>bad</script>", "source": "y"}])
+        assert "<script>bad</script>" not in html
+
+
 class TestPriceLinks:
     """The Markets row links out to coingecko.com / finance.yahoo.com. Those
     links must be built from the real coingecko id / Yahoo ticker (`symbol`),
