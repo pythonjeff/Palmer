@@ -305,6 +305,35 @@ Three things are load-bearing:
   locally pushed screens off the page entirely — which is not the section that
   was asked for.
 
+**The three kinds are per-user, and users trim them by asking.** `local` (new
+places, bars, food), `event` (concerts, festivals, live shows) and `screen`
+(films and series out this week) are all on by default;
+`morning_prefs["opening_kinds"]` records the set only once a user actually
+changes it. "I want movie openings too" and "no more concerts" route to
+`update_morning_briefing`'s `opening_add` / `opening_remove` — deliberately the
+existing tool rather than a new one, because users already do not distinguish
+"my morning", "my page" and "markets", and a fourth verb for the same mental
+object would be a fifth thing to route wrong.
+
+The dispatch does **set arithmetic** on the stored list rather than asking the
+model to restate the whole set: "movies too" is additive, and a model
+re-deriving the full set from a profile dump eventually drops a kind nobody
+mentioned. Removing all three sets `opening = False`, so "take all that off" and
+the hard switch are one state rather than two the readers must reconcile.
+
+**Filtering happens after the caches, never inside them.** Both caches are keyed
+by metro and week and shared by every user there; narrowing a fetch to one
+user's taste would make the cache unshareable and turn N users back into N
+fetches. Fetching a row this user does not want costs nothing, because it was
+already cached for their neighbour — so `_curate` fills a deeper pool
+(`CURATE_POOL`) than any single user sees, and each user filters down from it. A
+kinds change expires the cached section, or they keep seeing the concerts they
+just asked to stop.
+
+`_metro` is resolved **inside** the cache-miss branch. It costs a model call and
+`opening_snapshot` runs on page views; on a hit there is nothing to search, so
+there is nothing to resolve it for.
+
 It ships **on** by default — the morning text is required to carry 1-2 opening
 highlights for every user, so this can no longer be opt-in. `morning_prefs["opening"]
 is False` excludes a specific user, nested so it needs no `PROFILE_FIELDS` entry.
