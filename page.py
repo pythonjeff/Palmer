@@ -152,7 +152,7 @@ def _price_link(p: dict) -> str:
 _CHEV = ('<svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" '
          'stroke="currentColor" stroke-width="2.5"><path d="M9 6l6 6-6 6"/></svg>')
 
-# "Palmer is watching" caps: watches/price watches are user-authored and
+# "Watching" caps: watches/price watches are user-authored and
 # usually few (1-3 typical), so 4 comfortably shows "everything" for most
 # users while bounding the worst case. Topics keeps the section's prior cap.
 WATCH_CHIP_CAP = 4
@@ -304,7 +304,7 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         out.append("</div>")
 
     if heads:
-        out.append('<div class=card><div class=label>Today'
+        out.append('<div class=card><div class=label>News'
                    f'<span class=as>{e(_ago(fetched.get("headlines")))}</span></div>')
         for h in heads:
             t_ = h.get("title", "")
@@ -326,7 +326,7 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         ann = ""
         if topics and tracking.get("morning_time"):
             ann = f'<span class=as>morning &middot; {e(tracking["morning_time"])}</span>'
-        out.append(f'<div class=card><div class=label>Palmer is watching{ann}</div><div class=chips>')
+        out.append(f'<div class=card><div class=label>Watching{ann}</div><div class=chips>')
         for w in watches[:WATCH_CHIP_CAP]:
             out.append(_chip(e, w.get("description", ""), w.get("url")))
         for w in pwatches[:PWATCH_CHIP_CAP]:

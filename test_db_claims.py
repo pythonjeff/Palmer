@@ -70,7 +70,7 @@ class TestClaimWatchAlert:
 
 
 class TestWatchAlertUrlPersistence:
-    """The 'Palmer is watching' page section links a watch to the article that
+    """The 'Watching' page section links a watch to the article that
     fired it, so update_watch_alerted must round-trip the URL/domain, not just
     the dedup title, and a watch that has never fired must stay linkless."""
 

@@ -93,7 +93,7 @@ class TestWatchesSubjectDedup:
         mock_update.assert_called_once()
 
     def test_alert_persists_the_fired_url_and_domain(self):
-        """The 'Palmer is watching' page section links a watch to the article
+        """The 'Watching' page section links a watch to the article
         that fired it — update_watch_alerted must be called with that URL/domain,
         not just the dedup title."""
         with patch("watches.get_active_watches", return_value=[_watch()]), \

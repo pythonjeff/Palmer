@@ -284,7 +284,7 @@ def _normalize_price_topic(topic: str) -> str:
     "add Nvidia to my site" has to end up as something tickers.py can resolve.
     It used to work only when the drafting model spontaneously wrote the symbol
     into the topic — which it often did, and sometimes didn't, and the failure
-    was silent: the topic showed under "Palmer is watching" with no price.
+    was silent: the topic showed under "Watching" with no price.
 
     This is the one place the resolution can cost a model call, because topics
     are added rarely and read on every page view. Returns the topic unchanged

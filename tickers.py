@@ -5,7 +5,7 @@ so "add Nvidia to my site" only shows a price if the topic can be resolved to a
 symbol. It used to be a bare uppercase-word regex, which meant the section
 populated only when the model happened to write the ticker into the topic
 itself — "Nvidia stock price (NVDA)" worked, "Nvidia stock" silently did not,
-and the user got the topic listed under "Palmer is watching" with no price
+and the user got the topic listed under "Watching" with no price
 anywhere. It also matched the "US" in "US stock market" and spent a yfinance
 call on a delisted symbol every time the page refreshed.
 

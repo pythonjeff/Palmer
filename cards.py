@@ -252,7 +252,7 @@ def render_dashboard(*, city: str, weather: dict | None, traffic: dict | None,
     if headlines:
         band = H - 90
         _hrule(d, PAD, W - PAD, band, fill=INK, width=1)
-        d.text((PAD, band + 10), "TODAY", font=_font(15, True), fill=MUTED)
+        d.text((PAD, band + 10), "NEWS", font=_font(15, True), fill=MUTED)
         f = _font(21)
         y = band + 32
         for h in headlines[:2]:
