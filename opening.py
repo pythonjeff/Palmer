@@ -42,10 +42,13 @@ TM_BASE = "https://app.ticketmaster.com/discovery/v2/events.json"
 
 # How many rows survive to the page. The section is a nudge, not a listings
 # magazine — four is already more than anyone reads under a weather card.
-MAX_ROWS = 4
-# Screens are national, so they are the part most likely to crowd out the local
-# rows that make this section worth having. Two, hard.
+# The section is a nudge, not a listings magazine. Five rows: up to three local
+# things and up to two screens, each with its own reserved allowance rather than
+# competing for one pool. They competed at first, and a good week locally pushed
+# screens off the page entirely — which is not the section that was asked for.
+MAX_LOCAL = 3
 MAX_SCREENS = 2
+MAX_ROWS = MAX_LOCAL + MAX_SCREENS
 # Radius for the events pull. 25 miles is a metro, not a neighbourhood, which
 # is deliberate: nobody picks a concert by how close it is to their street.
 EVENT_RADIUS_MI = 25
@@ -121,7 +124,7 @@ def _metro(city: str) -> str:
     return metro
 
 
-def _local_candidates(city: str) -> list[dict]:
+def _local_candidates(metro: str) -> list[dict]:
     """New-opening coverage from local press.
 
     There is no structured API for "restaurants that opened this month", but
@@ -132,7 +135,6 @@ def _local_candidates(city: str) -> list[dict]:
     """
     from datafeeds import _search_raw
     from sources import canonical_domain
-    metro = _metro(city)
     out = []
     for query in (f"new restaurant openings {metro}",
                   f"festivals and events happening in {metro} this week"):
@@ -164,7 +166,13 @@ def _events(lat: float, lon: float) -> list[dict]:
            f"&latlong={lat:.4f},{lon:.4f}&radius={EVENT_RADIUS_MI}&unit=miles"
            f"&startDateTime={start.strftime('%Y-%m-%dT%H:%M:%SZ')}"
            f"&endDateTime={end.strftime('%Y-%m-%dT%H:%M:%SZ')}"
-           f"&size=20&sort=relevance,desc")
+           f"&size=20&sort=relevance,desc"
+           # Music and Arts only. Unfiltered, a metro's next seven days are
+           # mostly regular-season ball games — eight Cardinals fixtures crowded
+           # out every concert in St. Louis — and a Tuesday home game is not
+           # something opening. Filtering here rather than in the prompt keeps
+           # the candidate list short and the curation call cheap.
+           f"&segmentName=Music&segmentName=Arts%20%26%20Theatre")
     data = _http_get_json(url, timeout=10)
     out = []
     for ev in ((data or {}).get("_embedded") or {}).get("events") or []:
@@ -221,16 +229,20 @@ def _screens() -> list[dict]:
     return out
 
 
-_CURATE_PROMPT = """You are picking rows for a section called "Opening" on someone's personal page. It answers one question: what is newly open or worth catching near them this week.
+_CURATE_PROMPT = """Today is {today}. Every date below is either this week or next; none of them are far away.
 
-Their city: {city}
+You are picking rows for a section called "Opening" on someone's personal page. It answers one question: what is newly open or worth catching near them this week.
+
+Their area: {city} — venues anywhere in this metro count as near them, including neighbouring towns and the central city.
 
 CANDIDATES (JSON):
 {candidates}
 
 Return JSON: {{"rows": [{{"title": "...", "subtitle": "...", "when": "...", "url": "...", "kind": "local|event|screen"}}]}}
 
-Pick at most {max_rows}, best first. Include at most 2 screens, so the section stays local.
+Pick up to {max_rows}, best first. If that many clear the bar, return that many — under-filling is as wrong as padding, and a metro with three good things happening should show three.
+
+Order matters: something happening in the next few days outranks something a month out, and a dated event outranks an article about a place. A named act at a named venue this week is one of the strongest rows this section can have.
 
 What earns a row:
 - A specific place that actually opened recently, named. A chef, a neighbourhood, a thing that distinguishes it.
@@ -248,9 +260,9 @@ What does not, ever:
 - Roundups and listicles — "15 best brunch spots", "your guide to". Those are not openings.
 - Promotional tie-ins and dining weeks — "Dine LA", "Restaurant Week", a segment where a chef visits a studio. The restaurant is real; the opening is not. This is about the piece being an ad, not about a sponsor being named.
 - Anywhere outside the metro named above. A different city's opening is noise no matter how good it is.
-- Ticket spam, tribute acts, bar covers bands, anything whose draw is that tickets exist.
+- Tribute acts and cover bands — "A Tribute to", "The Music of", "performs the hits of". A touring artist under their own name at a real venue is NOT this. That is one of the best rows this section can have, and it being on sale is not a mark against it.
 - Anything you cannot name specifically. If the source only says "several new restaurants", drop it.
-- Anything already closed, past, or older than about a month.
+- Anything already past relative to {today}, or coverage older than about a month. Judge that against the date at the top of this prompt and nothing else.
 
 Writing the row:
 - title: the name of the place, event or title. Nothing else. No city, no verb.
@@ -271,6 +283,13 @@ def _curate(city: str, candidates: list[dict]) -> list[dict]:
     keywords was never going to work — the difference between "Mamele's opened
     on Washington" and "15 best brunch spots in LA" is editorial, not lexical.
 
+    The prompt states today's date, and that is load-bearing rather than
+    decorative. Without it the model dates events against its training cutoff:
+    handed a concert on 2026-08-29 it called it "over a year away" and dropped
+    it under the stale-content rule, rejecting all seventeen candidates for a
+    metro whose week held Todd Rundgren, The Wallflowers and Ray LaMontagne.
+    It read as a taste problem and was a calendar problem.
+
     Runs once per metro per week behind the cache, never on a page view.
     """
     if not candidates:
@@ -281,7 +300,8 @@ def _curate(city: str, candidates: list[dict]) -> list[dict]:
             model=HAIKU_MODEL,
             max_tokens=900,
             messages=[{"role": "user", "content": _CURATE_PROMPT.format(
-                city=city, candidates=json.dumps(candidates)[:9000], max_rows=MAX_ROWS)}],
+                today=date.today().strftime("%A, %B %d, %Y"), city=city,
+                candidates=json.dumps(candidates)[:9000], max_rows=MAX_LOCAL)}],
         )
         parsed = _parse_json(resp.content[0].text) or {}
     except Exception as e:
@@ -289,12 +309,18 @@ def _curate(city: str, candidates: list[dict]) -> list[dict]:
         return []
 
     rows = []
-    for r in (parsed.get("rows") or [])[:MAX_ROWS]:
+    for r in (parsed.get("rows") or [])[:MAX_LOCAL]:
         title = (r.get("title") or "").strip()
         if not title:
             continue
+        # "screen" is reserved for TMDB rows, which are built in code below and
+        # never pass through here. Letting the model pick it meant a live
+        # theatre listing from Ticketmaster was tagged as a screen — and
+        # kind == "screen" is what puts TMDB's attribution on the page, so the
+        # page would have credited TMDB for data TMDB never supplied.
+        kind = r.get("kind") if r.get("kind") in ("local", "event") else "local"
         rows.append({
-            "kind": r.get("kind") or "local",
+            "kind": kind,
             "title": title[:80],
             "subtitle": (r.get("subtitle") or "").strip()[:90],
             "when": (r.get("when") or "").strip()[:32],
@@ -338,19 +364,24 @@ def opening_snapshot(profile: dict) -> list[dict]:
         print(f"opening: geocode failed for {city!r}: {type(e).__name__}: {e}")
         return []
 
+    # Resolve the metro once and use it for BOTH the search and the curation
+    # prompt. Handing the raw city to the prompt made the model reject its own
+    # metro: told "their city: Kirkwood, MO", it correctly dropped every venue
+    # in St. Louis as somewhere else, which is all of them.
+    metro = _metro(city)
     week = _week_key()
     key = (*_bucket(lat, lon), week)
     with _cache_lock:
         hit = _local_cache.get(key)
     if hit is None:
-        candidates = _local_candidates(city)
+        candidates = _local_candidates(metro)
         for ev in _events(lat, lon):
             candidates.append({"title": ev["title"], "url": ev.get("url"),
                                "source": "ticketmaster.com",
                                "blurb": " ".join(str(x) for x in
                                                  (ev.get("genre"), ev.get("venue"), ev.get("date"))
                                                  if x)})
-        hit = _curate(city, candidates)
+        hit = _curate(metro, candidates)
         with _cache_lock:
             _local_cache[key] = hit
 
@@ -372,4 +403,4 @@ def opening_snapshot(profile: dict) -> list[dict]:
         with _cache_lock:
             _screen_cache[week] = screens
 
-    return (hit + screens)[:MAX_ROWS]
+    return hit[:MAX_LOCAL] + screens[:MAX_SCREENS]

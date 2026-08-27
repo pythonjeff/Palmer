@@ -280,12 +280,28 @@ Three things are load-bearing:
   festival is not an ad, and an annual festival in its Nth year is still a
   festival.
 
+  **The prompt states today's date, and that is load-bearing.** Without it the
+  model dates events against its training cutoff: handed a concert on
+  2026-08-29 it called it "over a year away" and dropped it as stale, rejecting
+  all seventeen candidates for a St. Louis week holding Todd Rundgren, The
+  Wallflowers and Ray LaMontagne. It read as a taste problem for an hour and was
+  a calendar problem. The metro, not the raw city, also has to reach the prompt —
+  told "Kirkwood, MO", the model correctly rejects every venue in St. Louis as
+  somewhere else.
+
+  Events are filtered to Music and Arts & Theatre at the API. Unfiltered, a
+  metro's next seven days are mostly regular-season ball games, and a Tuesday
+  home fixture is not something opening.
+
   **Screens skip the gate entirely.** TMDB is already structured and already
   ranked by `vote_average`, so there is no firehose to filter — and running them
   through the local prompt threw away every title for being "outside the metro".
-  A taste gate that rejects its whole input is not a gate. Screens are capped at
-  2 (`MAX_SCREENS`) because they are national and would otherwise crowd out the
-  local rows that make the section worth having.
+  A taste gate that rejects its whole input is not a gate.
+
+  Local and screens hold **separate allowances** (`MAX_LOCAL` 3, `MAX_SCREENS`
+  2) rather than competing for one pool. They competed at first, and a good week
+  locally pushed screens off the page entirely — which is not the section that
+  was asked for.
 
 It ships **off** — `morning_prefs["opening"] is True` to enable, nested so it
 needs no `PROFILE_FIELDS` entry. The risk here is taste, not correctness, so

@@ -184,6 +184,42 @@ class TestTicketmasterParsing:
         http.assert_not_called()
 
 
+class TestTheCurationPromptKnowsTheDate:
+    """This presented as a taste failure and was a calendar failure.
+
+    Without today's date in the prompt, the model dates events against its
+    training cutoff. Handed a concert on 2026-08-29 it called it "over a year
+    away" and dropped it under the stale-content rule — rejecting all seventeen
+    candidates for a week that held Todd Rundgren, The Wallflowers and Ray
+    LaMontagne. The section looked like it had no taste; it had no calendar.
+    """
+
+    def _prompt_for(self, candidates):
+        opening._clear_caches()
+        with patch.object(opening, "client") as cl:
+            cl.messages.create.return_value = _resp({"rows": []})
+            opening._curate("St. Louis", candidates)
+            return cl.messages.create.call_args.kwargs["messages"][0]["content"]
+
+    def test_todays_date_is_in_the_prompt(self):
+        from datetime import date
+        body = self._prompt_for([{"title": "Todd Rundgren", "url": "https://t.com/1",
+                                  "blurb": "Rock The Pageant 2026-08-29"}])
+        assert date.today().strftime("%B") in body and str(date.today().year) in body
+
+    def test_the_staleness_rule_points_at_that_date(self):
+        """The rule has to be anchored to the stated date, not to the model's
+        own sense of now — that is the whole failure."""
+        body = self._prompt_for([{"title": "x", "url": "https://t.com/1", "blurb": "b"}]).lower()
+        assert "already past relative to" in body
+
+    def test_the_metro_reaches_the_prompt_not_the_suburb(self):
+        """Told "Kirkwood, MO", the model correctly rejects every venue in
+        St. Louis as somewhere else — which is all of them."""
+        body = self._prompt_for([{"title": "x", "url": "https://t.com/1", "blurb": "b"}])
+        assert "St. Louis" in body
+
+
 class TestScreensBypassTheLocalGate:
     """Screens were being run through the local-openings curation prompt, whose
     rules reject anything "outside the metro" — so every movie was thrown away
