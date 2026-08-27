@@ -9,9 +9,16 @@ stale, each class behind its own cooldown:
     prices    CoinGecko/yf  free    refresh if  >5 min stale
     identity  local DB      free    refresh every view
     headlines Tavily        $0.008  refresh if  >6 hr stale
+    opening   Tavily+TM+TMDB $0.008 refresh if >24 hr stale, shared per metro
 
 That table is the entire cost story. The page feels live because most of the
-live things are free; the one paid input is rate-limited by its own timestamp.
+live things are free; the paid inputs are rate-limited by their own timestamps.
+
+`opening` is the second paid input and it is metered differently, because its
+content is weekly and regional rather than personal: the fetch is cached by
+metro and ISO week inside opening.py, so every user in one city shares a single
+call and adding users in a city already covered costs nothing. Its Ticketmaster
+and TMDB halves are free; only the local-press search spends.
 
 The headline rule is the only one that costs money, so it is worth stating
 plainly: a refresh stamps `fetched.headlines_tried`, and the gate reads that
@@ -43,7 +50,8 @@ TTL_HOURS = 24 * 400          # effectively permanent; refreshed on every write
 # seconds before a section is worth refetching on view. None = never on view.
 # headlines is the only paid entry — see the cost note in the module docstring
 # for why it is 6h and how the window is enforced.
-STALE = {"weather": 600, "traffic": 300, "prices": 300, "headlines": 6 * 3600}
+STALE = {"weather": 600, "traffic": 300, "prices": 300, "headlines": 6 * 3600,
+         "opening": 24 * 3600}
 
 
 def home_token(phone: str) -> str:
@@ -185,6 +193,39 @@ def _fetch_headlines(profile: dict) -> list[dict]:
     return out
 
 
+def _fetch_opening(profile: dict) -> list[dict]:
+    """The second paid path, and the cheapest one per user.
+
+    opening.py caches by metro and week, so this is a real call for the first
+    user in a city each week and a dict lookup for everyone after them. A user
+    with no city returns [] without spending anything — see opening_snapshot.
+    """
+    # Off until the content is proven. The section's risk is taste, not
+    # correctness — a row listing a chain, a restaurant-week promo or a tribute
+    # band is worse than no section — so it ships dark and is judged per metro
+    # with preview_opening.py before the default flips. Nested under
+    # morning_prefs so it needs no PROFILE_FIELDS entry; a key outside that
+    # allow-list is silently dropped on write.
+    if not ((profile.get("morning_prefs") or {}).get("opening") is True):
+        return []
+    from opening import opening_snapshot
+    try:
+        return opening_snapshot(profile)
+    except Exception as e:
+        print(f"home opening fetch failed: {type(e).__name__}: {e}")
+        return []
+
+
+def _opening_stale(fetched: dict, now: float) -> bool:
+    """Whether a view may spend on the Opening section. Same two-stamp rule as
+    _headlines_stale: the attempt closes the window, not just the success."""
+    window = STALE.get("opening")
+    if window is None:
+        return False
+    tried = fetched.get("opening_tried") or fetched.get("opening") or 0
+    return (now - tried) >= window
+
+
 def _tracking(phone: str, profile: dict | None = None) -> dict:
     """What Palmer is keeping an eye on. This is what makes it a site he
     maintains rather than a daily snapshot.
@@ -234,12 +275,18 @@ def rebuild(phone: str, refresh_news: bool = True) -> dict:
         "prices": _fetch_prices(profile, previous.get("prices")),
         "headlines": _fetch_headlines(profile) if refresh_news
                      else (previous.get("headlines") or []),
+        "opening": _fetch_opening(profile) if refresh_news
+                   else (previous.get("opening") or []),
         "tracking": _tracking(phone, profile),
         "fetched": {"weather": now, "traffic": now, "prices": now,
                     "headlines": now if refresh_news
                                  else (previous.get("fetched", {}).get("headlines") or now),
                     "headlines_tried": now if refresh_news
-                                 else (previous.get("fetched", {}).get("headlines_tried") or now)},
+                                 else (previous.get("fetched", {}).get("headlines_tried") or now),
+                    "opening": now if refresh_news
+                               else (previous.get("fetched", {}).get("opening") or now),
+                    "opening_tried": now if refresh_news
+                               else (previous.get("fetched", {}).get("opening_tried") or now)},
         "built_at": now,
     }
     save(token, payload)
@@ -315,6 +362,19 @@ def refresh_stale(token: str, payload: dict) -> dict:
                 fetched["headlines"] = now
         except Exception as e:
             print(f"home refresh headlines failed: {e}")
+
+    if _opening_stale(fetched, now):
+        # Same tried-before-call stamp as headlines: a failed or empty fetch
+        # still closes the day's window, so a reload loop cannot re-spend.
+        fetched["opening_tried"] = now
+        changed = True
+        try:
+            rows = _fetch_opening(profile)
+            if rows:
+                payload["opening"] = rows
+                fetched["opening"] = now
+        except Exception as e:
+            print(f"home refresh opening failed: {e}")
 
     if changed:
         payload["fetched"] = fetched

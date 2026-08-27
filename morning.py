@@ -382,6 +382,9 @@ def _payload_digest(payload: dict) -> str:
         lines.append(f"{p.get('label')}: {p.get('pct_24h', 0):+.1f}% in 24h")
     for h in (payload.get("headlines") or [])[:4]:
         lines.append(f"Headline ({h.get('topic') or 'news'}): {h.get('title')}")
+    for o in (payload.get("opening") or [])[:3]:
+        bits = ", ".join(x for x in (o.get("subtitle"), o.get("when")) if x)
+        lines.append(f"Opening near them: {o.get('title')}" + (f" — {bits}" if bits else ""))
     return "\n".join(lines)
 
 

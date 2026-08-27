@@ -427,7 +427,8 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     # minutes, and a stale stamp would serve the old city's
                     # forecast right after the user corrected it.
                     invalidate(phone_number,
-                               ("prices", "weather") if updates.get("city") else ("prices",))
+                               ("prices", "weather", "opening")
+                               if updates.get("city") else ("prices",))
                 except Exception as e:
                     print(f"home.invalidate after briefing update failed: {e}")
                 topic_str = ", ".join(topics) if topics else "none"
