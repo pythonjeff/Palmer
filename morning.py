@@ -412,13 +412,22 @@ _NAMES_THE_LINK = re.compile(
 
 
 # How long the morning line may be. The link has to survive alongside it in one
-# segment-friendly message, and the whole point is that the detail lives on the
-# page — a long line here just duplicates what they are about to tap into.
-MORNING_LINE_MAX = 220
+# message, and the detail still lives on the page — this carries the basics
+# (weather, commute, opening), not the topics and headlines, which is why it
+# is longer than a single teaser sentence but well short of the old full
+# text briefing.
+MORNING_LINE_MAX = 420
 
 
 def generate_morning_line(phone: str, payload: dict) -> str:
-    """The one-sentence text that rides with the morning link.
+    """The short text that rides with the morning link.
+
+    Every user gets the same shape: today's weather, the commute if they have
+    an address on file, and 1-2 things newly open or worth catching nearby
+    this week — then the link. Anything else they track (a price move, a
+    headline) is an optional bonus on top when it's genuinely notable, never
+    a substitute for those three — the page is where the rest of what they
+    asked to track lives.
 
     Goes through `_build_system` like every other user-facing message, so it
     carries the user's calibration rather than a second, breezier Palmer."""
@@ -430,21 +439,36 @@ def generate_morning_line(phone: str, payload: dict) -> str:
     recent_block = ("\n\nThe last few things you sent them (do not reuse an opener "
                     "or phrasing from these):\n" + "\n---\n".join(recent)) if recent else ""
 
-    prompt = f"""Today is {today}. Write the ONE-LINE text that goes out with the link to their page this morning.
+    required = []
+    if payload.get("weather"):
+        required.append("today's weather")
+    if (payload.get("traffic") or {}).get("live_min"):
+        required.append("the commute")
+    if payload.get("opening"):
+        required.append("1-2 things newly open or worth catching near them this week, named specifically")
+    required_block = (
+        "REQUIRED — the data below has these, so every one of them must appear: "
+        + "; ".join(required) + "."
+    ) if required else "Nothing structured is loaded for them yet — a plain greeting is correct."
+
+    prompt = f"""Today is {today}. Write the short text that goes out with the link to their page this morning.
 
 What is on their page right now:
 {digest or "(nothing loaded yet)"}{recent_block}
 
-This is not the briefing. The briefing is the page — they are about to tap it and see all of this laid out. Your job is the line above the link.
+This is not the full briefing — the briefing is the page, they are about to tap it and see everything laid out, including whatever else they've asked Palmer to track. But this text is not a single teaser line either: it carries the basics itself, in Palmer's voice, and the link follows it.
+
+{required_block}
 
 Rules:
-- ONE sentence. Under {MORNING_LINE_MAX} characters. Shorter is better.
-- Greet them and give them ONE reason to tap: the single most notable thing on the page today. Pick the thing that actually changed or that they'd act on - a real weather swing, a bad commute, a big move on something they track, the one headline that matters. If nothing stands out, a plain greeting is correct - do not manufacture drama.
-- Do NOT list. Do NOT summarize the page. Do NOT cover two topics. One thing, or none.
+- Cover every REQUIRED item above, in your own words, with real specifics — the actual temperature, the actual commute time, the actual name of the place or event. Never gesture at a category ("some stuff opened nearby") instead of naming it.
+- Weave the required items into two or three short sentences that read like a friend talking, not a bulleted list and not separate labeled lines.
+- Beyond the required items, you may add ONE more sentence about something else on the page (a price move, a headline) ONLY if it is genuinely notable — a real change, not routine. Skip it rather than padding; this text is basics plus link, not the briefing.
+- Under {MORNING_LINE_MAX} characters total. Tight and scannable, not a wall of text.
 - Never say the word "link", "page", "dashboard", "site", or "click" - the link speaks for itself and naming it makes this sound like a product notification.
-- Write ONLY the sentence. The link is attached automatically after it. Do not write a URL, and do not leave a placeholder like [link] or (url) where you think one goes - anything like that ships to them as literal text.
+- Write ONLY the text. The link is attached automatically after it. Do not write a URL, and do not leave a placeholder like [link] or (url) where you think one goes - anything like that ships to them as literal text.
 - Do not end with a question. The page is the ask.
-- Use the numbers from the data verbatim if you use one at all.
+- Use the numbers from the data verbatim.
 - If you mention the weather, name the city exactly as the data writes it, and never pair a number with any other place. Their profile may call where they live something broader or narrower than the forecast does - the data wins. If the two disagree, the data is the one that was actually measured.
 - Palmer's voice. Plain ASCII, no emoji, no markdown, no bullets, no sign-off."""
 
@@ -481,11 +505,16 @@ Rules:
 
 
 def _compose_morning(phone: str) -> tuple[str, bool]:
-    """The morning message: one short line, then the link to their page.
+    """The morning message: weather, commute if they have one, 1-2 opening
+    highlights, then the link to their page.
 
     The full briefing used to be the message and the link followed as a second
     text. It is one message now because the page IS the briefing — sending both
-    meant saying everything twice and burning two segments to do it.
+    meant saying everything twice and burning two segments to do it. The text
+    still carries the basics itself rather than being a bare teaser, so a user
+    who never taps the link still gets the three things everyone gets every
+    day; anything beyond that (their tracked topics, prices, headlines) lives
+    on the page only.
 
     The URL goes last and alone at the end of the message. Link previews only
     render when a message carries exactly one URL at a boundary, and that

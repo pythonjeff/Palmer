@@ -143,10 +143,16 @@ def _local_day(tz_name: str | None) -> str:
 
 
 def _price_link(p: dict) -> str:
-    label = p.get("label", "")
+    # `symbol` is the real coingecko id / Yahoo ticker (added to the payload by
+    # datafeeds.price_snapshot). `label` is a display string for humans — "S&P
+    # 500", "Avalanche", "Btc" — and building the link from it instead 404s for
+    # every index and most of _CRYPTO_IDS, where the slug the site actually
+    # uses doesn't match a naive lowercase of the label. Older cached payloads
+    # written before `symbol` existed fall back to the label as before.
+    symbol = p.get("symbol") or p.get("label", "")
     if p.get("is_crypto"):
-        return f"https://www.coingecko.com/en/coins/{quote(label.lower())}"
-    return f"https://finance.yahoo.com/quote/{quote(label.upper())}"
+        return f"https://www.coingecko.com/en/coins/{quote(symbol.lower())}"
+    return f"https://finance.yahoo.com/quote/{quote(symbol.upper())}"
 
 
 _CHEV = ('<svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" '
@@ -332,10 +338,14 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         for o in opening[:OPENING_ROW_CAP]:
             sub = o.get("subtitle") or ""
             # when and source share one muted line: "Friday - ticketmaster.com".
-            meta = " &middot; ".join(x for x in (o.get("when") or "", o.get("source") or "") if x)
+            # Escape each piece before joining with the raw entity, not after —
+            # e() on the joined string turns "&middot;" into "&amp;middot;",
+            # which ships to the page as the literal text "&middot;" instead of
+            # a middle dot.
+            meta = " &middot; ".join(e(x) for x in (o.get("when") or "", o.get("source") or "") if x)
             inner = (f'<div><div class=tick>{e(o.get("title", ""))}</div>'
                      f'{f"<div class=src>{e(sub)}</div>" if sub else ""}'
-                     f'{f"<div class=src>{e(meta)}</div>" if meta else ""}</div>')
+                     f'{f"<div class=src>{meta}</div>" if meta else ""}</div>')
             url = o.get("url")
             if url:
                 out.append(f'<a class=row href="{e(url)}" target="_blank" rel="noopener noreferrer">'

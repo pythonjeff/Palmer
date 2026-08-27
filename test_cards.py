@@ -169,6 +169,29 @@ class TestSnapshots:
         assert s["price"] == 77752.0 and s["is_crypto"] is True
         assert len(s["series"]) == 2
 
+    def test_price_snapshot_crypto_symbol_is_the_real_coingecko_id(self):
+        """`asset` here is the alias a topic matched on ("avax"), not the
+        coingecko id. The page builds coingecko.com links from `symbol`, so it
+        must carry the resolved id ("avalanche-2"), not the alias — a link
+        built from the alias 404s."""
+        resp = MagicMock()
+        resp.json.return_value = {"avalanche-2": {"usd": 20.0, "usd_24h_change": 1.0}}
+        resp.raise_for_status = lambda: None
+        with patch.object(datafeeds, "_requests") as rq:
+            rq.get.side_effect = [resp, RuntimeError("chart down")]
+            s = datafeeds.price_snapshot("avax", "Avalanche")
+        assert s["symbol"] == "avalanche-2"
+
+    def test_price_snapshot_stock_symbol_is_the_real_ticker(self):
+        """An index's `label` is a human string ("S&P 500"); `symbol` must stay
+        the actual Yahoo ticker ("^GSPC") so the page's link works."""
+        ticker = MagicMock()
+        ticker.fast_info.last_price = 5000.0
+        ticker.history.return_value.empty = True
+        with patch("yfinance.Ticker", return_value=ticker):
+            s = datafeeds.price_snapshot("^GSPC", "S&P 500")
+        assert s["symbol"] == "^GSPC" and s["label"] == "S&P 500"
+
     def test_price_snapshot_survives_missing_sparkline(self):
         resp = MagicMock()
         resp.json.return_value = {"bitcoin": {"usd": 100.0, "usd_24h_change": 0.0}}

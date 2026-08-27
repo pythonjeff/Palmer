@@ -119,6 +119,21 @@ def _label_for(symbol: str) -> str:
     return INDEX_LABELS.get(symbol, symbol)
 
 
+# coingecko id -> how it should read on the page. Without this the label was
+# `alias.title()` — "Btc", "Avax", "Xrp" for anyone who typed the short form,
+# and even the full name didn't always help: "avalanche".title() is "Avalanche"
+# but avalanche's actual coingecko id is "avalanche-2", so building a link from
+# a naive title-cased label 404s for exactly the entries below.
+_CRYPTO_LABELS = {
+    "bitcoin": "Bitcoin", "ethereum": "Ethereum", "dogecoin": "Dogecoin",
+    "solana": "Solana", "cardano": "Cardano", "ripple": "XRP",
+    "litecoin": "Litecoin", "avalanche-2": "Avalanche", "matic-network": "Polygon",
+    "shiba-inu": "Shiba Inu", "binancecoin": "BNB", "chainlink": "Chainlink",
+    "polkadot": "Polkadot", "uniswap": "Uniswap", "stellar": "Stellar",
+    "monero": "Monero",
+}
+
+
 def resolve_topic_asset(topic: str) -> tuple[str, str] | None:
     """(symbol, display_label) for a topic that is asking for a price, else None.
 
@@ -128,9 +143,9 @@ def resolve_topic_asset(topic: str) -> tuple[str, str] | None:
         return None
     low = topic.lower()
 
-    for name in _CRYPTO_IDS:
+    for name, coin_id in _CRYPTO_IDS.items():
         if re.search(rf"\b{re.escape(name)}\b", low):
-            return name, name.title()
+            return name, _CRYPTO_LABELS.get(coin_id, name.title())
 
     m = _EXPLICIT_SYMBOL.search(topic)
     if m:

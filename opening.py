@@ -266,10 +266,11 @@ What does not, ever:
 
 Writing the row:
 - title: the name of the place, event or title. Nothing else. No city, no verb.
-- subtitle: at most 8 words on why it is worth knowing. Concrete, not promotional. Never "a must-visit" or "don't miss".
-- when: short and human — "opened this week", "Friday", "in theaters", "streaming now". Empty string if you genuinely don't know.
+- subtitle: at most 8 words on why it is worth knowing. Concrete, not promotional. Never "a must-visit" or "don't miss". For an EVENT this is usually just the venue name, nothing else — the day already goes in `when`, so do not repeat "Friday" or a date here too. For a PLACE, say what makes it distinct (a chef, a neighborhood, a dish) rather than restating the venue name from the title.
+- when: short and human — a day name for something dated this week ("Friday"), or "opened this week", "in theaters", "streaming now". Pick ONE form, not both — "Friday" on its own is enough; do not also add the date ("Friday, August 29").
 - url: copy verbatim from the candidate. Never invent one.
 - Plain ASCII. No emoji, no markdown, no exclamation marks.
+- subtitle and when must never say the same thing twice between them — if you catch yourself writing the same day, date, or venue in both fields, cut it from subtitle.
 
 If nothing clears the bar, return {{"rows": []}}. An empty section is correct and normal; a padded one is not."""
 

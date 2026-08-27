@@ -439,6 +439,30 @@ class TestRebuild:
         assert t["topics"], "topics come from the profile and should survive"
 
 
+class TestOpeningDefault:
+    """Opening is on by default — the morning text now requires 1-2 opening
+    highlights for every user with a city, so this can no longer be opt-in.
+    A user can still be excluded with morning_prefs.opening = False."""
+
+    def test_opening_fetches_by_default(self):
+        with patch("opening.opening_snapshot", return_value=[{"title": "Mamele's"}]) as snap:
+            rows = home._fetch_opening({"city": "Kirkwood, MO"})
+        snap.assert_called_once()
+        assert rows == [{"title": "Mamele's"}]
+
+    def test_opening_still_fetches_for_a_profile_with_no_prefs_at_all(self):
+        with patch("opening.opening_snapshot", return_value=[]) as snap:
+            home._fetch_opening({"city": "Kirkwood, MO"})
+        snap.assert_called_once()
+
+    def test_explicit_false_opts_a_user_out(self):
+        profile = {"city": "Kirkwood, MO", "morning_prefs": {"opening": False}}
+        with patch("opening.opening_snapshot") as snap:
+            rows = home._fetch_opening(profile)
+        snap.assert_not_called()
+        assert rows == []
+
+
 class TestTrackingLinks:
     """The 'Watching' page section links out to a source — watches
     expose the URL/domain that fired their last alert, price watches expose

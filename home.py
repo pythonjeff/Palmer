@@ -200,13 +200,16 @@ def _fetch_opening(profile: dict) -> list[dict]:
     user in a city each week and a dict lookup for everyone after them. A user
     with no city returns [] without spending anything — see opening_snapshot.
     """
-    # Off until the content is proven. The section's risk is taste, not
-    # correctness — a row listing a chain, a restaurant-week promo or a tribute
-    # band is worse than no section — so it ships dark and is judged per metro
-    # with preview_opening.py before the default flips. Nested under
-    # morning_prefs so it needs no PROFILE_FIELDS entry; a key outside that
-    # allow-list is silently dropped on write.
-    if not ((profile.get("morning_prefs") or {}).get("opening") is True):
+    # On by default: the morning update is required to carry 1-2 opening
+    # highlights for every user, which means this can no longer be an opt-in.
+    # It shipped off at first specifically so a bad metro could be caught with
+    # preview_opening.py before anyone saw it — that review still applies, it
+    # just now happens after the fact rather than gating the rollout. A user
+    # can still be opted out explicitly (`morning_prefs.opening = False`) if
+    # the section is wrong for them. Nested under morning_prefs so it needs no
+    # PROFILE_FIELDS entry; a key outside that allow-list is silently dropped
+    # on write.
+    if (profile.get("morning_prefs") or {}).get("opening") is False:
         return []
     from opening import opening_snapshot
     try:
