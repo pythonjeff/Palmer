@@ -274,7 +274,7 @@ New extraction/scoring logic should go on Haiku; new user-facing drafting on Son
 
 ### Tool routing is strict and important
 The system prompt in `agent.py` hard-routes user asks to specific tools. Never mix:
-- `get_weather` → OpenWeatherMap only
+- `get_weather` → NWS (US) with Open-Meteo as the fallback and the rest-of-world path. `OWM_API_KEY` is vestigial — no code has read it since the Open-Meteo switch (`4620ba6`), whatever the env table still says
 - `get_price` → CoinGecko (crypto) / yfinance (stocks) only
 - `get_travel_time` / `get_city_traffic` → TomTom only
 - `get_my_page` → the caller's own Palmer Home URL, via `home.ensure_fresh` (never `home_url` — that can hand out a link to a page that was never built)
@@ -306,6 +306,48 @@ Suffix matching is on a dot boundary in both directions, so `notreuters.com` and
 Watches then add their own gates on top of the shared ones: a strict criticality rubric, 12-hour recency, `_url_reachable` (HEAD, 405 counts as alive) so a dead top link falls through to the next result, per-watch cooldown (default 4h), a `DAILY_ALERT_MAX` cap, and a dedup check against recent alert summaries. When editing this pipeline, keep all gates — removing any one produced noisy or bad alerts historically.
 
 **The morning briefing and `web_search` label each story with its domain** (`[reuters.com] headline`). The drafting model was previously handed a flat list with no provenance, so it could not tell a wire report from a content farm and had no way to attribute anything it repeated.
+
+### Weather: one source per user, and it is NWS wherever NWS reaches
+`_weather_report` (prose) and `weather_snapshot` (page, card, morning line) both
+prefer NWS for US coordinates and fall back to Open-Meteo. They did not always
+agree: the snapshot used to be Open-Meteo unconditionally, so a US user's page
+and their chat answer came from different forecasters and printed different
+numbers for the same city on the same morning — 96 on the page against 90 in the
+thread.
+
+**The gap is not rounding, and no paid API closes it.** For one August day in
+Culver City the raw models spread 15 degrees on the same point: MeteoFrance 83,
+JMA 82, ICON 90, GEM 94, GFS 96, ECMWF 97, OpenWeatherMap 96. Coastal LA is
+decided by how far the marine layer pushes inland and the models disagree about
+it. NWS said 90 and Google (weather.com/IBM, also human-tuned) said 87 — because
+both are forecaster products, where the local office corrects model output for
+terrain. Open-Meteo's default `best_match` is raw GFS, which is why the page was
+showing the least-corrected number in that table. Prefer the forecaster.
+
+The split was originally justified by Open-Meteo's WMO `weather_code` mapping
+"directly to which art to draw". The newspaper redesign deleted the illustrated
+art (`cards.py`), so that reason had already lapsed — nothing outside `weather.py`
+reads `weather_code` now, and `weather_code` is `None` on the NWS path.
+
+Keep the Open-Meteo fallback. It is the only one of the two with coverage outside
+the US, and NWS does go down. Its free tier is **non-commercial only**, which is
+the one place this stack could ever start costing money; NWS is public domain with
+no key and no quota, so a US-only userbase pays nothing.
+
+Three NWS shapes are load-bearing:
+- **`feels_like` and `gusts` live only on the gridpoint feed**, in degC and km/h,
+  while everything else is Fahrenheit and mph off `/forecast` and
+  `/forecast/hourly`. They are chips, so a gridpoint failure drops the chip and
+  keeps the forecast.
+- **Wind arrives as prose** ("5 to 10 mph"). `_mph` takes the top of the range —
+  `cards.py` and `page.py` format it with `:.0f` and a string raises there.
+- **`_nws_points` is cached** for the dyno's lifetime like `_geocode`. Grid cells
+  don't move, and it saves a round trip on every refresh.
+
+Patching `_fetch_openmeteo` no longer keeps a US location offline in tests — it
+routes to NWS and makes a real call. `test_weather_source.py` patches every hop
+and clears `_nws_points_cache`; `test_cards.py`'s Open-Meteo shape test reaches
+that branch through Paris.
 
 ### Landmarks vs. addresses in the traffic pipeline
 TomTom's geocoder is a mapping API, not a search engine, and mis-ranks landmark names (e.g. "White House", "Fenway", "LAX"). `traffic.py` and the `get_travel_time` tool run landmark destinations through Sonnet to resolve them to street addresses *before* geocoding. Preserve this indirection when touching routing code.
