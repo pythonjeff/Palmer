@@ -43,6 +43,9 @@ TM_BASE = "https://app.ticketmaster.com/discovery/v2/events.json"
 # How many rows survive to the page. The section is a nudge, not a listings
 # magazine — four is already more than anyone reads under a weather card.
 MAX_ROWS = 4
+# Screens are national, so they are the part most likely to crowd out the local
+# rows that make this section worth having. Two, hard.
+MAX_SCREENS = 2
 # Radius for the events pull. 25 miles is a metro, not a neighbourhood, which
 # is deliberate: nobody picks a concert by how close it is to their street.
 EVENT_RADIUS_MI = 25
@@ -301,6 +304,18 @@ def _curate(city: str, candidates: list[dict]) -> list[dict]:
     return rows
 
 
+def _first_clause(text: str, limit: int = 90) -> str:
+    """A TMDB overview trimmed to something that fits under a title. Cut at a
+    sentence if there is one early enough, otherwise at a word boundary."""
+    t = " ".join((text or "").split())
+    if not t:
+        return ""
+    head = t.split(". ")[0]
+    if len(head) <= limit:
+        return head
+    return t[:limit].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+
+
 def _source_of(url: str) -> str:
     from sources import canonical_domain
     return canonical_domain(url) if url else ""
@@ -342,13 +357,18 @@ def opening_snapshot(profile: dict) -> list[dict]:
     with _cache_lock:
         screens = _screen_cache.get(week)
     if screens is None:
-        raw = _screens()
-        screens = _curate(city, [{"title": s["title"], "url": s.get("url"),
-                                  "source": "themoviedb.org",
-                                  "blurb": f"{s['kind']} out {s.get('date')}. {s.get('blurb','')}"}
-                                 for s in raw[:8]]) if raw else []
-        for s in screens:
-            s["kind"] = "screen"
+        # No model call here on purpose. TMDB is already structured and already
+        # ranked by vote_average, so there is no firehose to filter — and the
+        # curation prompt is written for local openings, which means running
+        # screens through it threw away every title for being "outside the
+        # metro". A taste gate that rejects the whole input is not a gate.
+        screens = [{"kind": "screen",
+                    "title": (r["title"] or "")[:80],
+                    "subtitle": _first_clause(r.get("blurb") or ""),
+                    "when": "in theaters" if r["kind"] == "movie" else "new season",
+                    "url": r.get("url"),
+                    "source": "themoviedb.org"}
+                   for r in _screens()[:MAX_SCREENS]]
         with _cache_lock:
             _screen_cache[week] = screens
 

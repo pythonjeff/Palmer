@@ -58,9 +58,9 @@ def main() -> None:
         except Exception as e:
             print(f"  FAILED: {type(e).__name__}: {e}")
     print(f"\n{len(cities)} city/cities previewed. A cold metro costs 2 Tavily "
-          f"searches + 1 Ticketmaster + 2 TMDB + up to 3 Haiku calls (metro, "
-          f"local curation, screen curation) — then nothing for the rest of the "
-          f"week, for every user in that metro.")
+          f"searches + 1 Ticketmaster + 2 TMDB + 2 Haiku calls (metro lookup, "
+          f"local curation) — then nothing for the rest of the week, for every "
+          f"user in that metro. Screens cost no model call at all.")
 
 
 if __name__ == "__main__":

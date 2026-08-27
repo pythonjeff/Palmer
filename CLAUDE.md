@@ -280,6 +280,13 @@ Three things are load-bearing:
   festival is not an ad, and an annual festival in its Nth year is still a
   festival.
 
+  **Screens skip the gate entirely.** TMDB is already structured and already
+  ranked by `vote_average`, so there is no firehose to filter — and running them
+  through the local prompt threw away every title for being "outside the metro".
+  A taste gate that rejects its whole input is not a gate. Screens are capped at
+  2 (`MAX_SCREENS`) because they are national and would otherwise crowd out the
+  local rows that make the section worth having.
+
 It ships **off** — `morning_prefs["opening"] is True` to enable, nested so it
 needs no `PROFILE_FIELDS` entry. The risk here is taste, not correctness, so
 judge it per metro with `preview_opening.py` before flipping the default.

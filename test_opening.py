@@ -184,6 +184,66 @@ class TestTicketmasterParsing:
         http.assert_not_called()
 
 
+class TestScreensBypassTheLocalGate:
+    """Screens were being run through the local-openings curation prompt, whose
+    rules reject anything "outside the metro" — so every movie was thrown away
+    and the section was local-only without anyone noticing. TMDB is already
+    structured and ranked; there is no firehose there to filter."""
+
+    TMDB = {"results": [
+        {"id": 1, "title": "Colony", "release_date": None, "overview": "A virus spreads.",
+         "vote_average": 8.1},
+        {"id": 2, "title": "Second Film", "release_date": None, "overview": "Something else.",
+         "vote_average": 7.4},
+        {"id": 3, "title": "Third Film", "release_date": None, "overview": "More.",
+         "vote_average": 7.0},
+    ]}
+
+    def _screens(self):
+        from datetime import date
+        today = date.today().isoformat()
+        payload = {"results": [dict(r, release_date=today) for r in self.TMDB["results"]]}
+        with patch.object(opening, "TMDB_API_KEY", "k"), \
+             patch.object(opening, "_http_get_json", return_value=payload):
+            return opening._screens()
+
+    def test_titles_in_the_window_survive(self):
+        assert [r["title"] for r in self._screens()][:1] == ["Colony"], "ranked by score"
+
+    def test_screens_cost_no_model_call(self):
+        opening._clear_caches()
+        from datetime import date
+        payload = {"results": [dict(r, release_date=date.today().isoformat())
+                               for r in self.TMDB["results"]]}
+        with patch("weather._geocode", side_effect=lambda c: COORDS[c]), \
+             patch("datafeeds._search_raw", return_value=[]), \
+             patch.object(opening, "TMDB_API_KEY", "k"), \
+             patch.object(opening, "TICKETMASTER_API_KEY", ""), \
+             patch.object(opening, "_http_get_json", return_value=payload), \
+             patch.object(opening, "client") as cl:
+            cl.messages.create.return_value = _resp({"rows": []})
+            rows = opening.opening_snapshot(LA)
+        screens = [r for r in rows if r["kind"] == "screen"]
+        assert screens, "a movie released today must reach the page"
+        # metro lookup + local curation only — nothing for screens
+        assert cl.messages.create.call_count <= 2
+
+    def test_screens_are_capped_so_they_cannot_crowd_out_the_local_rows(self):
+        opening._clear_caches()
+        from datetime import date
+        payload = {"results": [dict(r, release_date=date.today().isoformat())
+                               for r in self.TMDB["results"]]}
+        with patch("weather._geocode", side_effect=lambda c: COORDS[c]), \
+             patch("datafeeds._search_raw", return_value=[]), \
+             patch.object(opening, "TMDB_API_KEY", "k"), \
+             patch.object(opening, "TICKETMASTER_API_KEY", ""), \
+             patch.object(opening, "_http_get_json", return_value=payload), \
+             patch.object(opening, "client") as cl:
+            cl.messages.create.return_value = _resp({"rows": []})
+            rows = opening.opening_snapshot(LA)
+        assert len([r for r in rows if r["kind"] == "screen"]) <= opening.MAX_SCREENS
+
+
 class TestThePageCard:
     def _render(self, rows):
         payload = {"city": "Culver City", "weather": {}, "prices": [], "headlines": [],
