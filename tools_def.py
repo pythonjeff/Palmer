@@ -82,13 +82,21 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "update_morning_briefing",
-        "description": "Add or remove things the user tracks, or pause/resume their morning entirely. This ONE list drives both their morning update and their live page, so it is also how the page changes: a topic that names something tradeable becomes a live price row in Markets, and everything else becomes a followed subject.\n\nUse it whenever they ask to start or stop tracking anything, in whatever words they reach for — 'add Bitcoin to my morning', 'add Apple stock to markets', 'put Nvidia on my site', 'track Tesla for me', 'start following the Cardinals', 'drop the movie stuff', 'stop sending me sports'. Do not treat 'markets', 'my site', 'my page', and 'my morning' as different places; they are the same list and you update it the same way.\n\nFor a price, pass the company or asset plus the word stock or price ('Apple stock price', 'Bitcoin price') — the ticker is resolved and verified for you, so never refuse because you are unsure whether something is listed and never invent a ticker yourself. Say 'stop my morning' / 'pause mornings' for enabled=false, 'resume my morning' for enabled=true; topics are preserved when paused. Different from set_reminder — these repeat every day.",
+        "description": "Add or remove things the user tracks, or pause/resume their morning entirely. This ONE list drives both their morning update and their live page, so it is also how the page changes: a topic that names something tradeable becomes a live price row in Markets, and everything else becomes a followed subject.\n\nUse it whenever they ask to start or stop tracking anything, in whatever words they reach for — 'add Bitcoin to my morning', 'add Apple stock to markets', 'put Nvidia on my site', 'track Tesla for me', 'start following the Cardinals', 'drop the movie stuff', 'stop sending me sports'. Do not treat 'markets', 'my site', 'my page', and 'my morning' as different places; they are the same list and you update it the same way.\n\nFor a price, pass the company or asset plus the word stock or price ('Apple stock price', 'Bitcoin price') — the ticker is resolved and verified for you, so never refuse because you are unsure whether something is listed and never invent a ticker yourself. Say 'stop my morning' / 'pause mornings' for enabled=false, 'resume my morning' for enabled=true; topics are preserved when paused.\n\nThe Opening section is separate from topics and is tuned with opening_add / opening_remove, not by adding a topic string. If they say 'I want movie openings too', 'add concerts to my morning', 'stop telling me about restaurants' or 'no more shows', that is opening_add/opening_remove — not add/remove, which are for subjects Palmer searches news for. All three kinds are on by default. Different from set_reminder — these repeat every day.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "add": {"type": "array", "items": {"type": "string"}, "description": "Topics to add, e.g. ['Bitcoin price', 'St. Louis weather']"},
                 "remove": {"type": "array", "items": {"type": "string"}, "description": "Topics to remove"},
                 "enabled": {"type": "boolean", "description": "Set false to pause morning briefings, true to resume. Topics are preserved."},
+            "opening_add": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["restaurants", "events", "movies"]},
+                "description": "Kinds of local Opening content to START including: 'restaurants' (new places, bars, food), 'events' (concerts, festivals, live shows), 'movies' (films and series out this week). Use for 'I want movie openings too', 'add concerts', 'tell me about new restaurants'. All three are on by default, so only pass this to turn something back on after they removed it."},
+            "opening_remove": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["restaurants", "events", "movies"]},
+                "description": "Kinds of Opening content to STOP including. Use for 'no more concerts', 'drop the movie stuff', 'I don't care about restaurants'. Removing all three switches the section off entirely."},
             },
             "required": [],
         },

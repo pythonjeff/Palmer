@@ -303,6 +303,139 @@ class TestScreensBypassTheLocalGate:
         assert len([r for r in rows if r["kind"] == "screen"]) <= opening.MAX_SCREENS
 
 
+class TestPerUserKinds:
+    """Three kinds, all on by default, each addable and removable by asking.
+
+    The filtering happens after the caches, never inside them. Narrowing the
+    fetch to one user's taste would make the metro cache unshareable and turn
+    N users back into N fetches — which is the one property this feature cannot
+    lose.
+    """
+
+    POOL = [{"kind": "local", "title": "Mamele's", "subtitle": "", "when": "", "url": None, "source": ""},
+            {"kind": "event", "title": "Muse", "subtitle": "", "when": "", "url": None, "source": ""},
+            {"kind": "event", "title": "Wallflowers", "subtitle": "", "when": "", "url": None, "source": ""},
+            {"kind": "local", "title": "Bar Etoile", "subtitle": "", "when": "", "url": None, "source": ""}]
+    SCREENS = [{"kind": "screen", "title": "Colony", "subtitle": "", "when": "", "url": None, "source": ""},
+               {"kind": "screen", "title": "All That", "subtitle": "", "when": "", "url": None, "source": ""}]
+
+    def _snapshot(self, prefs):
+        opening._clear_caches()
+        opening._local_cache[(34.0, -118.5, opening._week_key())] = list(self.POOL)
+        opening._screen_cache[opening._week_key()] = list(self.SCREENS)
+        profile = {"city": "Culver City"}
+        if prefs is not None:
+            profile["morning_prefs"] = prefs
+        with patch("weather._geocode", side_effect=lambda c: COORDS[c]):
+            return opening.opening_snapshot(profile)
+
+    def test_a_cache_hit_costs_no_model_call(self):
+        """opening_snapshot runs on page views. The metro lookup used to sit
+        above the cache check, so a hit still paid a Haiku call for a metro
+        nothing was going to be searched for."""
+        opening._clear_caches()
+        opening._local_cache[(34.0, -118.5, opening._week_key())] = list(self.POOL)
+        opening._screen_cache[opening._week_key()] = list(self.SCREENS)
+        with patch("weather._geocode", side_effect=lambda c: COORDS[c]), \
+             patch.object(opening, "client") as cl, \
+             patch("datafeeds._search_raw") as tav, \
+             patch.object(opening, "_http_get_json") as http:
+            rows = opening.opening_snapshot({"city": "Culver City"})
+        assert rows, "the cached rows must still come back"
+        cl.messages.create.assert_not_called()
+        tav.assert_not_called()
+        http.assert_not_called()
+
+    def test_default_is_everything(self):
+        kinds = {r["kind"] for r in self._snapshot(None)}
+        assert kinds == {"local", "event", "screen"}
+
+    def test_removing_movies_drops_only_screens(self):
+        rows = self._snapshot({"opening_kinds": ["local", "event"]})
+        assert {r["kind"] for r in rows} == {"local", "event"}
+
+    def test_removing_a_kind_gives_its_slots_to_the_others(self):
+        """Otherwise trimming the section just makes it shorter, which is not
+        what someone asking for fewer movies wants."""
+        with_screens = self._snapshot(None)
+        without = self._snapshot({"opening_kinds": ["local", "event"]})
+        assert len(without) >= len(with_screens) - 1
+
+    def test_movies_only(self):
+        rows = self._snapshot({"opening_kinds": ["screen"]})
+        assert rows and all(r["kind"] == "screen" for r in rows)
+
+    def test_removing_every_kind_yields_nothing(self):
+        assert self._snapshot({"opening_kinds": []}) == []
+
+    def test_two_users_with_different_tastes_still_share_one_fetch(self):
+        """The cost model. Filtering is per user; fetching is per metro."""
+        opening._clear_caches()
+        with patch.object(opening, "_http_get_json", return_value={}), \
+             patch("weather._geocode", side_effect=lambda c: COORDS[c]), \
+             patch("datafeeds._search_raw",
+                   return_value=[{"title": "gig", "url": "https://t.com/1"}]) as tav, \
+             patch.object(opening, "client") as cl:
+            cl.messages.create.return_value = _resp(
+                {"rows": [{"title": "Muse", "url": "https://t.com/1", "kind": "event"}]})
+            a = opening.opening_snapshot({"city": "Culver City"})
+            b = opening.opening_snapshot({"city": "Woodland Hills, California",
+                                          "morning_prefs": {"opening_kinds": ["screen"]}})
+        assert tav.call_count == 2, "two searches for the metro, not four for two users"
+        assert [r["kind"] for r in a] == ["event"]
+        assert b == [], "different taste, same cache, correctly filtered to nothing"
+
+
+class TestTheKindsDispatch:
+    def _apply(self, profile, tool_input):
+        import agent
+        updates = {}
+        note = agent._apply_opening_kinds(profile, tool_input, updates)
+        return updates.get("morning_prefs", {}), note
+
+    def test_adding_is_additive_not_a_replacement(self):
+        """"I want movies too" must not silently drop what they already had."""
+        prefs, _ = self._apply({"morning_prefs": {"opening_kinds": ["local"]}},
+                               {"opening_add": ["movies"]})
+        assert prefs["opening_kinds"] == ["local", "screen"]
+
+    def test_removing_from_the_default_starts_from_all_three(self):
+        prefs, _ = self._apply({}, {"opening_remove": ["movies"]})
+        assert prefs["opening_kinds"] == ["local", "event"]
+
+    def test_removing_everything_switches_the_section_off(self):
+        prefs, note = self._apply({}, {"opening_remove": ["restaurants", "events", "movies"]})
+        assert prefs["opening_kinds"] == [] and prefs["opening"] is False
+        assert "off" in note
+
+    def test_no_opening_args_writes_nothing(self):
+        prefs, note = self._apply({}, {"add": ["Tesla stock"]})
+        assert prefs == {} and note == ""
+
+    def test_an_unknown_word_is_ignored_rather_than_stored(self):
+        prefs, _ = self._apply({}, {"opening_add": ["sports"], "opening_remove": ["movies"]})
+        assert prefs["opening_kinds"] == ["local", "event"]
+
+    def test_the_tool_exposes_both_directions(self):
+        from tools_def import TOOLS
+        props = next(t for t in TOOLS if t["name"] == "update_morning_briefing")["input_schema"]["properties"]
+        for k in ("opening_add", "opening_remove"):
+            assert k in props
+            assert set(props[k]["items"]["enum"]) == {"restaurants", "events", "movies"}
+
+    def test_the_prompt_routes_these_away_from_topics(self):
+        import prompts
+        block = prompts.SYSTEM_PROMPT
+        assert "opening_add" in block and "opening_remove" in block
+
+    def test_a_kinds_change_expires_the_cached_rows(self):
+        """Otherwise they keep seeing the concerts they just asked to stop."""
+        import inspect, agent
+        src = inspect.getsource(agent.get_reply)
+        block = src.split('update_morning_briefing"')[1].split("elif b.name")[0]
+        assert "morning_prefs" in block and "opening" in block
+
+
 class TestThePageCard:
     def _render(self, rows):
         payload = {"city": "Culver City", "weather": {}, "prices": [], "headlines": [],

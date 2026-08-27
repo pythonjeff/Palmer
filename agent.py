@@ -329,6 +329,43 @@ def _city_from_weather_topic(topic: str) -> str | None:
     return _infer_city_from_topics([topic])
 
 
+def _apply_opening_kinds(profile: dict, tool_input: dict, updates: dict) -> str:
+    """Fold opening_add / opening_remove into morning_prefs["opening_kinds"].
+
+    Set arithmetic on the stored list rather than asking the model to restate
+    the whole set — "I want movies too" is additive, and a model that has to
+    re-derive the full set from a profile dump will eventually drop one of the
+    kinds the user never mentioned.
+
+    Absent means all three, so the list is only written once a user actually
+    trims or restores something. Returns a short note for the tool result so
+    Palmer can confirm in its own words."""
+    from opening import ALL_KINDS, KIND_WORDS
+    add = [KIND_WORDS.get(str(w).lower()) for w in (tool_input.get("opening_add") or [])]
+    drop = [KIND_WORDS.get(str(w).lower()) for w in (tool_input.get("opening_remove") or [])]
+    add = [k for k in add if k]
+    drop = [k for k in drop if k]
+    if not add and not drop:
+        return ""
+
+    prefs = dict(profile.get("morning_prefs") or {})
+    current = prefs.get("opening_kinds")
+    current = list(current) if isinstance(current, list) else list(ALL_KINDS)
+    kinds = [k for k in ALL_KINDS if (k in current or k in add) and k not in drop]
+
+    prefs["opening_kinds"] = kinds
+    # Removing every kind is how a user switches the section off in their own
+    # words ("none of that stuff"), so honour it as the off switch rather than
+    # storing an empty list the reader has to interpret separately.
+    prefs["opening"] = bool(kinds)
+    updates["morning_prefs"] = prefs
+
+    words = {"local": "new places", "event": "concerts and events", "screen": "movies and shows"}
+    if not kinds:
+        return " Opening section is off now."
+    return " Opening now covers: " + ", ".join(words[k] for k in kinds) + "."
+
+
 def get_reply(phone_number: str, message: str, media_url: str = None, history: list[dict] | None = None, is_new_user: bool = False) -> tuple[str, str | None]:
     """Generate a reply. Returns (text, gif_url) — gif_url is None if no GIF was queued."""
     messages = history if history is not None else get_history(phone_number, limit=HISTORY_LIMIT)
@@ -417,6 +454,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                           f"{profile.get('city')!r} -> {new_city!r}")
                 if "enabled" in b.input:
                     updates["morning_enabled"] = b.input["enabled"]
+                opening_note = _apply_opening_kinds(profile, b.input, updates)
                 upsert_profile(phone_number, updates)
                 # The page caches prices for 5 minutes. Without expiring that
                 # stamp, a ticker the user just added does not appear until the
@@ -426,9 +464,16 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     # weather too when the city moved: the page caches it for 10
                     # minutes, and a stale stamp would serve the old city's
                     # forecast right after the user corrected it.
-                    invalidate(phone_number,
-                               ("prices", "weather", "opening")
-                               if updates.get("city") else ("prices",))
+                    sections = ["prices"]
+                    if updates.get("city"):
+                        sections += ["weather", "opening"]
+                    elif "morning_prefs" in updates:
+                        # The kinds changed, so the cached rows are the wrong
+                        # shape — without this the section keeps showing the
+                        # concerts they just asked to stop seeing for up to a
+                        # day, which reads as Palmer ignoring them.
+                        sections.append("opening")
+                    invalidate(phone_number, tuple(sections))
                 except Exception as e:
                     print(f"home.invalidate after briefing update failed: {e}")
                 topic_str = ", ".join(topics) if topics else "none"
@@ -439,6 +484,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     result = f"Morning briefing resumed. Topics: {topic_str}."
                 else:
                     result = f"Morning briefing updated. Topics: {topic_str}."
+                result += opening_note
             elif b.name == "set_morning_time":
                 normalized = _normalize_hhmm(b.input.get("time", ""))
                 if normalized:

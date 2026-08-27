@@ -49,6 +49,22 @@ TM_BASE = "https://app.ticketmaster.com/discovery/v2/events.json"
 MAX_LOCAL = 3
 MAX_SCREENS = 2
 MAX_ROWS = MAX_LOCAL + MAX_SCREENS
+
+# The three kinds of row, and the words a user reaches for when asking for or
+# dropping one. A user says "I want movie openings too" or "stop the concerts";
+# they never say "kind=screen".
+ALL_KINDS = ("local", "event", "screen")
+KIND_WORDS = {
+    "restaurants": "local", "places": "local", "food": "local", "bars": "local",
+    "events": "event", "concerts": "event", "festivals": "event", "shows": "event",
+    "movies": "screen", "films": "screen", "streaming": "screen", "tv": "screen",
+}
+# Curate a slightly deeper pool than any one user will see. The pool is cached
+# per metro and shared, so per-user filtering needs something left to draw from
+# — a user who only wants restaurants should not come up empty because the
+# three cached rows happened to all be concerts. Costs nothing extra: same one
+# Haiku call, a few more output tokens.
+CURATE_POOL = 6
 # Radius for the events pull. 25 miles is a metro, not a neighbourhood, which
 # is deliberate: nobody picks a concert by how close it is to their street.
 EVENT_RADIUS_MI = 25
@@ -302,7 +318,7 @@ def _curate(city: str, candidates: list[dict]) -> list[dict]:
             max_tokens=900,
             messages=[{"role": "user", "content": _CURATE_PROMPT.format(
                 today=date.today().strftime("%A, %B %d, %Y"), city=city,
-                candidates=json.dumps(candidates)[:9000], max_rows=MAX_LOCAL)}],
+                candidates=json.dumps(candidates)[:9000], max_rows=CURATE_POOL)}],
         )
         parsed = _parse_json(resp.content[0].text) or {}
     except Exception as e:
@@ -310,7 +326,7 @@ def _curate(city: str, candidates: list[dict]) -> list[dict]:
         return []
 
     rows = []
-    for r in (parsed.get("rows") or [])[:MAX_LOCAL]:
+    for r in (parsed.get("rows") or [])[:CURATE_POOL]:
         title = (r.get("title") or "").strip()
         if not title:
             continue
@@ -348,6 +364,17 @@ def _source_of(url: str) -> str:
     return canonical_domain(url) if url else ""
 
 
+def wanted_kinds(profile: dict) -> tuple[str, ...]:
+    """Which kinds of row this user wants. All three unless they have said
+    otherwise — flexibility is opt-out, not opt-in, so a new user gets the whole
+    section and trims it down by asking."""
+    prefs = (profile or {}).get("morning_prefs") or {}
+    chosen = prefs.get("opening_kinds")
+    if not isinstance(chosen, list):
+        return ALL_KINDS
+    return tuple(k for k in ALL_KINDS if k in chosen)
+
+
 def opening_snapshot(profile: dict) -> list[dict]:
     """Rows for the Opening section. Never raises; [] when there is nothing.
 
@@ -358,6 +385,9 @@ def opening_snapshot(profile: dict) -> list[dict]:
     city = (profile or {}).get("city")
     if not city:
         return []
+    kinds = wanted_kinds(profile)
+    if not kinds:
+        return []          # they removed every kind — same as switching it off
     try:
         from weather import _geocode
         lat, lon, _resolved = _geocode(city)
@@ -365,16 +395,20 @@ def opening_snapshot(profile: dict) -> list[dict]:
         print(f"opening: geocode failed for {city!r}: {type(e).__name__}: {e}")
         return []
 
-    # Resolve the metro once and use it for BOTH the search and the curation
-    # prompt. Handing the raw city to the prompt made the model reject its own
-    # metro: told "their city: Kirkwood, MO", it correctly dropped every venue
-    # in St. Louis as somewhere else, which is all of them.
-    metro = _metro(city)
     week = _week_key()
     key = (*_bucket(lat, lon), week)
     with _cache_lock:
         hit = _local_cache.get(key)
     if hit is None:
+        # Resolve the metro INSIDE the miss branch. It costs a model call, and
+        # opening_snapshot runs on page views — on a cache hit there is nothing
+        # to search or curate, so there is nothing to resolve it for.
+        #
+        # It is used for BOTH the search and the curation prompt. Handing the
+        # raw city to the prompt made the model reject its own metro: told
+        # "their city: Kirkwood, MO", it correctly dropped every venue in
+        # St. Louis as somewhere else, which is all of them.
+        metro = _metro(city)
         candidates = _local_candidates(metro)
         for ev in _events(lat, lon):
             candidates.append({"title": ev["title"], "url": ev.get("url"),
@@ -404,4 +438,12 @@ def opening_snapshot(profile: dict) -> list[dict]:
         with _cache_lock:
             _screen_cache[week] = screens
 
-    return hit[:MAX_LOCAL] + screens[:MAX_SCREENS]
+    # Filter per user HERE, at the end — never at fetch time. Both caches are
+    # keyed by metro and week and shared across every user in that metro, which
+    # is the whole cost model; narrowing the fetch to one user's taste would
+    # make the cache unshareable and turn N users back into N fetches. Fetching
+    # a row nobody in this metro wants costs nothing, because it was cached.
+    picked_screens = screens[:MAX_SCREENS] if "screen" in kinds else []
+    local_allowance = MAX_ROWS - len(picked_screens)
+    picked_local = [r for r in hit if r.get("kind") in kinds][:local_allowance]
+    return picked_local + picked_screens
