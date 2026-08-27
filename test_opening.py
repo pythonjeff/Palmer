@@ -295,6 +295,19 @@ class TestThePageCard:
         assert 'href="https://la.eater.com/x"' in html
         assert "la.eater.com" in html
 
+    def test_the_page_cap_matches_what_opening_produces(self):
+        """A second cap in page.py silently truncated the last row when
+        MAX_LOCAL/MAX_SCREENS were raised — the payload held five, the page drew
+        four, and nothing failed."""
+        assert page.OPENING_ROW_CAP == opening.MAX_ROWS
+
+    def test_every_row_the_payload_holds_reaches_the_page(self):
+        rows = [{"kind": "event", "title": f"Act {i}", "source": "t.com"}
+                for i in range(opening.MAX_ROWS)]
+        html = self._render(rows)
+        for r in rows:
+            assert r["title"] in html, f"{r['title']} was dropped by the page cap"
+
     def test_the_section_is_absent_when_there_is_nothing(self):
         assert ">Opening" not in self._render([])
 

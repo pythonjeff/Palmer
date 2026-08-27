@@ -193,6 +193,36 @@ class TestCostGuarantee:
         w.assert_not_called()
 
 
+class TestInvalidateExpiresPaidSections:
+    """A paid section gates on its `_tried` stamp, not its data stamp. Clearing
+    only the data stamp expires nothing: the section still reads as recently
+    attempted, so the refetch that invalidate exists to cause never happens.
+    agent.py calls this when the user's city changes, which is precisely when a
+    city-derived section must not keep serving the old city's answer."""
+
+    def _invalidated(self, section):
+        now = time.time()
+        pl = _payload()
+        with patch.object(home, "get_profile", return_value={"home_token": "tok"}), \
+             patch.object(home, "load", return_value=pl), \
+             patch.object(home, "save") as save:
+            home.invalidate("+1555", (section,))
+        return save.call_args[0][1]["fetched"]
+
+    def test_headlines_clears_both_stamps(self):
+        f = self._invalidated("headlines")
+        assert f["headlines"] == 0
+        assert f["headlines_tried"] == 0, "the gate reads this one"
+
+    def test_opening_clears_both_stamps(self):
+        f = self._invalidated("opening")
+        assert f["opening"] == 0 and f["opening_tried"] == 0
+
+    def test_a_free_section_without_a_tried_stamp_is_untouched(self):
+        f = self._invalidated("prices")
+        assert f["prices"] == 0 and "prices_tried" not in f
+
+
 class TestIdentityFreshness:
     """The profile-derived fields are free to refresh and are the ones a user
     notices going stale — they tell Palmer their name at noon and the page is

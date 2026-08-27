@@ -403,6 +403,12 @@ def invalidate(phone: str, sections: tuple[str, ...] = ("prices",)) -> None:
         fetched = dict(payload.get("fetched") or {})
         for section in sections:
             fetched[section] = 0
+            # Paid sections gate on their `_tried` stamp, not the data stamp
+            # (see _headlines_stale / _opening_stale), so clearing only the
+            # data stamp expires nothing — the section reads as recently
+            # attempted and the refetch never happens. Clear both.
+            if f"{section}_tried" in fetched:
+                fetched[f"{section}_tried"] = 0
         payload["fetched"] = fetched
         save(token, payload)
     except Exception as e:

@@ -155,7 +155,12 @@ _CHEV = ('<svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="non
 # "Watching" caps: watches/price watches are user-authored and
 # usually few (1-3 typical), so 4 comfortably shows "everything" for most
 # users while bounding the worst case. Topics keeps the section's prior cap.
-OPENING_ROW_CAP = 4
+# Imported rather than restated: opening.py already bounds the payload
+# (MAX_LOCAL + MAX_SCREENS), and a second number here silently truncated the
+# last row when those were raised. Same reasoning as home importing
+# cards.MAX_PRICES — the page and the producer render from one payload and must
+# not disagree about how much of it survives.
+from opening import MAX_ROWS as OPENING_ROW_CAP
 WATCH_CHIP_CAP = 4
 PWATCH_CHIP_CAP = 4
 TOPIC_CHIP_CAP = 6
