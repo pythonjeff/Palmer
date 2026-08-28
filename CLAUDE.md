@@ -195,6 +195,38 @@ value can do. Only the second holds against a write path nobody has enumerated y
 "102 in Los Angeles" is read as wrong in one second, where the same number under the
 right city name is unfalsifiable from the message. `test_weather_city.py` guards both.
 
+### Onboarding asks once; the site builds ahead of it, silently
+Message 1 never demands anything — `SYSTEM_PROMPT`'s NEW USERS rules cover a bare
+greeting, a random question, and "what do you do" without ever requiring city or
+name up front. From message 2 on, if `intro_sent` is true and the profile still has
+no `name` or `city`, `_build_system` appends an ONBOARDING ASK directive telling
+Palmer to work one short question in naturally — never as an opener, never a form.
+`userprofile._update_profile` marks `onboarding_ask_sent` the first time it sees
+that same condition hold after a turn's extraction runs, so this fires exactly
+once per user, whether or not they answer. It does not repeat, and it does not
+duplicate `send_missing_data_asks` (morning.py), which is a separate hourly
+outbound safety net for users who already said yes to mornings but still have no
+city on file.
+
+`userprofile._apply_profile_updates` builds Palmer Home the moment a city first
+lands on the profile — `_eager_build_home` calls `home.rebuild(phone,
+refresh_news=True)` as soon as `new_city and not old_city`, rather than waiting
+for `get_my_page` or the first morning send. That gate matters: it fires once,
+on the transition from no city to a city, not on every later correction — a
+correction rides the existing `home.invalidate` path in `update_morning_briefing`'s
+dispatch, not another full paid rebuild, and it keeps `test_city_regression_prints_old_and_new`
+free of a live network call. No `APP_URL` means nowhere to serve the page, so the
+build is skipped entirely rather than spending on a link nobody can open.
+
+**Building the page early does not mean sending it.** Nothing here calls
+`ensure_fresh`, mentions the page, or drafts a link — the ONBOARDING ASK block
+explicitly tells Palmer not to. `get_my_page` still only fires when the user
+asks, per the existing "never send a URL unless asked" rule, and the morning job
+is still the one place the link goes out unprompted. So the effect of this pair
+is purely: by the time either of those paths runs, the page is already sitting
+there populated with real data, instead of a user's first "send me my link"
+landing on `ensure_fresh`'s cold-build path live inside that reply.
+
 ### One voice: all user-facing text goes through `_build_system`
 Anything the user reads is drafted with `agent._build_system(phone)` as the system prompt, on `SONNET_MODEL`. That is what carries SYSTEM_PROMPT, the CALIBRATION section, the user's `communication_style`, and their reaction history — so Palmer sounds like the same person everywhere.
 

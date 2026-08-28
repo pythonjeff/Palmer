@@ -102,6 +102,48 @@ class TestBuildSystemWiring:
         assert "CALIBRATION READ" not in self._build({})
 
 
+class TestOnboardingAsk:
+    """Message 1 never demands name/city (NEW USERS rule, above). From message
+    2 on — intro already sent — if Palmer still doesn't know one or both, the
+    dynamically-appended ONBOARDING ASK block tells him to work it in, once."""
+
+    def _build(self, profile: dict, is_new_user: bool = False) -> str:
+        with patch.object(agent, "get_profile", return_value=profile), \
+             patch.object(agent, "get_user_watches", return_value=[]), \
+             patch.object(agent, "get_user_price_watches", return_value=[]):
+            return agent._build_system("+15550001111", is_new_user=is_new_user)
+
+    def test_asks_for_both_when_both_are_missing(self):
+        out = self._build({"intro_sent": True})
+        assert "ONBOARDING ASK" in out
+        assert "name and what city" in out
+
+    def test_asks_only_for_the_one_still_missing(self):
+        out = self._build({"intro_sent": True, "name": "Ada"})
+        assert "ONBOARDING ASK" in out
+        assert "their city" in out
+        assert "name and what city" not in out
+
+    def test_silent_on_the_very_first_message(self):
+        """Message 1 is is_new_user=True — the NEW USERS rules own that reply,
+        not this block, even if the profile happens to be empty."""
+        assert "ONBOARDING ASK" not in self._build({}, is_new_user=True)
+
+    def test_silent_once_name_and_city_are_both_known(self):
+        out = self._build({"intro_sent": True, "name": "Ada", "city": "Chicago"})
+        assert "ONBOARDING ASK" not in out
+
+    def test_silent_once_already_asked(self):
+        """Consumed once by userprofile._update_profile — see test_profile_schema.py."""
+        out = self._build({"intro_sent": True, "onboarding_ask_sent": True})
+        assert "ONBOARDING ASK" not in out
+
+    def test_never_volunteers_the_link(self):
+        out = self._build({"intro_sent": True})
+        block = out.split("ONBOARDING ASK", 1)[1].lower()
+        assert "send any link" in block or "don't mention their page" in block
+
+
 class TestExtractionCapturesRegister:
     def test_prompt_asks_for_explicit_requests(self):
         body = prompts.EXTRACT_PROMPT.lower()
