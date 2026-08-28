@@ -243,6 +243,8 @@ Canonical key names:
 - "sports_teams" (not favorite_teams/teams/sports)
 - "brands" (not tracked_brands/shopping_interests)
 - "job", "stressed_about", "follow_up", "vibe", "interests"
+  These are about THEIR life, never about Palmer's own operation. "confirm the morning briefing is arriving", "maintain single-message format", "verify the tracker is filtering correctly" are notes about the product, not facts about a person — never store them. If the only thing worth recording is how Palmer is performing, return nothing for these fields.
+  They are also time-sensitive and are shown to you with an "as_of" date once they age. Only return one when the CURRENT message gives you reason to believe it is still true; a stale worry left in place reads as a live one.
 - "commute" (dict with "origin" and "destination" street addresses, if they've told you their regular drive — e.g. home to office. Used for the morning drive-time line.)
 - "relationships" (dict or list: partner, kids, pets, close friends, coworkers they mention)
 - "life_context" (short string: what's going on in their life right now)

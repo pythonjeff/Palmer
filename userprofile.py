@@ -33,7 +33,30 @@ PROFILE_FIELDS = frozenset({
     "pending_morning_suggestion", "pending_preference_notice",
     "alert_sent_date", "followup_sent_date", "city_ask_sent_date",
     "onboarding_ask_sent",
+    "field_dates",
 })
+
+# Volatile facts, and how many days they stay true by default.
+#
+# The whole profile is dumped into every system prompt as CURRENT fact, and
+# nothing in it ever expired. One user's profile said `city: "Culver City"` and,
+# three lines below, `life_context: "Based in LA"` — both true when written,
+# and together the exact contradiction behind the LA-temperature complaints.
+# Another still carried `stressed_about: "active fire emergency in LA area"`
+# weeks after the fire, and a flight watch for a trip that ends in September.
+#
+# These are not wrong, they are OLD, and the prompt had no way to say so. Each
+# write stamps `field_dates`; _build_system renders the age beside the value and
+# drops it once past its life. Durable facts — name, city, job, relationships,
+# communication_style — are deliberately absent: those do not rot.
+VOLATILE_FIELDS = {
+    "stressed_about": 21,
+    "follow_up": 21,
+    "ongoing_threads": 30,
+    "life_context": 60,
+    "pending_morning_suggestion": 7,
+    "pending_preference_notice": 7,
+}
 
 
 _PROFILE_ALIASES = {
@@ -187,6 +210,57 @@ def _eager_build_home(phone: str) -> None:
         print(f"userprofile: eager home build failed for {phone}: {type(e).__name__}: {e}")
 
 
+def _stamp_volatile(profile: dict, updates: dict) -> None:
+    """Record the date each volatile field was last asserted.
+
+    Merged into `updates` so it rides the same write — a separate upsert would
+    open a window where the value is new and its date is not."""
+    from timeutil import local_today
+    touched = [k for k in updates if k in VOLATILE_FIELDS and updates[k] is not None]
+    if not touched:
+        return
+    dates = dict((profile or {}).get("field_dates") or {})
+    today = local_today((profile or {}).get("timezone")).isoformat()
+    for k in touched:
+        dates[k] = today
+    updates["field_dates"] = dates
+
+
+def fresh_profile_for_prompt(profile: dict, today=None) -> dict:
+    """The profile as the model should see it: stale volatile facts dropped,
+    surviving ones labelled with when they were last true.
+
+    Read-side only. Nothing is deleted from storage — a fact that has gone quiet
+    is not a fact that was wrong, and the consolidator may reassert it tomorrow.
+    """
+    from datetime import date
+    if not profile:
+        return profile
+    dates = profile.get("field_dates") or {}
+    today = today or date.today()
+    out = {}
+    for k, v in profile.items():
+        if k == "field_dates" or v is None:
+            continue
+        life = VOLATILE_FIELDS.get(k)
+        if life is None:
+            out[k] = v
+            continue
+        stamped = dates.get(k)
+        if not stamped:
+            out[k] = v          # written before stamping existed; leave it be
+            continue
+        try:
+            age = (today - date.fromisoformat(stamped)).days
+        except ValueError:
+            out[k] = v
+            continue
+        if age > life:
+            continue            # past its life; the model stops seeing it
+        out[k] = {"value": v, "as_of": stamped, "days_old": age} if age >= 3 else v
+    return out
+
+
 def _apply_profile_updates(phone: str, profile: dict, updates: dict) -> dict:
     """Merge canonical profile updates and derive timezone when city is set."""
     if not updates:
@@ -200,6 +274,7 @@ def _apply_profile_updates(phone: str, profile: dict, updates: dict) -> dict:
         tz = _derive_timezone(new_city)
         if tz:
             updates["timezone"] = tz
+    _stamp_volatile(profile, updates)
     upsert_profile(phone, updates)
     if new_city and not old_city:
         _eager_build_home(phone)

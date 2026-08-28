@@ -70,8 +70,12 @@ class TestBriefingConfigDoesNotLeakIntoReplies:
         assert len(profile["morning_topics"]) == 2, "must not edit the stored profile"
 
     def test_untouched_when_nothing_to_strip(self):
-        profile = {"morning_topics": ["SpaceX news"]}
-        assert agent._prompt_safe_profile(profile) is profile
+        """Content, not identity. The profile is always copied now — volatile
+        facts are dated or dropped on the way to the prompt — so returning the
+        same object is no longer the contract. Not mutating the stored one is,
+        and that is asserted above."""
+        profile = {"morning_topics": ["SpaceX news"], "name": "Jeff"}
+        assert agent._prompt_safe_profile(profile) == profile
 
 
 class TestDirectivesAreNotTopics:

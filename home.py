@@ -219,10 +219,10 @@ def _fetch_opening(profile: dict) -> list[dict]:
         return []
 
 
-def _opening_stale(fetched: dict, now: float) -> bool:
+def _opening_stale(fetched: dict, now: float, has_data: bool = True) -> bool:
     """Whether a view may spend on the Opening section. Same two-stamp rule as
     _headlines_stale: the attempt closes the window, not just the success."""
-    window = STALE.get("opening")
+    window = _window_for("opening", has_data)
     if window is None:
         return False
     tried = fetched.get("opening_tried") or fetched.get("opening") or 0
@@ -312,14 +312,33 @@ def _refresh_identity(payload: dict, profile: dict, phone: str) -> bool:
     return changed
 
 
-def _headlines_stale(fetched: dict, now: float) -> bool:
+# A paid section that has NO data yet does not wait its full window before
+# trying again. The `_tried` stamp is set before the call so a failure cannot be
+# retried in a loop — right — but that also meant one empty or failed fetch left
+# a section blank for the whole window with nothing to show meanwhile. It locked
+# three of four users out of Opening for a day, twice, and had to be cleared by
+# hand. Once a section holds data, a stale row beats a blank one and the full
+# window applies again; it is only the blank case that retries sooner, and at a
+# quarter of the window that is bounded rather than a loop.
+EMPTY_RETRY_DIVISOR = 4
+EMPTY_RETRY_FLOOR = 3600
+
+
+def _window_for(section: str, has_data: bool) -> float | None:
+    window = STALE.get(section)
+    if window is None or has_data:
+        return window
+    return max(window / EMPTY_RETRY_DIVISOR, EMPTY_RETRY_FLOOR)
+
+
+def _headlines_stale(fetched: dict, now: float, has_data: bool = True) -> bool:
     """Whether a view may spend money on news.
 
     Gated on `headlines_tried`, not `headlines`, so that a refresh which comes
     back empty still closes the window — otherwise a topic with no coverage
     would re-search on every single view. Falls back to the data stamp for
     payloads written before this key existed."""
-    window = STALE.get("headlines")
+    window = _window_for("headlines", has_data)
     if window is None:
         return False
     tried = fetched.get("headlines_tried") or fetched.get("headlines") or 0
@@ -353,7 +372,7 @@ def refresh_stale(token: str, payload: dict) -> dict:
         except Exception as e:
             print(f"home refresh {section} failed: {e}")
 
-    if _headlines_stale(fetched, now):
+    if _headlines_stale(fetched, now, bool(payload.get("headlines"))):
         # Stamp the attempt before the call, so a raising fetch still closes
         # the window rather than re-searching on the next view.
         fetched["headlines_tried"] = now
@@ -366,7 +385,7 @@ def refresh_stale(token: str, payload: dict) -> dict:
         except Exception as e:
             print(f"home refresh headlines failed: {e}")
 
-    if _opening_stale(fetched, now):
+    if _opening_stale(fetched, now, bool(payload.get("opening"))):
         # Same tried-before-call stamp as headlines: a failed or empty fetch
         # still closes the day's window, so a reload loop cannot re-spend.
         fetched["opening_tried"] = now

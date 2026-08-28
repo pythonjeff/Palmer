@@ -409,6 +409,12 @@ The caller passes the bare token and the key is derived inside `render_png`.
 That is deliberate: a caller composing its own cache key is exactly how this
 happened, and there is no reason for `main.py` to know what the card draws.
 
+The masthead date is the **reader's** day, not the dyno's: `render_png` passes
+`when=_card_now(payload)` and the fingerprint uses the same value. `cards.py`
+defaulted to `datetime.now()`, which is UTC in production, so from 5pm Pacific
+the card printed tomorrow's date beside a page printing today's — `page.py` has
+always used the user's zone.
+
 `opening` renders in the left column between the weather chips (~y354) and the
 news rule (`H-90`) — the one band of the card that was empty. `CARD_OPENING_ROWS`
 is 3 against the page's 5, because that is what fits above the news rule.
@@ -436,6 +442,51 @@ A topic that resolves to a ticker is also **excluded from the paid news search**
 The cause was the extractor: `"My name is Jeff"` returned `{}`. `EXTRACT_PROMPT` asked for "life details, relationships, preferences, personality" and Haiku did not count a name as worth remembering — and where the profile already looked populated, it assumed the name must be in there. `EXTRACT_PROMPT` now opens with an IDENTITY FIRST rule that names the phrasings people use and explicitly overrides the "too obvious to return" and "surely it is already stored" instincts. `test_profile_schema.py` guards it.
 
 The lesson generalizes: Palmer sounding like it knows something is not evidence that anything was stored. The transcript and the profile are different memories, and only one of them survives into the morning job, the page, and the card.
+
+### Profile facts expire; `city` outranks anything else that names a place
+`PROFILE_FIELDS` bounds which keys may exist. It does nothing about keys that
+are still there and no longer true, and the whole profile is dumped into every
+system prompt as CURRENT fact.
+
+That is where the "Palmer keeps getting things wrong" reports actually came
+from, and it is worth being precise about what it was not: the system prompt and
+tool schemas are about 13k tokens and a profile 1-3k, which is comfortable for
+Sonnet. The model was not overloaded. It was being told, every turn, things that
+had stopped being true — one profile read `city: "Culver City"` three lines
+above `life_context: "Based in LA"`, both accurate when written, and the model
+reconciled them by putting an LA temperature under the Culver City name. That is
+the same incident the weather fixes chased through the data path; this is the
+half that was still in the prompt.
+
+`userprofile.VOLATILE_FIELDS` names the facts that rot and how long each stays
+true. Every write stamps `field_dates`; `fresh_profile_for_prompt` (read side,
+via `agent._prompt_safe_profile`) drops anything past its life and renders what
+survives as `{"value": ..., "as_of": ..., "days_old": N}` once it is a few days
+old. **Storage is untouched** — a fact that went quiet was not wrong, and the
+consolidator may reassert it tomorrow. Durable facts (name, city, job,
+relationships, communication_style) are deliberately not in the list; dating
+them would invite the model to doubt things it should not.
+
+`_build_system` also states outright that **`city` is the location and nothing
+else in the profile outranks it**, because `city` is the only field any tool
+reads. Without that line the model is free to average two true statements into
+a false one.
+
+Two extraction rules follow from what was found in real profiles.
+`follow_up` held `"confirm_morning_briefing_delivery_is_consistent_daily"` for
+one user and `"Maintain single-message format"` for another — notes about
+Palmer's own operation, read back every turn as facts about a person.
+`EXTRACT_PROMPT` now says these fields are about the user's life and that
+recording Palmer's performance in them is not an option.
+
+### Empty paid sections retry sooner than full ones
+The `_tried` stamp is written before the call so a failure cannot be retried in
+a loop. That also meant a single empty or failed fetch left a section blank for
+its entire window with nothing to show — it locked three of four users out of
+Opening for a day, twice, and had to be cleared by hand both times. `_window_for`
+shortens the wait to a quarter of the window (floor one hour) **only when the
+section holds no data at all**. Once it holds something, a stale row beats a
+blank one and the full window applies again.
 
 ### The profile is a bounded schema
 `userprofile.PROFILE_FIELDS` is the complete set of keys a profile may hold, and `_canonical_updates` drops anything outside it. This is not tidiness — the whole profile is dumped as JSON into **every** system prompt, and the per-turn extractor is a language model that will invent a new key every turn if nothing stops it. One profile reached 624 keys, 604 of them one-offs (`monday_night_behavior`, `kendrick_fan`, `tv_taste_update`, `alternatively`): ~21,700 tokens of noise per message, roughly double SYSTEM_PROMPT and the tool schemas combined, burying the 20 keys that mattered.

@@ -76,9 +76,23 @@ def load(token: str) -> dict | None:
         return None
 
 
+def _card_now(payload: dict):
+    """The masthead date, in the reader's timezone.
+
+    cards.py defaulted to datetime.now(), which is UTC on the dyno — so from
+    5pm Pacific onward the card printed tomorrow's date while page.py, which
+    has always used the user's zone, printed today's. Two surfaces of the same
+    briefing disagreeing about what day it is."""
+    from timeutil import local_now
+    from datetime import datetime
+    try:
+        return local_now(payload.get("timezone"))
+    except Exception:
+        return datetime.now()
+
+
 def _card_inputs(payload: dict) -> dict:
     """Exactly what render_dashboard draws — nothing else."""
-    from datetime import datetime
     return {
         "city": payload.get("city", ""),
         "weather": payload.get("weather"),
@@ -87,8 +101,9 @@ def _card_inputs(payload: dict) -> dict:
         "opening": payload.get("opening"),
         "headlines": [h.get("title", "") for h in (payload.get("headlines") or [])],
         # The masthead prints the date, so a new day is a different card even
-        # when every other input is byte-identical.
-        "_date": datetime.now().strftime("%Y-%m-%d"),
+        # when every other input is byte-identical — and it must be the
+        # reader's day, or the cache holds yesterday's card past their midnight.
+        "_date": _card_now(payload).strftime("%Y-%m-%d"),
     }
 
 
@@ -122,7 +137,7 @@ def render_png(token: str, payload: dict) -> bytes:
     from cards import render_dashboard
     inputs = _card_inputs(payload)
     inputs.pop("_date", None)
-    png = render_dashboard(**inputs)
+    png = render_dashboard(when=_card_now(payload), **inputs)
     with _cache_lock:
         _png_cache[key] = png
         if len(_png_cache) > 64:          # bounded; single dyno, low volume
