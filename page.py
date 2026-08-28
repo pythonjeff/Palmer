@@ -282,7 +282,13 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
             out.append(f'<div class=desc>{e(w["description"].capitalize())}</div>')
         out.append("</div></div><div class=chips>")
         if w.get("high") is not None and w.get("low") is not None:
-            out.append(f'<span class=chip>H {w["high"]:.0f}° &nbsp;L {w["low"]:.0f}°</span>')
+            # A contested high shows as a range here too — the page, the card
+            # and the text render from one payload and must not disagree about
+            # how sure Palmer is.
+            hi = (f'{w["high_low_est"]}-{w["high_high_est"]}'
+                  if w.get("high_confident") is False and w.get("high_low_est") is not None
+                  else f'{w["high"]:.0f}')
+            out.append(f'<span class=chip>H {e(hi)}° &nbsp;L {w["low"]:.0f}°</span>')
         if w.get("rain_pct"):
             out.append(f'<span class="chip cool">{e(w["rain_pct"])}% rain</span>')
         if w.get("wind") is not None:

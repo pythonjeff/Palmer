@@ -109,6 +109,20 @@ _scheduler.add_job(
     run_price_watches, "cron", hour="0,16", timezone="Etc/UTC",
     misfire_grace_time=3600,
 )
+
+# Forecast accuracy audit — cron for the same reason as above: at once a day an
+# interval job's phase is a function of deploy history, and a skipped day is a
+# hole in the record this exists to build.
+#
+# 11:00 UTC is 06:00 CDT / 04:00 PDT — shortly before the 07:00 local morning
+# sends, so the forecast logged is the one users are about to be told, and it is
+# the same calendar date in both zones, which is what keeps target_date honest.
+# Sends nothing and touches no user path; a failure is a gap in the log.
+from wxaudit import run_forecast_audit
+_scheduler.add_job(
+    run_forecast_audit, "cron", hour="11", timezone="Etc/UTC",
+    misfire_grace_time=3600,
+)
 if _SCHEDULER_ENABLED:
     _scheduler.start()
 else:

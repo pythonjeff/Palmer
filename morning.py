@@ -362,7 +362,16 @@ def _payload_digest(payload: dict) -> str:
         if w.get("description"):
             bits.append(str(w["description"]))
         if w.get("high") is not None and w.get("low") is not None:
-            bits.append(f"high {w['high']:.0f}, low {w['low']:.0f}")
+            if w.get("high_confident") is False:
+                # The forecasters disagree about this location today. Hand the
+                # drafter the disagreement rather than one side of it, so it
+                # hedges instead of asserting a number nobody can stand behind.
+                bits.append(f"high somewhere between {w.get('high_low_est')} and "
+                            f"{w.get('high_high_est')} (forecasts disagree by "
+                            f"{w.get('high_spread')} degrees — do NOT state a single high), "
+                            f"low {w['low']:.0f}")
+            else:
+                bits.append(f"high {w['high']:.0f}, low {w['low']:.0f}")
         if w.get("rain_pct"):
             bits.append(f"{w['rain_pct']}% rain")
         # Label the forecast with the place it was actually fetched for, not the
@@ -469,6 +478,7 @@ Rules:
 - Write ONLY the text. The link is attached automatically after it. Do not write a URL, and do not leave a placeholder like [link] or (url) where you think one goes - anything like that ships to them as literal text.
 - Do not end with a question. The page is the ask.
 - Use the numbers from the data verbatim.
+- If the weather data says the forecasts disagree, do NOT pick one and state it. Give the range or say "around", the way a person hedges out loud — "upper 90s to maybe 110", "somewhere around 100". Stating a precise high nobody can stand behind is how this went wrong before.
 - If you mention the weather, name the city exactly as the data writes it, and never pair a number with any other place. Their profile may call where they live something broader or narrower than the forecast does - the data wins. If the two disagree, the data is the one that was actually measured.
 - Palmer's voice. Plain ASCII, no emoji, no markdown, no bullets, no sign-off."""
 

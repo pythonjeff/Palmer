@@ -535,6 +535,41 @@ routes to NWS and makes a real call. `test_weather_source.py` patches every hop
 and clears `_nws_points_cache`; `test_cards.py`'s Open-Meteo shape test reaches
 that branch through Paris.
 
+### When the forecasters disagree, Palmer says so instead of picking one
+A Woodland Hills user was told 103, 106, 107 and 111 on four consecutive days
+against actual highs of 98.3, 96.8, 97.8 and 99.5 — corroborated by Van Nuys and
+Burbank reading 102 on the worst day. There was no bug: NWS's period forecast,
+hourly forecast and raw gridpoint all said 110, and `_nws_snapshot` read them
+correctly. That grid cell simply runs hot.
+
+**Do not "fix" this by blending sources.** It was the first thing tried and it
+is worse. In the same week NWS was the single best number available for coastal
+Culver City (+1.7F against actuals, where every raw model ran 5-11F hot), so a
+median of NWS and Open-Meteo makes Danny's number ~5F worse to make Drew's
+better. NWS knows the marine layer the models overshoot; the models handle the
+inland Valley that NWS overcooks. Neither wins everywhere.
+
+**A single second opinion measures the wrong thing.** NWS-vs-best_match gives a
+4.7F gap at Woodland Hills (GFS shares the warm error) and 6.2F at Culver City
+(where NWS is right) — backwards. The spread across the *ensemble* separates
+them: 16.3 against 8.7. `weather._ensemble_spread` pulls ECMWF, ICON and GFS in
+one keyless call and sets `high_confident`; over `HIGH_SPREAD_HEDGE` the
+snapshot carries `high_low_est`/`high_high_est` and the digest tells the drafter
+**not** to state a single high. The page renders the same range, because page,
+card and text come off one payload and must not disagree about how sure Palmer
+is. It qualifies the claim; it never changes the number.
+
+`HIGH_SPREAD_HEDGE = 10.0` is **provisional** — a round number that catches the
+observed bad case and clears the observed good one, set from days rather than
+months. `wxaudit.py` exists to replace it with a measurement: a daily cron logs
+every source's forecast per city and backfills the actual from Open-Meteo's
+reanalysis archive, and `wxaudit.report()` prints signed bias and MAE per city
+per source. The incident week, backfilled, already shows there is no global
+winner — Culver City: GFS +4.6, ICON +5.6, ECMWF +11.8 (and NWS +1.7);
+Woodland Hills: ECMWF +3.4, GFS +5.6, ICON -7.1; Kirkwood: everything within
+0.6. NWS has no historical-forecast endpoint, so its rows only accumulate
+forward from the day the job was added.
+
 ### Landmarks vs. addresses in the traffic pipeline
 TomTom's geocoder is a mapping API, not a search engine, and mis-ranks landmark names (e.g. "White House", "Fenway", "LAX"). `traffic.py` and the `get_travel_time` tool run landmark destinations through Sonnet to resolve them to street addresses *before* geocoding. Preserve this indirection when touching routing code.
 

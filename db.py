@@ -98,6 +98,24 @@ def init_db():
         )
     """)
     # Migrations for columns added after initial deploy
+    # Forecast accuracy log. Written by the daily audit job: today's forecast
+    # from each source goes in with `actual` NULL, and the next day's run fills
+    # the actual in from reanalysis. Keyed by city+date+source so a re-run is
+    # idempotent rather than duplicating a day.
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS forecast_audit (
+            id {ID_COL},
+            city TEXT NOT NULL,
+            target_date TEXT NOT NULL,
+            source TEXT NOT NULL,
+            forecast_high REAL,
+            actual_high REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS forecast_audit_key "
+                "ON forecast_audit (city, target_date, source)")
+
     watches_new_cols = [
         "last_alert_summary TEXT",
         "daily_alert_count INTEGER DEFAULT 0",
@@ -861,3 +879,71 @@ def get_artifact(token: str) -> tuple[str, bytes] | None:
     if expires < datetime.now(timezone.utc):
         return None
     return row["kind"], bytes(row["body"])
+
+
+# --- forecast accuracy audit -------------------------------------------------
+# Two sources disagree by up to 15F across LA's microclimates and neither wins
+# everywhere: NWS is the best number in Culver City (+1.7F against actuals) and
+# the worst in Woodland Hills (+5 to +11F). Choosing between them from two
+# cities and four days would be fitting a rule to anecdotes, so this records
+# both against reality and lets the answer come from data.
+
+def record_forecast(city: str, target_date: str, source: str, forecast_high: float) -> None:
+    """Log today's forecast. Idempotent — a second run for the same day is a
+    no-op rather than a duplicate row."""
+    conn = _conn(); cur = conn.cursor()
+    try:
+        if _DATABASE_URL:
+            cur.execute(f"INSERT INTO forecast_audit (city, target_date, source, forecast_high) "
+                        f"VALUES ({PH}, {PH}, {PH}, {PH}) "
+                        f"ON CONFLICT (city, target_date, source) DO NOTHING",
+                        (city, target_date, source, forecast_high))
+        else:
+            cur.execute(f"INSERT OR IGNORE INTO forecast_audit (city, target_date, source, forecast_high) "
+                        f"VALUES ({PH}, {PH}, {PH}, {PH})",
+                        (city, target_date, source, forecast_high))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def record_actual(city: str, target_date: str, actual_high: float) -> int:
+    """Fill in what actually happened for every source logged for that day."""
+    conn = _conn(); cur = conn.cursor()
+    try:
+        cur.execute(f"UPDATE forecast_audit SET actual_high = {PH} "
+                    f"WHERE city = {PH} AND target_date = {PH} AND actual_high IS NULL",
+                    (actual_high, city, target_date))
+        n = cur.rowcount
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
+def pending_actuals(before_date: str) -> list[tuple[str, str]]:
+    """(city, target_date) pairs still missing an actual, oldest first."""
+    conn = _conn(); cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT DISTINCT city, target_date FROM forecast_audit "
+                    f"WHERE actual_high IS NULL AND target_date < {PH} "
+                    f"ORDER BY target_date", (before_date,))
+        return [(r["city"], r["target_date"]) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def forecast_scores(days: int = 30) -> list[dict]:
+    """Mean signed error and sample count per city and source. Positive means
+    the source forecasts hotter than reality."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    conn = _conn(); cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT city, source, COUNT(*) AS n, "
+                    f"AVG(forecast_high - actual_high) AS bias, "
+                    f"AVG(ABS(forecast_high - actual_high)) AS mae "
+                    f"FROM forecast_audit WHERE actual_high IS NOT NULL AND target_date >= {PH} "
+                    f"GROUP BY city, source ORDER BY city, source", (cutoff,))
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()

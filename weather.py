@@ -359,6 +359,59 @@ def _nws_snapshot(lat: float, lon: float, resolved: str, tz: str | None = None) 
     }
 
 
+# How far the forecasters may disagree about today's high before Palmer stops
+# stating it as a fact. This is a full-ensemble spread — NWS plus three
+# independent models — not NWS against one other source, because a single
+# second opinion measures the wrong thing: GFS shares NWS's inland warm error
+# (Woodland Hills spread of only 4.7 on a day NWS was 10F high) while
+# disagreeing with NWS where NWS is right (Culver City spread of 6.2 on a day
+# NWS was within 2F). The ensemble separates them: 16.3 against 8.7.
+#
+# PROVISIONAL. 10F is a defensible round number that catches the observed bad
+# case and clears the observed good one, but it is set from days rather than
+# months. wxaudit.py exists to replace this guess with a measurement.
+HIGH_SPREAD_HEDGE = 10.0
+
+_ENSEMBLE_MODELS = "ecmwf_ifs025,icon_seamless,gfs_seamless"
+
+
+def _ensemble_spread(lat: float, lon: float, high: float | None) -> dict:
+    """How much the forecasters disagree about today's high, for hedging only.
+
+    Deliberately does not average or override the number. Neither source is
+    better everywhere — NWS is the best available high for coastal Culver City
+    and the worst for inland Woodland Hills, and a median of the two is worse
+    than either at one of them — so this changes what Palmer *claims*, not what
+    it reports. A wide spread means say "around", not say something else.
+
+    One call for all three models. Free, and soft: any failure leaves the high
+    unqualified rather than blocking the forecast."""
+    if high is None:
+        return {}
+    try:
+        data = _http_get_json_retry(
+            "https://api.open-meteo.com/v1/forecast",
+            params={"latitude": lat, "longitude": lon, "daily": "temperature_2m_max",
+                    "temperature_unit": "fahrenheit", "timezone": "auto",
+                    "forecast_days": 1, "models": _ENSEMBLE_MODELS},
+            timeout=8, attempts=1,
+        )
+        daily = data.get("daily") or {}
+        others = [v[0] for k, v in daily.items()
+                  if k.startswith("temperature_2m_max") and v and v[0] is not None]
+    except Exception as e:
+        print(f"weather: ensemble spread unavailable: {type(e).__name__}: {e}")
+        return {}
+    if not others:
+        return {}
+    vals = [float(high)] + [float(o) for o in others]
+    spread = max(vals) - min(vals)
+    return {"high_spread": round(spread, 1),
+            "high_low_est": round(min(vals)),
+            "high_high_est": round(max(vals)),
+            "high_confident": spread < HIGH_SPREAD_HEDGE}
+
+
 def weather_snapshot(location: str, tz: str | None = None) -> dict | None:
     """Structured weather for the page, the card and the morning line. None on
     any failure.
@@ -381,7 +434,9 @@ def weather_snapshot(location: str, tz: str | None = None) -> dict | None:
         lat, lon, resolved = _geocode(location)
         if _is_us_coords(lat, lon):
             try:
-                return _nws_snapshot(lat, lon, resolved, tz)
+                snap = _nws_snapshot(lat, lon, resolved, tz)
+                snap.update(_ensemble_spread(lat, lon, snap.get("high")))
+                return snap
             except Exception as e:
                 print(f"NWS snapshot failed for {location!r}, falling back: "
                       f"{type(e).__name__}: {e}")
