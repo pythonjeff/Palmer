@@ -21,6 +21,9 @@ TRAFFIC = {"live_min": 17, "free_min": 16, "delay_min": 0, "miles": 13.7, "ratio
 PRICES = [{"label": "Bitcoin", "price": 77752.0, "pct_24h": 1.1, "pct_7d": 0.4,
            "series": [76000, 76500, 77000, 77752], "is_crypto": True}]
 HEADS = ["Cards blown out 12-3", "SpaceX hits 100 launches"]
+OPENING = [{"kind": "event", "title": "Todd Rundgren", "when": "Friday", "source": "t.com"},
+           {"kind": "event", "title": "The Wallflowers", "when": "Saturday", "source": "t.com"},
+           {"kind": "screen", "title": "Colony", "when": "in theaters", "source": "tmdb.org"}]
 
 
 def _render(**kw):
@@ -72,6 +75,90 @@ class TestDegradesSection_by_section:
 
     def test_missing_city(self):
         assert _render(city="")
+
+
+class TestOpeningBand:
+    """Opening draws in the left column between the weather chips and the news
+    rule — the one band of the card that was empty."""
+
+    def test_the_card_renders_with_opening(self):
+        img = Image.open(io.BytesIO(_render(opening=OPENING)))
+        assert img.size == (cards.W, cards.H)
+
+    def test_it_changes_the_pixels(self):
+        """A section that draws nothing is a section that isn't there."""
+        assert _render(opening=OPENING) != _render(opening=None)
+
+    def test_absent_opening_is_fine(self):
+        assert _render(opening=None) and _render(opening=[])
+
+    def test_more_rows_than_fit_do_not_overflow_into_the_news_band(self):
+        many = [{"kind": "event", "title": f"Act number {i}", "when": "Friday"}
+                for i in range(9)]
+        a = _render(opening=many)
+        b = _render(opening=many[:cards.CARD_OPENING_ROWS])
+        assert a == b, "rows past the cap must not be drawn at all"
+
+    def test_a_very_long_title_is_clipped_rather_than_running_under_markets(self):
+        long = [{"kind": "local", "title": "A restaurant with an absurdly long name " * 4,
+                 "when": "Friday"}]
+        assert _render(opening=long)
+
+
+class TestCardCacheKey:
+    """The card image is memoised. It used to key on `built_at`, which only
+    advances inside home.rebuild() — and ensure_fresh calls rebuild only when
+    there is no payload at all. So after a user's first build the key never
+    changed again and the card froze on that morning's weather while the page
+    beside it stayed live."""
+
+    PAYLOAD = {"city": "Kirkwood, MO", "weather": WEATHER, "traffic": TRAFFIC,
+               "prices": PRICES, "opening": OPENING,
+               "headlines": [{"title": h} for h in HEADS], "built_at": 1}
+
+    def _fp(self, **over):
+        import artifacts
+        return artifacts._card_fingerprint(dict(self.PAYLOAD, **over))
+
+    def test_identical_content_is_a_cache_hit(self):
+        assert self._fp() == self._fp()
+
+    def test_a_stale_built_at_no_longer_freezes_the_card(self):
+        """Same built_at, different weather — the old key could not tell these
+        apart, which is the whole bug."""
+        warmer = dict(WEATHER, temp_now=42.0)
+        assert self._fp(weather=warmer) != self._fp()
+
+    def test_every_drawn_section_moves_the_key(self):
+        for field, value in (("city", "Denver, CO"),
+                             ("traffic", dict(TRAFFIC, live_min=99)),
+                             ("prices", []),
+                             ("opening", []),
+                             ("headlines", [{"title": "something else"}])):
+            assert self._fp(**{field: value}) != self._fp(), f"{field} must re-key"
+
+    def test_something_not_drawn_does_not_move_the_key(self):
+        """tracking and the token never reach the renderer, so they must not
+        cost a re-render."""
+        assert self._fp(tracking={"topics": ["new"]}) == self._fp()
+
+    def test_render_png_reuses_the_image_for_identical_content(self):
+        import artifacts
+        artifacts._png_cache.clear()
+        a = artifacts.render_png("tok", dict(self.PAYLOAD))
+        b = artifacts.render_png("tok", dict(self.PAYLOAD))
+        assert a is b
+
+    def test_render_png_redraws_when_the_content_moves(self):
+        import artifacts
+        artifacts._png_cache.clear()
+        a = artifacts.render_png("tok", dict(self.PAYLOAD))
+        b = artifacts.render_png("tok", dict(self.PAYLOAD, weather=dict(WEATHER, temp_now=12.0)))
+        assert a != b
+
+    def test_opening_reaches_the_renderer(self):
+        import artifacts
+        assert "opening" in artifacts._card_inputs(self.PAYLOAD)
 
 
 class TestMeter:

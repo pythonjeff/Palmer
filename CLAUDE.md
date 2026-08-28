@@ -363,6 +363,31 @@ what a section is called. `test_page.py::TestSectionLabelsAreOneWord` reads the
 labels out of `page.py`'s markup and fails on a space in any of them, and also
 checks the card image kept in step.
 
+### The card is cached on what it draws, not on when it was built
+`artifacts.render_png` keys `_png_cache` on the token plus a hash of exactly the
+fields `render_dashboard` renders (`_card_inputs`), including the masthead date.
+It used to key on `built_at`, and that was silently broken: `built_at` only
+advances inside `home.rebuild()`, and `ensure_fresh` calls `rebuild` only when
+there is **no payload at all**. So after a user's first build the key never
+changed again — the card froze on that morning's weather and stayed frozen for
+good, while the page beside it refreshed normally. One user's `built_at` read
+four days older than their fetch stamps.
+
+The caller passes the bare token and the key is derived inside `render_png`.
+That is deliberate: a caller composing its own cache key is exactly how this
+happened, and there is no reason for `main.py` to know what the card draws.
+
+`opening` renders in the left column between the weather chips (~y354) and the
+news rule (`H-90`) — the one band of the card that was empty. `CARD_OPENING_ROWS`
+is 3 against the page's 5, because that is what fits above the news rule.
+
+**Local card renders now match production.** macOS ships no `Menlo-Bold.ttc`, so
+a bold mono lookup fell through to Pillow's builtin bitmap face, which does not
+scale — the 118pt hero temperature drew at roughly 8px. Production was never
+affected (the slug has DejaVu), but the card's design is reviewed by rendering it
+locally, and a local render that does not look like the real one is worse than
+no render at all.
+
 ### One list drives the morning and the page
 `morning_topics` is the single source for both the morning update and Palmer Home. A topic that resolves to a ticker becomes a live Markets row; everything else becomes a followed subject. So "add Apple stock to markets", "put Nvidia on my site" and "add Bitcoin to my morning" are all the same operation — `update_morning_briefing` — and its description and the `USE THE RIGHT TOOL` block say so explicitly, because users do not know they are one list.
 

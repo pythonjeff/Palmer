@@ -59,12 +59,20 @@ _FONT_FILES = {
 _MONO_DIRS = (
     "/usr/share/fonts/truetype/dejavu",
     "/System/Library/Fonts/Supplemental",
+    "/System/Library/Fonts",                             # macOS: Menlo lives here
     "/Library/Fonts",
     "/usr/share/fonts/truetype",
 )
+# Menlo.ttc is the last mono entry in BOTH rows on purpose: macOS ships no
+# "Menlo-Bold.ttc", so a bold lookup that only listed that name fell through to
+# Pillow's builtin bitmap face — which does not scale, and rendered the 118pt
+# hero temperature at about 8px. Production was never affected (the slug has
+# DejaVu), but the card is reviewed by rendering it locally, so a local render
+# that does not look like the real one is worse than useless.
 _MONO_FILES = {
     False: ("DejaVuSansMono.ttf", "Menlo.ttc", "Consolas.ttf", "DejaVuSans.ttf"),
-    True: ("DejaVuSansMono-Bold.ttf", "Menlo-Bold.ttc", "Consolas Bold.ttf", "DejaVuSans-Bold.ttf"),
+    True: ("DejaVuSansMono-Bold.ttf", "Consolas Bold.ttf", "DejaVuSans-Bold.ttf",
+           "Menlo.ttc"),
 }
 _font_cache: dict[tuple[int, bool], ImageFont.FreeTypeFont] = {}
 _mono_cache: dict[tuple[int, bool], ImageFont.FreeTypeFont] = {}
@@ -153,10 +161,15 @@ def _sparkline(d: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int,
 # payload may carry more (see home.MAX_PRICES) and the page shows all of them,
 # because a vertical list has room where a fixed-width row does not.
 MAX_PRICES = 3
+# Opening rows on the card. The page shows up to five; the card has one band of
+# left column under the weather hero, and three is what fits without crowding
+# the headlines rule below it.
+CARD_OPENING_ROWS = 3
 
 
 def render_dashboard(*, city: str, weather: dict | None, traffic: dict | None,
                      prices: list[dict] | None, headlines: list[str] | None,
+                     opening: list[dict] | None = None,
                      when: datetime | None = None) -> bytes:
     """The briefing as a 1200x630 PNG. Returns encoded bytes.
 
@@ -247,6 +260,31 @@ def render_dashboard(*, city: str, weather: dict | None, traffic: dict | None,
                       p.get("series") or [], colour)
             row_y += 42
         _hrule(d, right_x, right_x + right_w, row_y + 2)
+
+    # --- opening (left column, under the weather hero) ----------------------
+    # The hero's chips bottom out around y=354 and the headlines rule sits at
+    # H-90; this band is the gap between them, and it was empty. Left column
+    # only, so it stacks beside Markets rather than fighting it for width.
+    if opening:
+        o_top = content_top + 244
+        o_right = right_x - 40
+        _hrule(d, PAD, o_right, o_top)
+        d.text((PAD, o_top + 12), "OPENING", font=_font(15, True), fill=MUTED)
+        tf, wf = _font(20), _mono(14)
+        y = o_top + 38
+        for row in opening[:CARD_OPENING_ROWS]:
+            when_txt = (row.get("when") or "").upper()
+            ww = _tw(d, when_txt, wf) if when_txt else 0
+            title = (row.get("title") or "").strip()
+            avail = (o_right - PAD) - ww - 20
+            if _tw(d, title, tf) > avail:
+                while title and _tw(d, title + "…", tf) > avail:
+                    title = title[:-1]
+                title = title.rstrip(" ,-") + "…"
+            d.text((PAD, y), title, font=tf, fill=INK)
+            if when_txt:
+                d.text((o_right - ww, y + 5), when_txt, font=wf, fill=MUTED)
+            y += 34
 
     # --- headlines (footer band, full width) --------------------------------
     if headlines:

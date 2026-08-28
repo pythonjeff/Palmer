@@ -76,22 +76,55 @@ def load(token: str) -> dict | None:
         return None
 
 
+def _card_inputs(payload: dict) -> dict:
+    """Exactly what render_dashboard draws — nothing else."""
+    from datetime import datetime
+    return {
+        "city": payload.get("city", ""),
+        "weather": payload.get("weather"),
+        "traffic": payload.get("traffic"),
+        "prices": payload.get("prices"),
+        "opening": payload.get("opening"),
+        "headlines": [h.get("title", "") for h in (payload.get("headlines") or [])],
+        # The masthead prints the date, so a new day is a different card even
+        # when every other input is byte-identical.
+        "_date": datetime.now().strftime("%Y-%m-%d"),
+    }
+
+
+def _card_fingerprint(payload: dict) -> str:
+    """A key that changes exactly when the drawn image would change.
+
+    The cache used to key on `built_at`, which only advances inside
+    home.rebuild() — and ensure_fresh calls rebuild only when there is no
+    payload at all. So after a user's very first build the key never changed
+    again: the card froze on that morning's weather and stayed frozen, while
+    the page beside it refreshed normally. Hashing the drawn inputs instead
+    means the image regenerates when it would look different and never
+    otherwise, which is what the cache was for."""
+    import hashlib
+    import json
+    body = json.dumps(_card_inputs(payload), sort_keys=True, default=str)
+    return hashlib.sha1(body.encode()).hexdigest()[:16]
+
+
 def render_png(token: str, payload: dict) -> bytes:
-    """The payload as a card, memoised per token."""
+    """The payload as a card, memoised on the token plus the drawn content.
+
+    The caller passes the bare token — deriving the rest here is deliberate,
+    since a caller composing its own key is exactly how the card came to be
+    cached against a value that never changed."""
+    key = f"{token}:{_card_fingerprint(payload)}"
     with _cache_lock:
-        hit = _png_cache.get(token)
+        hit = _png_cache.get(key)
     if hit is not None:
         return hit
     from cards import render_dashboard
-    png = render_dashboard(
-        city=payload.get("city", ""),
-        weather=payload.get("weather"),
-        traffic=payload.get("traffic"),
-        prices=payload.get("prices"),
-        headlines=[h.get("title", "") for h in (payload.get("headlines") or [])],
-    )
+    inputs = _card_inputs(payload)
+    inputs.pop("_date", None)
+    png = render_dashboard(**inputs)
     with _cache_lock:
-        _png_cache[token] = png
+        _png_cache[key] = png
         if len(_png_cache) > 64:          # bounded; single dyno, low volume
             _png_cache.pop(next(iter(_png_cache)))
     return png

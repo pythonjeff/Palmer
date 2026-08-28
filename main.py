@@ -361,7 +361,7 @@ async def home_png(token: str):
         raise HTTPException(status_code=404)
     payload = refresh_stale(token, payload)
     return FileResponse(
-        content=render_png(f"{token}:{int(payload.get('built_at', 0))}", payload),
+        content=render_png(token, payload),
         media_type="image/png",
         headers={"Cache-Control": "public, max-age=300",
                  "X-Robots-Tag": "noindex, nofollow",
