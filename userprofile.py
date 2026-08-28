@@ -32,6 +32,7 @@ PROFILE_FIELDS = frozenset({
     "intro_sent", "conversation_topics", "reactions", "reactions_folded_count",
     "pending_morning_suggestion", "pending_preference_notice",
     "alert_sent_date", "followup_sent_date", "city_ask_sent_date",
+    "onboarding_ask_sent",
 })
 
 
@@ -161,6 +162,31 @@ Topic (2 words max, or NONE):"""}],
     except Exception:
         pass
 
+def _eager_build_home(phone: str) -> None:
+    """The first time a user's city becomes known, build their Palmer Home page
+    right away rather than waiting for get_my_page or the next morning send.
+
+    This never sends the link — get_my_page and the morning job are still the
+    only paths that hand it to the user, and SYSTEM_PROMPT's rule against
+    volunteering URLs still applies. It just means the page is already sitting
+    there, populated, whenever one of those paths does run — instead of a user
+    asking for it on day one and hitting home.ensure_fresh's cold-build path
+    live inside that reply. Only fires once (see the `not old_city` gate in the
+    caller): later city corrections ride the normal refresh/invalidate path,
+    not another full rebuild. Never raises."""
+    import os
+    if not os.environ.get("APP_URL"):
+        return  # nowhere to serve the page; don't spend on a link nobody can open
+    try:
+        from home import rebuild, load, home_token
+        token = home_token(phone)
+        if load(token) is not None:
+            return
+        rebuild(phone, refresh_news=True)
+    except Exception as e:
+        print(f"userprofile: eager home build failed for {phone}: {type(e).__name__}: {e}")
+
+
 def _apply_profile_updates(phone: str, profile: dict, updates: dict) -> dict:
     """Merge canonical profile updates and derive timezone when city is set."""
     if not updates:
@@ -175,6 +201,8 @@ def _apply_profile_updates(phone: str, profile: dict, updates: dict) -> dict:
         if tz:
             updates["timezone"] = tz
     upsert_profile(phone, updates)
+    if new_city and not old_city:
+        _eager_build_home(phone)
     return get_profile(phone)
 
 def _consolidate_history(phone: str):
@@ -222,6 +250,15 @@ def _update_profile(phone: str, user_msg: str, reply: str):
             profile = _apply_profile_updates(phone, profile, updates)
     except Exception:
         pass
+    # _build_system shows the ONBOARDING ASK block under this exact condition —
+    # intro already sent, name/city still missing, not asked yet — so this run
+    # sees the same profile state that reply was drafted against (the per-phone
+    # lock in main.py serializes turns, so nothing else writes in between). Mark
+    # it consumed once regardless of whether they answered, so Palmer asks on
+    # their second message and then drops it rather than nagging every turn.
+    if (profile.get("intro_sent") and not profile.get("onboarding_ask_sent")
+            and (not profile.get("name") or not profile.get("city"))):
+        upsert_profile(phone, {"onboarding_ask_sent": True})
     _track_conversation_topic(phone, user_msg, reply, profile)
 
 def _user_already_covered(phone: str, candidate: str, window_hours: float = 12) -> bool:

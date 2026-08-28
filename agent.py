@@ -167,6 +167,18 @@ def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = 
             "'what can you do'). Pick the case that matches what they actually said and reply "
             "accordingly. Do not mention that you were just told this is their first message."
         )
+    elif (profile or {}).get("intro_sent") and not (profile or {}).get("onboarding_ask_sent"):
+        missing = [f for f in ("name", "city") if not (profile or {}).get(f)]
+        if missing:
+            ask = "their name and what city they're in" if len(missing) == 2 else f"their {missing[0]}"
+            system += (
+                "\n\nONBOARDING ASK\n"
+                f"You still don't know {ask}. Somewhere natural in this reply — answer whatever "
+                f"they actually said first if it needs answering — work in a question for {ask}, "
+                "so you can personalize things and get their morning briefing dialed in. One line, "
+                "not a form, not your opener. Don't mention their page or send any link here — "
+                "that comes later, on request or with their first morning update."
+            )
     if include_recent:
         recent = get_history(phone, limit=8)
         if recent:

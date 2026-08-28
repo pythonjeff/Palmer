@@ -4,7 +4,7 @@ The extractor is a language model writing straight into a dict that gets dumped
 as JSON into every system prompt. Unbounded, one profile reached 624 keys — 604
 invented one-offs, ~21,700 tokens of noise per message. These pin the bound.
 """
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import db
 import userprofile
@@ -36,7 +36,8 @@ class TestAllowList:
                       "reactions_folded_count", "conversation_topics",
                       "pending_morning_suggestion", "pending_preference_notice",
                       "alert_sent_date", "followup_sent_date", "intro_sent",
-                      "interest_genres", "ongoing_threads", "life_context"):
+                      "interest_genres", "ongoing_threads", "life_context",
+                      "onboarding_ask_sent"):
             assert field in userprofile.PROFILE_FIELDS, field
 
 
@@ -177,9 +178,100 @@ class TestCityPrecisionIsExtracted:
 class TestCityChangeIsLogged:
     def test_city_regression_prints_old_and_new(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t3.db", raising=False)
+        monkeypatch.setenv("APP_URL", "https://palmer.test")
         db.init_db()
         db.upsert_profile("+1557", {"city": "Culver City, CA"})
         profile = db.get_profile("+1557")
-        userprofile._apply_profile_updates("+1557", profile, {"city": "Los Angeles"})
+        with patch("home.rebuild") as rebuild:
+            userprofile._apply_profile_updates("+1557", profile, {"city": "Los Angeles"})
         out = capsys.readouterr().out
         assert "Culver City, CA" in out and "Los Angeles" in out
+        rebuild.assert_not_called(), "a correction to an existing city is not a day-1 build"
+
+
+class TestEagerHomeBuild:
+    """The first time a user's city becomes known, Palmer Home gets built right
+    away rather than waiting for get_my_page or the morning job — see CLAUDE.md
+    "Onboarding" / the day-1 site build. It never sends the link; that's still
+    gated on an explicit ask or the first morning send, unchanged."""
+
+    def test_first_city_triggers_a_build(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t6.db", raising=False)
+        monkeypatch.setenv("APP_URL", "https://palmer.test")
+        db.init_db()
+        db.upsert_profile("+1558", {})
+        profile = db.get_profile("+1558")
+        with patch("home.home_token", return_value="tok"), \
+             patch("home.load", return_value=None), \
+             patch("home.rebuild") as rebuild:
+            userprofile._apply_profile_updates("+1558", profile, {"city": "Chicago"})
+        rebuild.assert_called_once_with("+1558", refresh_news=True)
+
+    def test_city_correction_does_not_rebuild(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t7.db", raising=False)
+        monkeypatch.setenv("APP_URL", "https://palmer.test")
+        db.init_db()
+        db.upsert_profile("+1559", {"city": "Culver City, CA"})
+        profile = db.get_profile("+1559")
+        with patch("home.rebuild") as rebuild:
+            userprofile._apply_profile_updates("+1559", profile, {"city": "Los Angeles"})
+        rebuild.assert_not_called()
+
+    def test_no_app_url_skips_the_build(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t8.db", raising=False)
+        monkeypatch.delenv("APP_URL", raising=False)
+        db.init_db()
+        db.upsert_profile("+1560", {})
+        profile = db.get_profile("+1560")
+        with patch("home.rebuild") as rebuild:
+            userprofile._apply_profile_updates("+1560", profile, {"city": "Chicago"})
+        rebuild.assert_not_called()
+
+    def test_a_page_already_built_is_not_rebuilt_again(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t9.db", raising=False)
+        monkeypatch.setenv("APP_URL", "https://palmer.test")
+        db.init_db()
+        db.upsert_profile("+1561", {})
+        profile = db.get_profile("+1561")
+        with patch("home.home_token", return_value="tok"), \
+             patch("home.load", return_value={"city": "Chicago"}), \
+             patch("home.rebuild") as rebuild:
+            userprofile._apply_profile_updates("+1561", profile, {"city": "Chicago"})
+        rebuild.assert_not_called()
+
+
+class TestOnboardingAskConsumption:
+    """The ONBOARDING ASK block in _build_system (agent.py) fires under this
+    exact condition; _update_profile marks it consumed the first time it sees
+    that same condition hold true after a turn's extraction runs."""
+
+    def test_marks_consumed_after_a_qualifying_turn(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t10.db", raising=False)
+        db.init_db()
+        db.upsert_profile("+1562", {"intro_sent": True})
+        block = MagicMock(); block.text = "{}"
+        resp = MagicMock(); resp.content = [block]
+        with patch.object(userprofile.client.messages, "create", return_value=resp):
+            userprofile._update_profile("+1562", "hey", "hey, how's it going")
+        assert db.get_profile("+1562")["onboarding_ask_sent"] is True
+
+    def test_not_marked_when_the_turn_supplies_both_fields(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t11.db", raising=False)
+        monkeypatch.delenv("APP_URL", raising=False)
+        db.init_db()
+        db.upsert_profile("+1563", {"intro_sent": True})
+        block = MagicMock(); block.text = '{"name": "Ada", "city": "Chicago"}'
+        resp = MagicMock(); resp.content = [block]
+        with patch.object(userprofile.client.messages, "create", return_value=resp):
+            userprofile._update_profile("+1563", "I'm Ada from Chicago", "hey Ada")
+        assert "onboarding_ask_sent" not in db.get_profile("+1563")
+
+    def test_not_marked_before_intro_is_sent(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t12.db", raising=False)
+        db.init_db()
+        db.upsert_profile("+1564", {})
+        block = MagicMock(); block.text = "{}"
+        resp = MagicMock(); resp.content = [block]
+        with patch.object(userprofile.client.messages, "create", return_value=resp):
+            userprofile._update_profile("+1564", "hey", "hey")
+        assert "onboarding_ask_sent" not in db.get_profile("+1564")
