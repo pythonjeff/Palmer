@@ -243,6 +243,97 @@ class TestSubtitleDoesNotRepeatWhen:
         assert "the day already goes in `when`" in body
 
 
+class TestLongLeadEvents:
+    """Users want to hear about a big show on sale for months out, not just
+    what's happening in the next seven days — so the events pull runs twice:
+    the near-term week, and a sparser long-lead window out to a year."""
+
+    def test_a_snapshot_makes_two_ticketmaster_calls(self):
+        opening._clear_caches()
+        with patch.object(opening, "TICKETMASTER_API_KEY", "k"), \
+             patch("weather._geocode", side_effect=lambda c: COORDS[c]), \
+             patch("datafeeds._search_raw", return_value=[]), \
+             patch.object(opening, "_http_get_json", return_value={}) as http, \
+             patch.object(opening, "client") as cl:
+            cl.messages.create.return_value = _resp({"rows": []})
+            opening.opening_snapshot(LA)
+        urls = [c.args[0] if c.args else c.kwargs.get("url") for c in http.call_args_list]
+        tm_calls = [u for u in urls if opening.TM_BASE in u]
+        assert len(tm_calls) == 2, "one near-term pull, one long-lead pull"
+
+    def test_the_long_lead_window_reaches_a_year_out(self):
+        with patch.object(opening, "TICKETMASTER_API_KEY", "k"), \
+             patch.object(opening, "_http_get_json", return_value={}) as http:
+            opening._events(34.02, -118.39, start_days=7,
+                            end_days=opening.LONG_LEAD_DAYS, size=opening.LONG_LEAD_SIZE)
+        url = http.call_args.args[0] if http.call_args.args else http.call_args.kwargs["url"]
+        from datetime import datetime, timedelta
+        far = (datetime.utcnow() + timedelta(days=opening.LONG_LEAD_DAYS - 1)).strftime("%Y-%m")
+        assert far in url
+
+
+class TestExpiredRowsDropOut:
+    """The metro cache lasts a week, but a Friday concert cached on Monday
+    must not still be on the page on Saturday — the whole complaint that
+    prompted this. A curated row keeps its event date so it can be dropped
+    the moment it has passed, without waiting for the weekly re-curation."""
+
+    def test_a_past_dated_row_is_dropped_on_read(self):
+        from datetime import date, timedelta
+        opening._clear_caches()
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        opening._local_cache[(34.0, -118.5, opening._week_key())] = [
+            {"kind": "event", "title": "Already Happened", "subtitle": "", "when": "",
+             "url": None, "source": "", "date": yesterday},
+            {"kind": "local", "title": "Still Live", "subtitle": "", "when": "",
+             "url": None, "source": "", "date": None},
+        ]
+        opening._screen_cache[opening._week_key()] = []
+        with patch("weather._geocode", side_effect=lambda c: COORDS[c]):
+            rows = opening.opening_snapshot({"city": "Culver City"})
+        titles = [r["title"] for r in rows]
+        assert "Still Live" in titles
+        assert "Already Happened" not in titles
+
+    def test_todays_date_survives(self):
+        from datetime import date
+        opening._clear_caches()
+        opening._local_cache[(34.0, -118.5, opening._week_key())] = [
+            {"kind": "event", "title": "Tonight", "subtitle": "", "when": "",
+             "url": None, "source": "", "date": date.today().isoformat()},
+        ]
+        opening._screen_cache[opening._week_key()] = []
+        with patch("weather._geocode", side_effect=lambda c: COORDS[c]):
+            rows = opening.opening_snapshot({"city": "Culver City"})
+        assert [r["title"] for r in rows] == ["Tonight"]
+
+    def test_curate_stores_a_valid_date_from_the_model(self):
+        opening._clear_caches()
+        with patch("weather._geocode", side_effect=lambda c: COORDS[c]), \
+             patch("datafeeds._search_raw",
+                   return_value=[{"title": "x", "url": "https://a.com/1"}]), \
+             patch.object(opening, "_http_get_json", return_value={}), \
+             patch.object(opening, "client") as cl:
+            cl.messages.create.return_value = _resp({"rows": [
+                {"title": "Phoebe Bridgers", "subtitle": "Hollywood Bowl", "when": "Friday",
+                 "url": "https://t.com/1", "kind": "event", "date": "2026-09-04"}]})
+            rows = opening.opening_snapshot(LA)
+        assert rows[0]["date"] == "2026-09-04"
+
+    def test_curate_drops_a_malformed_date_rather_than_raising(self):
+        opening._clear_caches()
+        with patch("weather._geocode", side_effect=lambda c: COORDS[c]), \
+             patch("datafeeds._search_raw",
+                   return_value=[{"title": "x", "url": "https://a.com/1"}]), \
+             patch.object(opening, "_http_get_json", return_value={}), \
+             patch.object(opening, "client") as cl:
+            cl.messages.create.return_value = _resp({"rows": [
+                {"title": "Bad Date", "subtitle": "", "when": "someday",
+                 "url": "https://t.com/1", "kind": "event", "date": "not-a-date"}]})
+            rows = opening.opening_snapshot(LA)
+        assert rows and rows[0]["date"] is None
+
+
 class TestScreensBypassTheLocalGate:
     """Screens were being run through the local-openings curation prompt, whose
     rules reject anything "outside the metro" — so every movie was thrown away
