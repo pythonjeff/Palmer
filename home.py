@@ -323,6 +323,7 @@ def rebuild(phone: str, refresh_news: bool = True) -> dict:
         "opening": _fetch_opening(profile) if refresh_news
                    else (previous.get("opening") or []),
         "tracking": _tracking(phone, profile),
+        "episode_alerts": bool((profile.get("morning_prefs") or {}).get("episode_alerts")),
         "fetched": {"weather": now, "traffic": now, "prices": now,
                     "headlines": now if refresh_news
                                  else (previous.get("fetched", {}).get("headlines") or now),
@@ -348,6 +349,10 @@ def _refresh_identity(payload: dict, profile: dict, phone: str) -> bool:
         "name": profile.get("name"),
         "timezone": profile.get("timezone"),
         "tracking": _tracking(phone, profile),
+        # Whether followed shows may reach the morning TEXT. Carried on the
+        # payload so _payload_digest can honour it without a profile read of
+        # its own — being on the page is passive, being texted is not.
+        "episode_alerts": bool((profile.get("morning_prefs") or {}).get("episode_alerts")),
     }
     changed = any(payload.get(k) != v for k, v in fresh.items())
     payload.update(fresh)

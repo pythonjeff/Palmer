@@ -93,6 +93,9 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
                 "type": "array",
                 "items": {"type": "string", "enum": ["restaurants", "events", "movies"]},
                 "description": "Kinds of local Opening content to START including: 'restaurants' (new places, bars, food), 'events' (concerts, festivals, live shows), 'movies' (films and series out this week). Use for 'I want movie openings too', 'add concerts', 'tell me about new restaurants'. All three are on by default, so only pass this to turn something back on after they removed it."},
+            "episode_alerts": {
+                "type": "boolean",
+                "description": "Set true when they ask to be TOLD about new episodes in the morning text ('text me when a new episode is out'), false to stop. Followed shows always appear on their page; this controls whether they also get mentioned in the morning message, which is off by default."},
             "opening_remove": {
                 "type": "array",
                 "items": {"type": "string", "enum": ["restaurants", "events", "movies"]},
@@ -300,6 +303,28 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
             "type": "object",
             "properties": {
                 "text_match": {"type": "string", "description": "Airport code or city to match, e.g. 'LAX'. Omit to cancel all."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "follow_show",
+        "description": "Follow a TV series so they hear when a new episode lands. Use when someone says they watch something and wants to keep up — 'track Reacher for me', 'I watch Silo, tell me when new ones drop', 'follow The Bear'. The show appears on their page in the week an episode airs and is quiet between seasons. This is NOT for a one-off question about a show, and NOT the same as update_morning_briefing, which is for news subjects.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The series title as they said it, e.g. 'Reacher'. It is resolved for you."},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "unfollow_show",
+        "description": "Stop following a TV series. Pass text_match with part of the title to drop one; omit it to drop all of them.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text_match": {"type": "string", "description": "Part of the show title, e.g. 'Reacher'. Omit to unfollow everything."},
             },
             "required": [],
         },

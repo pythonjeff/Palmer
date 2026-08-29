@@ -32,6 +32,9 @@ def _payload(**over):
          "weather": {"temp_now": 80}, "traffic": {"live_min": 17}, "prices": [],
          "headlines": [{"title": "old news"}],
          "opening": [],
+         # A profile-derived identity field, so a payload missing it reads as
+         # changed on every view — the thing this helper exists to avoid.
+         "episode_alerts": False,
          "fetched": {"weather": now, "traffic": now, "prices": now,
                      "headlines": now, "headlines_tried": now,
                      "opening": now, "opening_tried": now},

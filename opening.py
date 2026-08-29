@@ -58,6 +58,9 @@ TM_BASE = "https://app.ticketmaster.com/discovery/v2/events.json"
 # screens off the page entirely — which is not the section that was asked for.
 MAX_LOCAL = 3
 MAX_SCREENS = 2
+# Followed shows. Two, because they take their slots from screens rather than
+# adding to the row count, and a page that is all television is not the section.
+MAX_EPISODES = 2
 MAX_ROWS = MAX_LOCAL + MAX_SCREENS
 
 # The three kinds of row, and the words a user reaches for when asking for or
@@ -615,8 +618,21 @@ def opening_snapshot(profile: dict) -> list[dict]:
     # keyed by metro and shared across every user in it, which is the whole cost
     # model; narrowing a fetch to one user's taste would make the cache
     # unshareable and turn N users back into N fetches.
-    picked_screens = _rotate(screens, today, MAX_SCREENS) if "screen" in kinds else []
-    local_allowance = MAX_ROWS - len(picked_screens)
+    # Followed shows first. They are the only rows on this page someone asked
+    # for by name, so they outrank discovery — and they DISPLACE screens rather
+    # than adding to the total, because a show you actually watch is worth more
+    # than a film chosen for you. They also bypass `kinds`: that setting is
+    # about which kinds of discovery you want, and a followed show is not
+    # discovery. Unfollowing is its control, not opening_remove.
+    try:
+        from shows import episode_rows
+        episodes = episode_rows(profile, today)[:MAX_EPISODES]
+    except Exception as e:
+        print(f"opening: episode rows unavailable: {type(e).__name__}: {e}")
+        episodes = []
+    screen_allowance = max(MAX_SCREENS - len(episodes), 0)
+    picked_screens = _rotate(screens, today, screen_allowance) if "screen" in kinds else []
+    local_allowance = MAX_ROWS - len(picked_screens) - len(episodes)
     mine = [r for r in live if r.get("kind") in kinds]
 
     # Reserve the last local slot for something further out. Every candidate in
@@ -629,4 +645,4 @@ def opening_snapshot(profile: dict) -> list[dict]:
     if later and len(picked_local) < local_allowance:
         picked_local = picked_local + _rotate(later, today, local_allowance - len(picked_local))
 
-    return picked_local + picked_screens
+    return episodes + picked_local + picked_screens

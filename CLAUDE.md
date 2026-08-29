@@ -436,6 +436,40 @@ only when a screen row is actually present. **TMDB is free for non-commercial us
 only** — the same clause shape as Open-Meteo, and a question the day Palmer
 charges.
 
+### Followed shows are not discovery
+`shows.py` tracks series a user named, and the distinction from the `screen`
+rows beside them is the whole feature. Screens answer *what is new to anyone* —
+popularity-ranked, identical for every user. A followed show answers *what is
+new for the shows you watch*, and exists only because someone asked for it by
+name. `follow_show` / `unfollow_show` are its controls, not `opening_remove`;
+episode rows deliberately bypass `wanted_kinds`, because that setting chooses
+which kinds of **discovery** you want.
+
+TMDB gives episode-level data directly: `/tv/{id}` carries
+`next_episode_to_air` and `last_episode_to_air` with air dates, season and
+episode numbers and titles. One free call per show, cached by `(show id, local
+day)` and therefore **shared** — two users watching Reacher cost one lookup,
+the same shape as the metro cache.
+
+Three rules came from the spec and each has a test that catches its reversal:
+
+- **A row exists only in the week its episode lands.** Upcoming within
+  `UPCOMING_DAYS`, or dropped within `JUST_DROPPED_DAYS`. A show between seasons
+  produces nothing — it is not a permanent countdown.
+- **The page by default, the morning text only on request.**
+  `morning_prefs["episode_alerts"]` gates it, `home._refresh_identity` carries
+  the flag onto the payload, and `_payload_digest` honours it without a profile
+  read of its own. A weekly "new episode!!" nobody asked for is precisely the
+  drumbeat this product keeps having to remove.
+- **Episodes displace screens rather than lengthening the page**
+  (`MAX_EPISODES` takes its slots from `MAX_SCREENS`). A show you actually watch
+  is worth more than a film chosen for you, and the row count stays put.
+
+Resolution runs on the **write** path (`resolve_show`, one TMDB search when the
+user follows), never on read — same terms as `_normalize_price_topic` and
+`_city_from_weather_topic`. An unresolvable title asks the user to confirm; it
+never guesses one and never sends them elsewhere to look it up.
+
 ### Section labels are one word
 Every card label on Palmer Home is a single word — currently `Commute`,
 `Markets`, `News`, `Watching`. New sections follow the rule; there is no second

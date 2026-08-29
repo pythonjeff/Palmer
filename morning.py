@@ -428,7 +428,12 @@ def _payload_digest(payload: dict) -> str:
         lines.append(f"{p.get('label')}: {p.get('pct_24h', 0):+.1f}% in 24h")
     for h in (payload.get("headlines") or [])[:4]:
         lines.append(f"Headline ({h.get('topic') or 'news'}): {h.get('title')}")
-    for o in (payload.get("opening") or [])[:3]:
+    # Followed shows live on the page by default and reach the TEXT only if the
+    # user asked for that. A weekly "new episode!!" to someone who never asked
+    # is exactly the drumbeat this product keeps having to remove.
+    rows = [o for o in (payload.get("opening") or [])
+            if o.get("kind") != "episode" or payload.get("episode_alerts")]
+    for o in rows[:3]:
         bits = ", ".join(x for x in (o.get("subtitle"), o.get("when")) if x)
         lines.append(f"Opening near them: {o.get('title')}" + (f" — {bits}" if bits else ""))
     return "\n".join(lines)

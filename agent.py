@@ -559,6 +559,14 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 if "enabled" in b.input:
                     updates["morning_enabled"] = b.input["enabled"]
                 opening_note = _apply_opening_kinds(profile, b.input, updates)
+                if "episode_alerts" in b.input:
+                    prefs = dict(updates.get("morning_prefs")
+                                 or profile.get("morning_prefs") or {})
+                    prefs["episode_alerts"] = bool(b.input["episode_alerts"])
+                    updates["morning_prefs"] = prefs
+                    opening_note += (" New episodes will now be mentioned in their morning text."
+                                     if prefs["episode_alerts"]
+                                     else " New episodes will stay on their page only.")
                 upsert_profile(phone_number, updates)
                 # The page caches prices for 5 minutes. Without expiring that
                 # stamp, a ticker the user just added does not appear until the
@@ -629,6 +637,49 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     b.input["outbound_date"],
                     b.input.get("return_date"),
                 )
+            elif b.name == "follow_show":
+                from shows import resolve_show, FOLLOW_MAX
+                profile = get_profile(phone_number)
+                current = list(profile.get("shows") or [])
+                asked = (b.input.get("name") or "").strip()
+                # Resolve on the WRITE path, once — never on read, which runs on
+                # every page view. Same terms as _normalize_price_topic.
+                found = resolve_show(asked)
+                if not found:
+                    result = (f"No series matches {asked!r}. Ask them to confirm the title — "
+                              f"do not guess one, and do not send them elsewhere to look it up.")
+                elif any(sh.get("id") == found["id"] for sh in current):
+                    result = f"They already follow {found['name']}."
+                elif len(current) >= FOLLOW_MAX:
+                    result = (f"They already follow {FOLLOW_MAX} shows, which is the limit. "
+                              f"Tell them and offer to drop one.")
+                else:
+                    current.append({"id": found["id"], "name": found["name"]})
+                    upsert_profile(phone_number, {"shows": current})
+                    try:
+                        from home import invalidate
+                        invalidate(phone_number, ("opening",))
+                    except Exception as e:
+                        print(f"home.invalidate after follow_show failed: {e}")
+                    result = (f"Now following {found['name']}. It shows up on their page in the "
+                              f"week an episode lands and stays quiet between seasons. It is NOT "
+                              f"in their morning text unless they ask for that separately.")
+            elif b.name == "unfollow_show":
+                profile = get_profile(phone_number)
+                current = list(profile.get("shows") or [])
+                match = (b.input.get("text_match") or "").strip().lower()
+                kept = [sh for sh in current
+                        if match and match not in (sh.get("name") or "").lower()]
+                dropped = len(current) - len(kept)
+                if dropped:
+                    upsert_profile(phone_number, {"shows": kept})
+                    try:
+                        from home import invalidate
+                        invalidate(phone_number, ("opening",))
+                    except Exception as e:
+                        print(f"home.invalidate after unfollow_show failed: {e}")
+                result = (f"Unfollowed {dropped} show(s)." if dropped
+                          else "No followed show matched that.")
             elif b.name == "add_flight_watch":
                 from db import save_flight_watch, FLIGHT_WATCH_MAX
                 ok = save_flight_watch(
