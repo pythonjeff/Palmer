@@ -353,13 +353,15 @@ class TestScreensBypassTheLocalGate:
     and the section was local-only without anyone noticing. TMDB is already
     structured and ranked; there is no firehose there to filter."""
 
+    # popularity ranks and vote_count gates. Ranking by vote_average with no
+    # floor put a 13-vote film in front of every user on the system.
     TMDB = {"results": [
         {"id": 1, "title": "Colony", "release_date": None, "overview": "A virus spreads.",
-         "vote_average": 8.1},
+         "vote_average": 8.1, "vote_count": 630, "popularity": 900.0},
         {"id": 2, "title": "Second Film", "release_date": None, "overview": "Something else.",
-         "vote_average": 7.4},
+         "vote_average": 7.4, "vote_count": 400, "popularity": 500.0},
         {"id": 3, "title": "Third Film", "release_date": None, "overview": "More.",
-         "vote_average": 7.0},
+         "vote_average": 7.0, "vote_count": 200, "popularity": 100.0},
     ]}
 
     def _screens(self):
@@ -371,7 +373,60 @@ class TestScreensBypassTheLocalGate:
             return opening._screens()
 
     def test_titles_in_the_window_survive(self):
-        assert [r["title"] for r in self._screens()][:1] == ["Colony"], "ranked by score"
+        assert [r["title"] for r in self._screens()][:1] == ["Colony"], "ranked by popularity"
+
+    def test_a_thinly_rated_title_never_reaches_anyone(self):
+        """"Toxic: A Fairy Tale for Grown-ups" scored 6.23 from THIRTEEN votes
+        and was shown to every user as a recommendation. A rating from thirteen
+        people is not comparable to one from six hundred."""
+        from datetime import date
+        movie = {"results": [{"id": 9, "title": "Thinly Rated", "overview": "x",
+                              "release_date": date.today().isoformat(),
+                              "vote_average": 9.9, "vote_count": 13,
+                              "popularity": 5000.0}]}
+        # The TV floor is enforced by TMDB via vote_count.gte in the query, not
+        # by our code, so the two calls have to be answered separately.
+        def _get(url, timeout=10):
+            return {"results": []} if "discover/tv" in url else movie
+
+        with patch.object(opening, "TMDB_API_KEY", "k"), \
+             patch.object(opening, "_http_get_json", side_effect=_get):
+            assert opening._screens() == []
+
+    def test_popularity_outranks_a_high_score_from_few_voters(self):
+        """A film released three days ago has no votes yet however good it is;
+        popularity already reflects that people are looking it up."""
+        from datetime import date
+        today = date.today().isoformat()
+        payload = {"results": [
+            {"id": 1, "title": "Quietly Adored", "release_date": today, "overview": "x",
+             "vote_average": 9.5, "vote_count": 200, "popularity": 20.0},
+            {"id": 2, "title": "What People Are Watching", "release_date": today,
+             "overview": "x", "vote_average": 7.0, "vote_count": 900, "popularity": 900.0}]}
+        with patch.object(opening, "TMDB_API_KEY", "k"), \
+             patch.object(opening, "_http_get_json", return_value=payload):
+            assert opening._screens()[0]["title"] == "What People Are Watching"
+
+    def test_tv_comes_from_a_premiere_window_not_whatever_is_airing(self):
+        """/tv/on_the_air means CURRENTLY AIRING, not new — it returned Ted
+        Lasso, Reacher and Silo, and filtering it for "new" surfaced a
+        Brazilian news programme that first aired in 1969."""
+        seen = {}
+
+        def _get(url, timeout=10):
+            seen["tv"] = url if "/tv" in url or "discover" in url else seen.get("tv")
+            return {"results": []}
+
+        with patch.object(opening, "TMDB_API_KEY", "k"), \
+             patch.object(opening, "_http_get_json", side_effect=_get):
+            opening._screens()
+        assert "discover/tv" in seen["tv"] and "first_air_date.gte" in seen["tv"]
+        assert "on_the_air" not in seen["tv"]
+
+    def test_the_window_is_weeks_not_days(self):
+        """The old +/-7 day window is what forced the ranking into the 13-vote
+        tail: almost nothing good was left inside it."""
+        assert opening.SCREEN_WINDOW_DAYS >= 21
 
     def test_screens_cost_no_model_call(self):
         opening._clear_caches()

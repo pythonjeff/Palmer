@@ -327,7 +327,30 @@ Three things are load-bearing:
   metro's next seven days are mostly regular-season ball games, and a Tuesday
   home fixture is not something opening.
 
-  **Screens skip the gate entirely.** TMDB is already structured and already
+  **Screens need a quality floor, not a taste gate.** Ranking TMDB by
+  `vote_average` with no floor is meaningless and it showed: *"Toxic: A Fairy
+  Tale for Grown-ups"* scored 6.23 from **thirteen votes** and went to every
+  user on the system as a recommendation. `MIN_VOTES` (150) removes the long
+  tail and **popularity** does the ranking — a film released three days ago has
+  no votes yet however good it is, but popularity already reflects that people
+  are looking it up.
+
+  **Both TMDB endpoints were the wrong ones.** `/tv/on_the_air` means
+  *currently airing*, not new: it returns Ted Lasso, Reacher and Silo, running
+  for years, and the only thing making them look new was a filter on
+  `first_air_date` — which instead surfaced obscure foreign premieres and a
+  Brazilian nightly news programme that first aired in **1969**.
+  `/discover/tv` with a real premiere window asks the question we meant. The
+  movie window went from ±7 days to `SCREEN_WINDOW_DAYS` (30), because a film
+  is new in theatres for weeks, and the narrow window was itself what forced
+  the ranking down into the 13-vote tail.
+
+  Note the floors are enforced in different places: `MIN_TV_VOTES` rides on
+  TMDB's `vote_count.gte` query param, while `MIN_VOTES` is applied here
+  because `now_playing` offers no server-side filter. A mocked
+  `_http_get_json` therefore has to answer the two calls separately.
+
+  **Screens skip the curation gate entirely.** TMDB is already structured and already
   ranked by `vote_average`, so there is no firehose to filter — and running them
   through the local prompt threw away every title for being "outside the metro".
   A taste gate that rejects its whole input is not a gate.

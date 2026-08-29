@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import os
 import threading
+import urllib.parse
 from datetime import date, datetime, timedelta
 
 from llm import client, HAIKU_MODEL, _parse_json
@@ -241,42 +242,81 @@ def _events(lat: float, lon: float, start_days: int = 0, end_days: int = 7,
     return out
 
 
-def _screens() -> list[dict]:
-    """Movies and shows landing this week, from TMDB.
+# What a screen row has to clear to count as a recommendation.
+#
+# Ranking by vote_average with no floor is meaningless and it showed: "Toxic: A
+# Fairy Tale for Grown-ups" scored 6.23 from THIRTEEN votes and went to every
+# user on the system as a recommendation. A rating from thirteen people is not
+# comparable to one from six hundred, and sorting the two together is noise
+# wearing the shape of taste.
+#
+# Popularity is the better ranker for "new": a film released three days ago has
+# not accumulated votes yet no matter how good it is, but TMDB's popularity
+# already reflects that people are looking it up. The vote floor then removes
+# the long tail that popularity alone still lets through.
+MIN_VOTES = 150
+# A film is "new in theaters" for weeks, not seven days. The old +/-7 day window
+# is what forced the ranking down into the 13-vote tail: almost nothing good was
+# left inside it.
+SCREEN_WINDOW_DAYS = 30
+# TV needs a smaller floor — a genuinely new series has fewer ratings than a
+# wide theatrical release, and requiring 150 leaves nothing at all. Note this
+# one is enforced by TMDB via vote_count.gte in the query rather than by us,
+# unlike MIN_VOTES which now_playing gives no way to push server-side.
+MIN_TV_VOTES = 50
 
-    National, so this cache is global rather than per-metro — one fetch a week
-    serves every user there will ever be.
+
+def _screens() -> list[dict]:
+    """Movies and shows actually worth telling someone about, from TMDB.
+
+    National, so this cache is global rather than per-metro.
+
+    Both halves used the wrong endpoint. `/tv/on_the_air` means *currently
+    airing*, not new — it returns Ted Lasso, Reacher and Silo, running for
+    years — and the only thing making those look new was a filter on
+    first_air_date, which instead surfaced obscure foreign premieres and, one
+    slot down, a Brazilian nightly news programme from 1969. `/discover/tv`
+    with a real premiere window asks the question we actually meant.
     """
     if not TMDB_API_KEY:
         return []
     today = date.today()
-    window_start, window_end = today - timedelta(days=7), today + timedelta(days=7)
+    window_start = today - timedelta(days=SCREEN_WINDOW_DAYS)
 
-    def _recent(iso: str | None) -> bool:
+    def _in_window(iso: str | None) -> bool:
         try:
             d = date.fromisoformat(iso)
         except (TypeError, ValueError):
             return False
-        return window_start <= d <= window_end
+        return window_start <= d <= today + timedelta(days=7)
 
     out = []
     movies = _http_get_json(
         f"{TMDB_BASE}/movie/now_playing?api_key={TMDB_API_KEY}&region=US&page=1", timeout=10)
     for m in (movies or {}).get("results", [])[:20]:
-        if _recent(m.get("release_date")):
+        if _in_window(m.get("release_date")) and (m.get("vote_count") or 0) >= MIN_VOTES:
             out.append({"title": m.get("title"), "kind": "movie",
                         "date": m.get("release_date"),
                         "blurb": (m.get("overview") or "")[:240],
-                        "score": m.get("vote_average") or 0,
+                        "score": m.get("popularity") or 0,
                         "url": f"https://www.themoviedb.org/movie/{m.get('id')}"})
-    shows = _http_get_json(f"{TMDB_BASE}/tv/on_the_air?api_key={TMDB_API_KEY}&page=1", timeout=10)
-    for s in (shows or {}).get("results", [])[:20]:
-        if _recent(s.get("first_air_date")):
-            out.append({"title": s.get("name"), "kind": "show",
-                        "date": s.get("first_air_date"),
-                        "blurb": (s.get("overview") or "")[:240],
-                        "score": s.get("vote_average") or 0,
-                        "url": f"https://www.themoviedb.org/tv/{s.get('id')}"})
+
+    params = urllib.parse.urlencode({
+        "api_key": TMDB_API_KEY,
+        "first_air_date.gte": window_start.isoformat(),
+        "first_air_date.lte": today.isoformat(),
+        "sort_by": "popularity.desc",
+        "vote_count.gte": MIN_TV_VOTES,
+        "with_original_language": "en",
+    })
+    shows = _http_get_json(f"{TMDB_BASE}/discover/tv?{params}", timeout=10)
+    for sh in (shows or {}).get("results", [])[:10]:
+        out.append({"title": sh.get("name"), "kind": "show",
+                    "date": sh.get("first_air_date"),
+                    "blurb": (sh.get("overview") or "")[:240],
+                    "score": sh.get("popularity") or 0,
+                    "url": f"https://www.themoviedb.org/tv/{sh.get('id')}"})
+
     out.sort(key=lambda r: r["score"], reverse=True)
     return out
 
@@ -556,7 +596,10 @@ def opening_snapshot(profile: dict) -> list[dict]:
         screens = [{"kind": "screen",
                     "title": (r["title"] or "")[:80],
                     "subtitle": _first_clause(r.get("blurb") or ""),
-                    "when": "in theaters" if r["kind"] == "movie" else "new season",
+                    # "new season" was wrong once /discover/tv replaced
+                    # /tv/on_the_air: these are series that PREMIERED inside the
+                    # window, not returning ones.
+                    "when": "in theaters" if r["kind"] == "movie" else "new series",
                     "url": r.get("url"),
                     "source": "themoviedb.org"}
                    for r in _screens()]
