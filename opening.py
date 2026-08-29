@@ -94,6 +94,16 @@ LONG_LEAD_SIZE = 15
 # forever; rounding does not.
 BUCKET = 0.5
 
+# Cached by COST, not by convenience. Only _local_candidates spends money (two
+# Tavily searches); Ticketmaster is free at 5,000/day and TMDB is free. Keying
+# all three weekly was protecting a cost that exists for one of them, and it
+# froze every row Monday to Sunday — the same movie every day, and nothing but
+# the current weekend.
+#
+#   _candidate_cache  paid   (bucket, ISO week)  the Tavily rows
+#   _local_cache      free   (bucket, local day) curation over those + events
+#   _screen_cache     free   (local day)         TMDB, national
+_candidate_cache: dict[tuple, list[dict]] = {}
 _local_cache: dict[tuple, list[dict]] = {}
 _screen_cache: dict[str, list[dict]] = {}
 _metro_cache: dict[str, str] = {}
@@ -112,6 +122,7 @@ def _week_key(today: date | None = None) -> str:
 def _clear_caches() -> None:
     """Tests only — the caches are process-lifetime by design."""
     with _cache_lock:
+        _candidate_cache.clear()
         _local_cache.clear()
         _screen_cache.clear()
         _metro_cache.clear()
@@ -378,6 +389,37 @@ def _curate(city: str, candidates: list[dict]) -> list[dict]:
     return rows
 
 
+# Beyond this many days out, a row is advance notice rather than a plan for the
+# weekend, and it competes in its own reserved slot instead of against tonight.
+FAR_HORIZON_DAYS = 10
+
+
+def _is_far(row: dict, today: date) -> bool:
+    d = row.get("date")
+    if not d:
+        return False           # undated rows are places and screens, never "far"
+    try:
+        return (date.fromisoformat(d) - today).days > FAR_HORIZON_DAYS
+    except (TypeError, ValueError):
+        return False
+
+
+def _rotate(rows: list, today: date, take: int) -> list:
+    """`take` rows, starting at a different offset each day.
+
+    Same deterministic trick as morning._rotated_topics: a retry inside one day
+    picks the same rows, and tomorrow picks different ones, with nothing stored.
+    Without it the screens list served its top two by score every day of the
+    week — "Colony" and "Coyote vs. Acme" to every user, while four other
+    candidates were never shown at all."""
+    if not rows or take <= 0:
+        return []
+    if len(rows) <= take:
+        return rows
+    offset = today.toordinal() % len(rows)
+    return (rows[offset:] + rows[:offset])[:take]
+
+
 def _valid_iso_date(s) -> str | None:
     try:
         date.fromisoformat(s)
@@ -453,14 +495,21 @@ def opening_snapshot(profile: dict) -> list[dict]:
         print(f"opening: geocode failed for {city!r}: {type(e).__name__}: {e}")
         return []
 
-    week = _week_key()
-    key = (*_bucket(lat, lon), week)
+    from timeutil import local_today
+    today = local_today(profile.get("timezone"))
+    bucket = _bucket(lat, lon)
+    week = _week_key(today)
+
+    # The paid half, still weekly. Local-press coverage of new openings turns
+    # over on the order of weeks, so re-searching it daily would spend four
+    # times as much to find the same articles.
+    ckey = (*bucket, week)
     with _cache_lock:
-        hit = _local_cache.get(key)
-    if hit is None:
+        candidates = _candidate_cache.get(ckey)
+    metro = None
+    if candidates is None:
         # Resolve the metro INSIDE the miss branch. It costs a model call, and
-        # opening_snapshot runs on page views — on a cache hit there is nothing
-        # to search or curate, so there is nothing to resolve it for.
+        # opening_snapshot runs on page views.
         #
         # It is used for BOTH the search and the curation prompt. Handing the
         # raw city to the prompt made the model reject its own metro: told
@@ -468,53 +517,73 @@ def opening_snapshot(profile: dict) -> list[dict]:
         # St. Louis as somewhere else, which is all of them.
         metro = _metro(city)
         candidates = _local_candidates(metro)
-        for ev in (_events(lat, lon)
-                   + _events(lat, lon, start_days=7, end_days=LONG_LEAD_DAYS,
-                             size=LONG_LEAD_SIZE)):
-            candidates.append({"title": ev["title"], "url": ev.get("url"),
-                               "source": "ticketmaster.com",
-                               "blurb": " ".join(str(x) for x in
-                                                 (ev.get("genre"), ev.get("venue"), ev.get("date"))
-                                                 if x)})
-        hit = _curate(metro, candidates)
         with _cache_lock:
-            _local_cache[key] = hit
+            _candidate_cache[ckey] = candidates
+
+    # The free half, daily. Ticketmaster allows 5,000 calls a day and we make
+    # two per metro, so there is no reason for a user to look at Tuesday's page
+    # and see Sunday's events.
+    dkey = (*bucket, today.isoformat())
+    with _cache_lock:
+        hit = _local_cache.get(dkey)
+    if hit is None:
+        near = _events(lat, lon)
+        far = _events(lat, lon, start_days=7, end_days=LONG_LEAD_DAYS,
+                      size=LONG_LEAD_SIZE)
+        pool = list(candidates)
+        for ev in near + far:
+            pool.append({"title": ev["title"], "url": ev.get("url"),
+                         "source": "ticketmaster.com",
+                         "blurb": " ".join(str(x) for x in
+                                           (ev.get("genre"), ev.get("venue"), ev.get("date"))
+                                           if x)})
+        hit = _curate(metro or _metro(city), pool)
+        with _cache_lock:
+            _local_cache[dkey] = hit
 
     with _cache_lock:
-        screens = _screen_cache.get(week)
+        screens = _screen_cache.get(today.isoformat())
     if screens is None:
         # No model call here on purpose. TMDB is already structured and already
         # ranked by vote_average, so there is no firehose to filter — and the
         # curation prompt is written for local openings, which means running
         # screens through it threw away every title for being "outside the
         # metro". A taste gate that rejects the whole input is not a gate.
+        #
+        # The full candidate list is cached and rotated at read time, NOT
+        # trimmed to MAX_SCREENS here — trimming at fetch time is what served
+        # the same top two every day and buried the other four.
         screens = [{"kind": "screen",
                     "title": (r["title"] or "")[:80],
                     "subtitle": _first_clause(r.get("blurb") or ""),
                     "when": "in theaters" if r["kind"] == "movie" else "new season",
                     "url": r.get("url"),
                     "source": "themoviedb.org"}
-                   for r in _screens()[:MAX_SCREENS]]
+                   for r in _screens()]
         with _cache_lock:
-            _screen_cache[week] = screens
+            _screen_cache[today.isoformat()] = screens
 
-    # Expire past-dated rows on every read, cache hit or not. The curated list
-    # itself is only rebuilt weekly, but a Friday concert cached on Monday must
-    # not still be on the page on Saturday — see _not_expired.
-    #
-    # Against the READER's date, not the server's. The dyno runs UTC, so from
-    # 5pm Pacific onwards date.today() is already tomorrow and tonight's show
-    # would vanish from the page hours before it starts — the same failure the
-    # card masthead had.
-    from timeutil import local_today
-    live = [r for r in hit if _not_expired(r, local_today(profile.get("timezone")))]
+    # Expire past-dated rows on every read. Against the READER's date, not the
+    # server's: the dyno runs UTC, so from 5pm Pacific date.today() is already
+    # tomorrow and tonight's show would vanish hours before it starts.
+    live = [r for r in hit if _not_expired(r, today)]
 
-    # Filter per user HERE, at the end — never at fetch time. Both caches are
-    # keyed by metro and week and shared across every user in that metro, which
-    # is the whole cost model; narrowing the fetch to one user's taste would
-    # make the cache unshareable and turn N users back into N fetches. Fetching
-    # a row nobody in this metro wants costs nothing, because it was cached.
-    picked_screens = screens[:MAX_SCREENS] if "screen" in kinds else []
+    # Filter per user HERE, at the end — never at fetch time. The caches are
+    # keyed by metro and shared across every user in it, which is the whole cost
+    # model; narrowing a fetch to one user's taste would make the cache
+    # unshareable and turn N users back into N fetches.
+    picked_screens = _rotate(screens, today, MAX_SCREENS) if "screen" in kinds else []
     local_allowance = MAX_ROWS - len(picked_screens)
-    picked_local = [r for r in live if r.get("kind") in kinds][:local_allowance]
+    mine = [r for r in live if r.get("kind") in kinds]
+
+    # Reserve the last local slot for something further out. Every candidate in
+    # the next seven days outranks everything beyond them, so with a busy metro
+    # the long-lead pull — Kacey Musgraves in twelve days, Zac Brown in eleven —
+    # never won a slot and the section read as this weekend, forever.
+    soon = [r for r in mine if not _is_far(r, today)]
+    later = [r for r in mine if _is_far(r, today)]
+    picked_local = soon[:max(local_allowance - 1, 0)] if later else soon[:local_allowance]
+    if later and len(picked_local) < local_allowance:
+        picked_local = picked_local + _rotate(later, today, local_allowance - len(picked_local))
+
     return picked_local + picked_screens

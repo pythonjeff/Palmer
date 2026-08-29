@@ -57,10 +57,11 @@ def main() -> None:
             preview(city)
         except Exception as e:
             print(f"  FAILED: {type(e).__name__}: {e}")
-    print(f"\n{len(cities)} city/cities previewed. A cold metro costs 2 Tavily "
-          f"searches + 1 Ticketmaster + 2 TMDB + 2 Haiku calls (metro lookup, "
-          f"local curation) — then nothing for the rest of the week, for every "
-          f"user in that metro. Screens cost no model call at all.")
+    print(f"\n{len(cities)} city/cities previewed. Cost splits by source: the 2 "
+          f"Tavily searches are cached per metro per WEEK, while Ticketmaster, "
+          f"TMDB and the curation call refresh DAILY — those are free or nearly "
+          f"so, and keying them weekly was what froze the section. Screens cost "
+          f"no model call at all.")
 
 
 if __name__ == "__main__":

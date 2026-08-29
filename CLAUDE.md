@@ -353,6 +353,40 @@ re-deriving the full set from a profile dump eventually drops a kind nobody
 mentioned. Removing all three sets `opening = False`, so "take all that off" and
 the hard switch are one state rather than two the readers must reconcile.
 
+**Cache by cost, not by convenience — this is what keeps the section alive.**
+All three inputs were keyed on the ISO week, which froze every row Monday to
+Sunday: the same two films every day for every user on the system, and nothing
+but the current weekend. But only `_local_candidates` spends anything (two
+Tavily searches). Ticketmaster allows 5,000 calls a day and TMDB is free, so the
+weekly key was protecting a cost that existed for one of the three.
+
+    _candidate_cache   paid   (bucket, ISO week)    the Tavily rows
+    _local_cache       free   (bucket, local day)   curation over those + events
+    _screen_cache      free   (local day)           TMDB, national
+
+Curation runs daily over *cached* candidates plus *fresh* events — one Haiku
+call per metro per day, with Tavily still twice per metro per week. The day is
+`timeutil.local_today(profile["timezone"])`, never `date.today()`: the dyno is
+UTC and that has bitten twice already (the card masthead, and the expiry fix).
+
+**Rotate at read time, never trim at fetch time.** `_screens` caches all six
+candidates and `_rotate` serves two, offset by `today.toordinal()` — the same
+deterministic trick as `morning._rotated_topics`, so a retry within a day is
+stable and nothing is stored. Trimming to `MAX_SCREENS` at fetch time is exactly
+what served the top two by score forever and buried the other four.
+
+There is deliberately **no "already shown" memory**. A Saturday concert *should*
+appear on Thursday, Friday and Saturday; that is relevance, not repetition.
+Daily re-curation plus rotation answers the actual complaint without state.
+
+**One local slot is reserved for something further out** (`_is_far`,
+`FAR_HORIZON_DAYS`). Everything in the next seven days outranks everything
+beyond it, so in a busy metro the long-lead Ticketmaster pull never won a slot
+and the section read as this weekend, forever — while Kacey Musgraves in twelve
+days and Journey in November sat in the candidate list unused. The slot is
+reserved rather than competed for, and collapses with no gap when nothing
+qualifies.
+
 **Filtering happens after the caches, never inside them.** Both caches are keyed
 by metro and week and shared by every user there; narrowing a fetch to one
 user's taste would make the cache unshareable and turn N users back into N

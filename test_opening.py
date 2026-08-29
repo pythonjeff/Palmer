@@ -32,6 +32,23 @@ CURATED = {"rows": [
 ]}
 
 
+def _seed_caches(local_rows, screen_rows, tz="America/Los_Angeles", coords=(34.0, -118.5)):
+    """Pre-populate all three caches so a snapshot makes no outbound call.
+
+    The keys are deliberately different shapes — candidates are cached weekly
+    because Tavily costs money, curation and screens daily because Ticketmaster
+    and TMDB do not. Seeding only two of the three leaves the third to fetch
+    for real, which is how these tests once took 79 seconds.
+    """
+    from timeutil import local_today
+    opening._clear_caches()
+    today = local_today(tz)
+    opening._candidate_cache[(*coords, opening._week_key(today))] = []
+    opening._local_cache[(*coords, today.isoformat())] = list(local_rows)
+    opening._screen_cache[today.isoformat()] = list(screen_rows)
+    return today
+
+
 def _resp(payload):
     import json
     r = MagicMock()
@@ -280,15 +297,13 @@ class TestExpiredRowsDropOut:
 
     def test_a_past_dated_row_is_dropped_on_read(self):
         from datetime import date, timedelta
-        opening._clear_caches()
         yesterday = (date.today() - timedelta(days=1)).isoformat()
-        opening._local_cache[(34.0, -118.5, opening._week_key())] = [
+        _seed_caches([
             {"kind": "event", "title": "Already Happened", "subtitle": "", "when": "",
              "url": None, "source": "", "date": yesterday},
             {"kind": "local", "title": "Still Live", "subtitle": "", "when": "",
              "url": None, "source": "", "date": None},
-        ]
-        opening._screen_cache[opening._week_key()] = []
+        ], [])
         with patch("weather._geocode", side_effect=lambda c: COORDS[c]):
             rows = opening.opening_snapshot({"city": "Culver City"})
         titles = [r["title"] for r in rows]
@@ -297,12 +312,10 @@ class TestExpiredRowsDropOut:
 
     def test_todays_date_survives(self):
         from datetime import date
-        opening._clear_caches()
-        opening._local_cache[(34.0, -118.5, opening._week_key())] = [
+        _seed_caches([
             {"kind": "event", "title": "Tonight", "subtitle": "", "when": "",
              "url": None, "source": "", "date": date.today().isoformat()},
-        ]
-        opening._screen_cache[opening._week_key()] = []
+        ], [])
         with patch("weather._geocode", side_effect=lambda c: COORDS[c]):
             rows = opening.opening_snapshot({"city": "Culver City"})
         assert [r["title"] for r in rows] == ["Tonight"]
@@ -412,8 +425,7 @@ class TestPerUserKinds:
 
     def _snapshot(self, prefs):
         opening._clear_caches()
-        opening._local_cache[(34.0, -118.5, opening._week_key())] = list(self.POOL)
-        opening._screen_cache[opening._week_key()] = list(self.SCREENS)
+        _seed_caches(self.POOL, self.SCREENS)
         profile = {"city": "Culver City"}
         if prefs is not None:
             profile["morning_prefs"] = prefs
@@ -425,8 +437,7 @@ class TestPerUserKinds:
         above the cache check, so a hit still paid a Haiku call for a metro
         nothing was going to be searched for."""
         opening._clear_caches()
-        opening._local_cache[(34.0, -118.5, opening._week_key())] = list(self.POOL)
-        opening._screen_cache[opening._week_key()] = list(self.SCREENS)
+        _seed_caches(self.POOL, self.SCREENS)
         with patch("weather._geocode", side_effect=lambda c: COORDS[c]), \
              patch.object(opening, "client") as cl, \
              patch("datafeeds._search_raw") as tav, \
@@ -535,9 +546,11 @@ class TestExpiryUsesTheReadersDate:
     def test_the_reader_timezone_is_what_expires_a_row(self):
         import inspect
         src = inspect.getsource(opening.opening_snapshot)
-        # Assert the CALL, not nearby text — the comment above it mentions
-        # date.today() by name to explain what it is not doing.
-        assert "_not_expired(r, local_today(profile.get(\"timezone\"))" in src
+        # The date is derived once from the reader's zone and reused for
+        # expiry, the cache keys and rotation — so assert the derivation and
+        # that expiry uses it, not one exact call site.
+        assert 'local_today(profile.get("timezone"))' in src
+        assert "_not_expired(r, today)" in src
 
     def test_tonights_show_survives_after_utc_rolls_over(self):
         from datetime import date
@@ -552,6 +565,106 @@ class TestExpiryUsesTheReadersDate:
     def test_a_malformed_date_fails_open(self):
         from datetime import date
         assert opening._not_expired({"date": "next friday"}, date(2026, 8, 29))
+
+
+class TestTheSectionMovesDayToDay:
+    """It was frozen Monday to Sunday: both caches keyed on the ISO week, so a
+    user saw the same movie every day and nothing but the current weekend."""
+
+    POOL6 = [{"kind": "event", "title": f"Act {i}", "subtitle": "", "when": "",
+              "url": None, "source": "", "date": None} for i in range(6)]
+    SCREENS6 = [{"kind": "screen", "title": f"Film {i}", "subtitle": "", "when": "",
+                 "url": None, "source": ""} for i in range(6)]
+
+    def test_the_paid_cache_is_weekly_and_the_free_ones_are_daily(self):
+        """Only the Tavily search costs money. Ticketmaster is 5,000/day free
+        and TMDB is free, so keying those weekly bought nothing and froze the
+        section."""
+        from timeutil import local_today
+        _seed_caches(self.POOL6, self.SCREENS6)
+        today = local_today("America/Los_Angeles")
+        assert any(opening._week_key(today) in str(k) for k in opening._candidate_cache)
+        assert any(today.isoformat() in str(k) for k in opening._local_cache)
+        assert today.isoformat() in opening._screen_cache
+
+    def test_screens_rotate_across_days(self):
+        from datetime import date
+        a = opening._rotate(self.SCREENS6, date(2026, 8, 29), 2)
+        b = opening._rotate(self.SCREENS6, date(2026, 8, 30), 2)
+        assert a != b, "the same two titles every day is the complaint"
+
+    def test_rotation_is_stable_within_a_day(self):
+        """A retry inside one day must not reshuffle the page under someone."""
+        from datetime import date
+        d = date(2026, 8, 29)
+        assert opening._rotate(self.SCREENS6, d, 2) == opening._rotate(self.SCREENS6, d, 2)
+
+    def test_every_candidate_gets_a_turn(self):
+        from datetime import date, timedelta
+        seen = set()
+        for i in range(6):
+            seen.update(r["title"] for r in
+                        opening._rotate(self.SCREENS6, date(2026, 8, 29) + timedelta(days=i), 2))
+        assert len(seen) == 6, "four of six were never shown before rotation"
+
+    def test_a_short_list_is_served_whole(self):
+        from datetime import date
+        one = [self.SCREENS6[0]]
+        assert opening._rotate(one, date(2026, 8, 29), 2) == one
+
+
+class TestSomethingFurtherOutGetsASlot:
+    """Everything in the next seven days outranked everything beyond, so with a
+    busy metro the long-lead pull never won a slot and the section read as this
+    weekend, forever."""
+
+    def _rows(self, today):
+        near = [{"kind": "event", "title": f"Soon {i}", "date": today.isoformat(),
+                 "subtitle": "", "when": "", "url": None, "source": ""} for i in range(4)]
+        from datetime import timedelta
+        far = [{"kind": "event", "title": "Kacey Musgraves",
+                "date": (today + timedelta(days=14)).isoformat(),
+                "subtitle": "", "when": "", "url": None, "source": ""}]
+        return near + far
+
+    def test_a_far_row_survives_a_full_near_term_window(self):
+        from timeutil import local_today
+        today = local_today("America/Los_Angeles")
+        _seed_caches(self._rows(today), [])
+        with patch("weather._geocode", side_effect=lambda c: COORDS[c]):
+            rows = opening.opening_snapshot({"city": "Culver City",
+                                             "timezone": "America/Los_Angeles"})
+        assert "Kacey Musgraves" in [r["title"] for r in rows]
+
+    def test_near_term_still_leads(self):
+        from timeutil import local_today
+        today = local_today("America/Los_Angeles")
+        _seed_caches(self._rows(today), [])
+        with patch("weather._geocode", side_effect=lambda c: COORDS[c]):
+            rows = opening.opening_snapshot({"city": "Culver City",
+                                             "timezone": "America/Los_Angeles"})
+        assert rows[0]["title"].startswith("Soon"), "advance notice must not lead"
+
+    def test_no_far_candidate_means_no_slot_wasted(self):
+        from timeutil import local_today
+        today = local_today("America/Los_Angeles")
+        near = [r for r in self._rows(today) if r["title"].startswith("Soon")]
+        _seed_caches(near, [])
+        with patch("weather._geocode", side_effect=lambda c: COORDS[c]):
+            rows = opening.opening_snapshot({"city": "Culver City",
+                                             "timezone": "America/Los_Angeles"})
+        # With no screens, local gets the whole MAX_ROWS allowance — the point
+        # is that reserving a slot for a far row leaves no gap when there is
+        # no far row to put in it.
+        assert [r["title"] for r in rows] == ["Soon 0", "Soon 1", "Soon 2", "Soon 3"]
+
+    def test_the_horizon_is_what_counts_as_far(self):
+        from datetime import date, timedelta
+        today = date(2026, 8, 29)
+        soon = {"date": (today + timedelta(days=3)).isoformat()}
+        far = {"date": (today + timedelta(days=30)).isoformat()}
+        assert not opening._is_far(soon, today) and opening._is_far(far, today)
+        assert not opening._is_far({"date": None}, today), "places are never 'far'"
 
 
 class TestThePageCard:
