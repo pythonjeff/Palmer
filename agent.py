@@ -471,6 +471,12 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                         topics.append(item)
                 for item in (b.input.get("remove") or []):
                     topics = [t for t in topics if item.lower() not in t.lower()]
+                # Turning the morning on with nothing in the list used to mean
+                # weather and nothing else — an empty News card and no Markets
+                # on day one. Seed a baseline instead of waiting to be asked.
+                if b.input.get("enabled") is True and not topics:
+                    from morning import default_topics
+                    topics = default_topics(profile.get("city"))
                 updates: dict = {"morning_topics": topics, "morning_onboarded": True}
                 # Asking for a city's weather sets the city every weather pull
                 # uses. Timezone is deliberately left alone — it is only derived

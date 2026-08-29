@@ -193,6 +193,36 @@ class TestCostGuarantee:
         w.assert_not_called()
 
 
+class TestNoSectionAliasesAgainstTheDailySend:
+    """Most users never open their page. The only guaranteed refresh is the
+    morning send, so a window at or above 24h lapses on roughly half of them —
+    three users were carrying Opening rows 41 hours old with no refetch even
+    attempted, because at the previous send the section was 20.4h old and its
+    window was 24h."""
+
+    DAILY = 24 * 3600
+
+    def test_every_window_is_shorter_than_a_day(self):
+        for section, window in home.STALE.items():
+            if window is None:
+                continue
+            assert window < self.DAILY, (
+                f"{section} at {window/3600:.0f}h aliases against a daily send")
+
+    def test_there_is_margin_for_a_send_that_drifts(self):
+        """A window at exactly 24h would depend on the send never slipping."""
+        for section, window in home.STALE.items():
+            if window is None:
+                continue
+            assert window <= self.DAILY - 2 * 3600
+
+    def test_a_section_one_day_old_is_stale_at_the_next_send(self):
+        now = time.time()
+        yesterday = now - self.DAILY
+        assert home._opening_stale({"opening_tried": yesterday}, now, has_data=True)
+        assert home._headlines_stale({"headlines_tried": yesterday}, now, has_data=True)
+
+
 class TestInvalidateExpiresPaidSections:
     """A paid section gates on its `_tried` stamp, not its data stamp. Clearing
     only the data stamp expires nothing: the section still reads as recently

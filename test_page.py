@@ -131,6 +131,33 @@ class TestNameMissing:
         assert "<script>" not in _render(name="<script>alert(1)</script>")
 
 
+class TestThePreviewImageCanChange:
+    """Link-preview scrapers cache og:images by URL and have no reason to
+    refetch one they have seen. The URL was a fixed /h/{token}.png, so every
+    morning's message showed whatever card was scraped the first time — the
+    server was rendering today's card faithfully and nobody was asking for it.
+    """
+
+    def test_the_image_url_carries_a_content_stamp(self):
+        import inspect
+        import main
+        src = inspect.getsource(main.home_page)
+        assert "_card_fingerprint" in src and "?v=" in src
+
+    def test_the_png_answers_a_revalidating_cache(self):
+        import inspect
+        import main
+        src = inspect.getsource(main.home_png)
+        assert "ETag" in src
+
+    def test_the_stamp_moves_when_the_card_would_look_different(self):
+        import artifacts
+        base = {"city": "Kirkwood, MO", "weather": {"temp_now": 70, "high": 80, "low": 60},
+                "prices": [], "headlines": [], "opening": []}
+        warmer = dict(base, weather={"temp_now": 95, "high": 100, "low": 70})
+        assert artifacts._card_fingerprint(base) != artifacts._card_fingerprint(warmer)
+
+
 class TestSectionLabelsAreOneWord:
     """Every card label on the page is a single word.
 

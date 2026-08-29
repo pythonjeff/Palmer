@@ -50,8 +50,18 @@ TTL_HOURS = 24 * 400          # effectively permanent; refreshed on every write
 # seconds before a section is worth refetching on view. None = never on view.
 # headlines is the only paid entry — see the cost note in the module docstring
 # for why it is 6h and how the window is enforced.
+# A section's window must be SHORTER than the interval at which refresh
+# opportunities occur, or it aliases. Most users never open their page, so the
+# only guaranteed opportunity is the daily morning send — and a 24h window
+# sampled once every 24h lapses on only about half of them. Three users were
+# carrying Opening rows 41 hours old with no refetch even attempted in between:
+# at the previous send the section was 20.4h old, just under its own window, so
+# it was correctly skipped, and the next chance was a day later. 20h leaves
+# four hours of margin against a send that drifts. The refetch is nearly free
+# anyway — opening.py caches by metro and week, so a "refresh" inside the same
+# week is a dict lookup.
 STALE = {"weather": 600, "traffic": 300, "prices": 300, "headlines": 6 * 3600,
-         "opening": 24 * 3600}
+         "opening": 20 * 3600}
 
 
 def home_token(phone: str) -> str:

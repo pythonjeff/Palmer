@@ -395,6 +395,42 @@ what a section is called. `test_page.py::TestSectionLabelsAreOneWord` reads the
 labels out of `page.py`'s markup and fails on a space in any of them, and also
 checks the card image kept in step.
 
+### The preview image must change URL, or nobody ever refetches it
+`og:image` points at `/h/{token}.png?v={fingerprint}`. The query stamp is the
+whole point: link-preview scrapers — iMessage most stubbornly — cache og:images
+by URL and have no reason to refetch one they have already seen. With a fixed
+`/h/{token}.png`, every morning's message showed whatever card was scraped the
+first time. The server was rendering today's card faithfully; nobody was asking
+for it, and there was no ETag or Last-Modified to hint otherwise. The PNG route
+now sends an ETag too, for caches that do revalidate.
+
+### Windows must be shorter than the refresh opportunity, or they alias
+Most users never open their page, so the only guaranteed refresh is the daily
+morning send. A section whose window is 24h therefore lapses on **about half**
+of them: three users were carrying Opening rows 41 hours old with no refetch
+even attempted, because at the previous send the section was 20.4h old — just
+under its own window — and the next chance came a day later. `STALE["opening"]`
+is 20h for that reason, leaving margin for a send that drifts.
+`test_home.py::TestNoSectionAliasesAgainstTheDailySend` holds every window under
+a day. The refetch is nearly free anyway: `opening.py` caches by metro and week,
+so a refresh inside the same week is a dict lookup.
+
+### A new user is set up, not interviewed
+"Set that up" calls `update_morning_briefing(enabled=true)` in that same turn,
+and an empty topic list is seeded from `morning.default_topics(city)` — local
+news plus national. It used to ask *"what topics do you want?"*, which left the
+user with a briefing that was weather and nothing else and made them do setup
+work before seeing whether Palmer was any good: three turns in, `morning_topics`
+was `[]`, the News card was empty and Markets did not render at all.
+
+Keep defaults **subject-shaped**. The search is Tavily in news mode behind a 24h
+window, a trusted-source gate and a relevance floor, and it answers subjects
+("AI news", "Philadelphia Eagles") far better than meta-queries: `"Top national
+news"` returned *"Clemson Army ROTC earns top national honors"* — a literal
+word match — and `"Austin, TX local news"` returned nothing at all. Expect
+roughly 60% of attempted topics to return something on a given day; that is the
+recency gate doing its job, not a bug.
+
 ### The card is cached on what it draws, not on when it was built
 `artifacts.render_png` keys `_png_cache` on the token plus a hash of exactly the
 fields `render_dashboard` renders (`_card_inputs`), including the masthead date.

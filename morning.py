@@ -11,6 +11,24 @@ from db import get_profile, upsert_profile, get_all_profiles, save_message, get_
 from traffic import get_city_traffic, get_travel_time
 
 DEFAULT_MORNING_TIME = "07:00"
+
+# What a user gets if they switch the morning on without naming anything.
+#
+# "Yeah set that up" used to produce morning_topics = [] — the briefing was
+# weather and nothing else, the page had an empty News card and no Markets, and
+# the user had to volunteer subjects before Palmer was worth reading. A product
+# whose baseline is weather, commute, news and prices cannot start three of
+# those empty and wait to be asked.
+#
+# Two topics, not six: enough that the page has something on it from day one,
+# few enough that a user who never tunes it is not paying for six searches a
+# day about nothing in particular. Local first, because that is the half no
+# other app is already giving them.
+def default_topics(city: str | None) -> list[str]:
+    topics = ["Top national news"]
+    if city:
+        topics.insert(0, f"{city} local news")
+    return topics
 # How long after the target time we'll still send (covers missed scheduler ticks
 # or a transient generation failure) before giving up for the day.
 CATCHUP_WINDOW_MINUTES = 120

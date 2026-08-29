@@ -374,10 +374,17 @@ async def home_png(token: str):
     if payload is None:
         raise HTTPException(status_code=404)
     payload = refresh_stale(token, payload)
+    from artifacts import _card_fingerprint
+    stamp = _card_fingerprint(payload)
     return FileResponse(
         content=render_png(token, payload),
         media_type="image/png",
+        # An ETag so a cache that DOES revalidate gets a straight answer, and a
+        # short max-age so one that does not still comes back soon. The real
+        # busting is the ?v= fingerprint on the og:image URL; these two are the
+        # belt to that pair of braces.
         headers={"Cache-Control": "public, max-age=300",
+                 "ETag": f'"{stamp}"',
                  "X-Robots-Tag": "noindex, nofollow",
                  "Referrer-Policy": "no-referrer"},
     )
@@ -394,9 +401,20 @@ async def home_page(token: str):
         raise HTTPException(status_code=404)
     payload = refresh_stale(token, payload)
     base = os.environ.get("APP_URL", "").rstrip("/")
+    # The og:image URL carries the card's content fingerprint. Link-preview
+    # scrapers — iMessage most stubbornly — cache og:images by URL and have no
+    # reason to refetch a URL they have already seen, so a fixed
+    # /h/{token}.png meant every morning's message showed whatever card was
+    # scraped the very first time. The server was rendering today's card
+    # faithfully; nobody was ever asking for it. A fingerprint in the URL makes
+    # each day's link a different image to a cache, and an unchanged day stays
+    # cheap because the fingerprint is unchanged too.
+    from artifacts import _card_fingerprint
+    stamp = _card_fingerprint(payload)
     return FileResponse(
         content=render(payload, token=token,
-                       image_url=f"{base}/h/{token}.png", page_url=f"{base}/h/{token}"),
+                       image_url=f"{base}/h/{token}.png?v={stamp}",
+                       page_url=f"{base}/h/{token}"),
         media_type="text/html; charset=utf-8",
         headers={"Cache-Control": "no-store",
                  "X-Robots-Tag": "noindex, nofollow",
