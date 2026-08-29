@@ -365,9 +365,13 @@ async def artifact_page(token: str):
     )
 
 
-@app.get("/h/{token}.png")
+@app.api_route("/h/{token}.png", methods=["GET", "HEAD"])
 async def home_png(token: str):
-    """The user's home as a flat card — og:image and MMS."""
+    """The user's home as a flat card — og:image and MMS.
+
+    Answers HEAD as well as GET: link-preview scrapers and proxies commonly
+    probe with HEAD before fetching an image, and a 405 there can cost the
+    preview outright."""
     from home import load, refresh_stale
     from artifacts import render_png
     payload = load(token)
@@ -390,7 +394,7 @@ async def home_png(token: str):
     )
 
 
-@app.get("/h/{token}")
+@app.api_route("/h/{token}", methods=["GET", "HEAD"])
 async def home_page(token: str):
     """The user's live page. No login — the token is the whole protection, so
     this shows only briefing-grade content (see home.py)."""
