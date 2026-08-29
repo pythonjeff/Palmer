@@ -501,7 +501,13 @@ def opening_snapshot(profile: dict) -> list[dict]:
     # Expire past-dated rows on every read, cache hit or not. The curated list
     # itself is only rebuilt weekly, but a Friday concert cached on Monday must
     # not still be on the page on Saturday — see _not_expired.
-    live = [r for r in hit if _not_expired(r, date.today())]
+    #
+    # Against the READER's date, not the server's. The dyno runs UTC, so from
+    # 5pm Pacific onwards date.today() is already tomorrow and tonight's show
+    # would vanish from the page hours before it starts — the same failure the
+    # card masthead had.
+    from timeutil import local_today
+    live = [r for r in hit if _not_expired(r, local_today(profile.get("timezone")))]
 
     # Filter per user HERE, at the end — never at fetch time. Both caches are
     # keyed by metro and week and shared across every user in that metro, which

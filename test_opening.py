@@ -527,6 +527,33 @@ class TestTheKindsDispatch:
         assert "morning_prefs" in block and "opening" in block
 
 
+class TestExpiryUsesTheReadersDate:
+    """The dyno runs UTC. From 5pm Pacific onward date.today() is already
+    tomorrow, so a show happening THAT EVENING would drop off the page hours
+    before it started — the same failure the card masthead had."""
+
+    def test_the_reader_timezone_is_what_expires_a_row(self):
+        import inspect
+        src = inspect.getsource(opening.opening_snapshot)
+        # Assert the CALL, not nearby text — the comment above it mentions
+        # date.today() by name to explain what it is not doing.
+        assert "_not_expired(r, local_today(profile.get(\"timezone\"))" in src
+
+    def test_tonights_show_survives_after_utc_rolls_over(self):
+        from datetime import date
+        row = {"date": "2026-08-29", "kind": "event", "title": "Tonight"}
+        assert opening._not_expired(row, date(2026, 8, 29)), "still on tonight"
+        assert not opening._not_expired(row, date(2026, 8, 30)), "over by tomorrow"
+
+    def test_an_undated_row_never_expires(self):
+        from datetime import date
+        assert opening._not_expired({"kind": "local", "title": "A bar"}, date(2099, 1, 1))
+
+    def test_a_malformed_date_fails_open(self):
+        from datetime import date
+        assert opening._not_expired({"date": "next friday"}, date(2026, 8, 29))
+
+
 class TestThePageCard:
     def _render(self, rows):
         payload = {"city": "Culver City", "weather": {}, "prices": [], "headlines": [],
