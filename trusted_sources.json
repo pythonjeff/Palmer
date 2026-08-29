@@ -827,6 +827,18 @@
     {
       "domain": "newser.com",
       "why": "republishing aggregator"
+    },
+    {
+      "domain": "vocal.media",
+      "why": "user-generated content platform, not a newsroom"
+    },
+    {
+      "domain": "medium.com",
+      "why": "user-generated content platform, not a newsroom"
+    },
+    {
+      "domain": "hubpages.com",
+      "why": "user-generated content platform, not a newsroom"
     }
   ]
 }

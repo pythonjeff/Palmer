@@ -25,9 +25,28 @@ DEFAULT_MORNING_TIME = "07:00"
 # day about nothing in particular. Local first, because that is the half no
 # other app is already giving them.
 def default_topics(city: str | None) -> list[str]:
-    topics = ["Top national news"]
-    if city:
-        topics.insert(0, f"{city} local news")
+    # Phrasing matters more than it should here, because the search matches
+    # query text: "Top national news" returned "Clemson Army ROTC earns top
+    # national honors" — a literal word match — and "top US and world news
+    # stories", "world news" and "breaking news" all return nothing at all.
+    # "National and international news" is the one that works, and it is not a
+    # guess: it is the phrasing already in a real user's topic list, hitting
+    # Reuters and AP daily since it was added. Do not "improve" it without
+    # running it against the live search first.
+    topics = ["National and international news"]
+    if not city:
+        return topics
+    # Local coverage is written about metros, not suburbs: "Kirkwood, MO" is
+    # also an IndyCar driver, and "Culver City local news" reaches one niche
+    # paper where "Los Angeles local news" reaches four newsrooms. Resolved once
+    # here, on the seeding path, and cached — never on read.
+    place = city
+    try:
+        from opening import _metro
+        place = _metro(city) or city
+    except Exception as e:
+        print(f"default_topics: metro lookup failed for {city!r}: {type(e).__name__}: {e}")
+    topics.insert(0, f"{place} local news")
     return topics
 # How long after the target time we'll still send (covers missed scheduler ticks
 # or a transient generation failure) before giving up for the day.

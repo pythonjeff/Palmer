@@ -193,6 +193,64 @@ class TestCostGuarantee:
         w.assert_not_called()
 
 
+class TestHeadlinesFallBackToUnvettedSources:
+    """trusted_only was not filtering junk — it was dropping the best source
+    there is. "Philadelphia Eagles news" lost philadelphiaeagles.com at 0.75;
+    "St. Louis area news" lost fox2now, ksdk and stlamerican, every real
+    newsroom in the market. The allowlist is ~100 domains against thousands of
+    local outlets and will never cover them. Conversation and the morning
+    briefing have always fallen back to tier 3; the page was the odd one out and
+    paid for it with empty News cards. Measured: 65% of real topics returned
+    something, 82% with this fallback."""
+
+    def _fetch(self, trusted, untrusted):
+        calls = []
+
+        def _search(topic, **kw):
+            calls.append(kw)
+            return untrusted if kw.get("trusted_only") is False else trusted
+
+        with patch("datafeeds._search_raw", side_effect=_search), \
+             patch("morning._rotated_topics", side_effect=lambda t, d: t):
+            out = home._fetch_headlines({"morning_topics": ["Philadelphia Eagles news"],
+                                         "timezone": "America/Chicago"})
+        return out, calls
+
+    def test_a_trusted_hit_is_used_and_costs_one_search(self):
+        out, calls = self._fetch(
+            [{"title": "wire story", "url": "https://apnews.com/x"}], [])
+        assert out[0]["title"] == "wire story"
+        assert len(calls) == 1, "no fallback search when trusted already answered"
+
+    def test_an_empty_trusted_result_falls_back(self):
+        out, calls = self._fetch(
+            [], [{"title": "Eagles observations", "url": "https://philadelphiaeagles.com/x"}])
+        assert out and out[0]["source"] == "philadelphiaeagles.com"
+        assert len(calls) == 2
+
+    def test_the_fallback_demands_a_higher_score(self):
+        """Unvetted means the match has to carry the weight the source is not."""
+        _, calls = self._fetch([], [])
+        trusted_call, fallback_call = calls
+        assert fallback_call["min_score"] > trusted_call["min_score"]
+        assert fallback_call["min_score"] == home.UNTRUSTED_MIN_SCORE
+
+    def test_the_fallback_keeps_every_other_gate(self):
+        _, calls = self._fetch([], [])
+        fallback_call = calls[1]
+        assert fallback_call["days"] == 1 and fallback_call["max_age_hours"] == 24
+
+    def test_nothing_anywhere_drops_the_topic(self):
+        out, _ = self._fetch([], [])
+        assert out == []
+
+    def test_content_mills_are_blocked_structurally(self):
+        """vocal.media cleared the old 0.5 floor at 0.52. The score bar cuts it
+        and the blocklist backs that up on the paths that do not use one."""
+        import sources
+        assert sources.is_blocked("https://vocal.media/history/some-fact")
+
+
 class TestNoSectionAliasesAgainstTheDailySend:
     """Most users never open their page. The only guaranteed refresh is the
     morning send, so a window at or above 24h lapses on roughly half of them —
@@ -532,9 +590,12 @@ class TestTrackingLinks:
 
 
 class TestHeadlineSourcing:
-    """Today only shows a story when a trusted domain covered it — the same
-    tier gate every other news surface goes through. A topic whose only
-    coverage is an unranked domain gets no story that day, not a weak one.
+    """A trusted domain wins whenever one covered the topic. When none did, a
+    strong match from an unvetted source is preferred to an empty card — the
+    allowlist cannot cover local and specialist beats, and dropping them was
+    losing philadelphiaeagles.com and every newsroom in St. Louis, not junk.
+    The bar for an unvetted source is higher (UNTRUSTED_MIN_SCORE), so the
+    match has to carry the weight the provenance is not.
 
     These patch Tavily's transport rather than `_search_raw`, because
     `_search_raw` is now where the gate lives: `home._fetch_headlines` passes
@@ -558,11 +619,21 @@ class TestHeadlineSourcing:
             out = home._fetch_headlines(self.TOPIC_PROFILE)
         return out, search
 
-    def test_untrusted_only_result_is_dropped(self):
+    def test_a_strong_untrusted_result_is_used_when_nothing_trusted_covered_it(self):
+        """Reversed deliberately. This used to assert the row was dropped, and
+        that policy was costing the page its local and specialist coverage."""
         out, _ = self._headlines([
             {"title": "SpaceX did a thing", "url": "https://randomblog.example/x",
              "score": 0.9}])
-        assert out == [], "an unranked-domain-only result must not become a story"
+        assert out and out[0]["source"] == "randomblog.example"
+
+    def test_a_weak_untrusted_result_is_still_dropped(self):
+        """The protection that matters survives: unvetted AND unconvincing is
+        still nothing. vocal.media cleared the old floor at 0.52."""
+        out, _ = self._headlines([
+            {"title": "some content mill post", "url": "https://randomblog.example/x",
+             "score": 0.55}])
+        assert out == []
 
     def test_trusted_domain_result_is_kept(self):
         out, _ = self._headlines([
@@ -582,9 +653,11 @@ class TestHeadlineSourcing:
         out, _ = self._headlines([])
         assert out == []
 
-    def test_page_asks_for_trusted_only(self):
-        """The page is the only caller that passes it; conversation and the
-        morning briefing keep tier 3 as a last resort."""
+    def test_the_page_asks_for_trusted_first(self):
+        """Trusted is still the preferred answer — it is the fallback, not the
+        default, that reaches tier 3."""
         with patch.object(datafeeds, "_search_raw", return_value=[]) as search:
             home._fetch_headlines(self.TOPIC_PROFILE)
-        assert search.call_args.kwargs.get("trusted_only") is True
+        first = search.call_args_list[0].kwargs
+        assert first.get("trusted_only") is True
+        assert first.get("min_score") == 0.5

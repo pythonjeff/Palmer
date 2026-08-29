@@ -63,6 +63,11 @@ TTL_HOURS = 24 * 400          # effectively permanent; refreshed on every write
 STALE = {"weather": 600, "traffic": 300, "prices": 300, "headlines": 6 * 3600,
          "opening": 20 * 3600}
 
+# Score a story must clear to reach the page from OUTSIDE the trusted list.
+# Higher than the trusted floor (0.5) on purpose: an unvetted source has to earn
+# its place on match strength, since it is not earning it on provenance.
+UNTRUSTED_MIN_SCORE = 0.60
+
 
 def home_token(phone: str) -> str:
     """The user's permanent token, minted on first use."""
@@ -191,6 +196,25 @@ def _fetch_headlines(profile: dict) -> list[dict]:
             # appear today.
             results = _search_raw(topic, days=1, max_age_hours=24, min_score=0.5,
                                   trusted_only=True)
+            if not results:
+                # Trusted-only cannot cover local or specialist beats, and it was
+                # not failing on junk — it was dropping the BEST source there is.
+                # "Philadelphia Eagles news" lost philadelphiaeagles.com at 0.75
+                # and nbcsportsphiladelphia.com at 0.61; "St. Louis area news"
+                # lost fox2now, ksdk and stlamerican, every real newsroom in the
+                # market. The allowlist is 100-odd domains and there are
+                # thousands of local outlets, so it will never cover them.
+                #
+                # Conversation and the morning briefing have always fallen back
+                # to tier 3 on the principle that an obscure-but-real source
+                # beats "nothing found"; the page was the only surface that did
+                # not, and it paid for that with empty News cards. It falls back
+                # too now, at a HIGHER score bar: unvetted means the match itself
+                # has to carry the weight the source is not carrying. 0.60 keeps
+                # the local newsrooms above and cuts the content mill below them
+                # (vocal.media at 0.52), with room on both sides.
+                results = _search_raw(topic, days=1, max_age_hours=24,
+                                      min_score=UNTRUSTED_MIN_SCORE, trusted_only=False)
             if not results:
                 continue
             top = results[0]
