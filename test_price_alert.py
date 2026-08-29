@@ -103,13 +103,18 @@ class TestDrafting:
         _, create = self._draft(link=CURRENT["url"])
         assert "Do NOT include a URL" in create.call_args.kwargs["messages"][0]["content"]
 
-    def test_no_system_prompt_without_a_phone(self):
+    def test_falls_back_to_the_base_prompt_without_a_phone(self):
         """A malformed row shouldn't cost the user their alert."""
         with patch.object(price_alert, "_build_system") as bs, \
              patch.object(price_alert.client.messages, "create", return_value=_resp("x")) as create:
             price_alert.draft_price_alert("Protein", CURRENT, {"baseline_price": 60.0}, "drop")
         bs.assert_not_called()
-        assert "system" not in create.call_args.kwargs
+        # Used to assert NO system prompt at all, which meant a failed profile
+        # read dropped the voice, the calibration and every NEVER rule — the
+        # anti-redirect one included — from a message that still went out.
+        sys = create.call_args.kwargs.get("system") or ""
+        assert "Palmer" in sys, "must still sound like Palmer"
+        assert "{profile_block}" not in sys, "the template must be formatted, not raw"
 
 
 class TestFailsSafe:

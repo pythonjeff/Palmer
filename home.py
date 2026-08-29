@@ -186,6 +186,7 @@ def _fetch_headlines(profile: dict) -> list[dict]:
               if t and not any(w in t.lower() for w in auto)
               and not _is_directive(t) and not resolve_topic_asset(t)]
     out = []
+    seen_urls: set[str] = set()
     for topic in _rotated_topics(topics, local_today(profile.get("timezone"))):
         try:
             # trusted_only: the page is the one surface where an untrusted row is
@@ -217,7 +218,14 @@ def _fetch_headlines(profile: dict) -> list[dict]:
                                       min_score=UNTRUSTED_MIN_SCORE, trusted_only=False)
             if not results:
                 continue
-            top = results[0]
+            # Two topics covering the same beat return the same article, and the
+            # page rendered it twice — one user had "Kirkwood, MO news" and
+            # "St. Louis area news" and got a duplicate row. Take the best
+            # result this topic has that no earlier topic already used.
+            top = next((r for r in results if r.get("url") not in seen_urls), None)
+            if top is None:
+                continue
+            seen_urls.add(top.get("url"))
             out.append({"title": (top.get("title") or "")[:110],
                         "url": top.get("url"),
                         "source": canonical_domain(top.get("url", "")),

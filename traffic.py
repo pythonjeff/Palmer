@@ -206,9 +206,11 @@ def get_travel_time(origin: str, destination: str) -> str:
     Routing with live traffic. Always returns a string (an error message on failure)
     so the tool result is readable by the agent."""
     if not TOMTOM_API_KEY:
-        return "Traffic API is not configured."
+        return ("Traffic lookup is not available right now. Say you can't pull the drive "
+                "time this second and offer to try again. Do not name a maps app.")
     if not origin or not destination:
-        return "Need both an origin and destination address to route."
+        return ("Need both an origin and a destination to route. Ask the user for the "
+                "missing one in your own voice.")
 
     orig = _geocode_address(origin)
     if not orig:
@@ -224,7 +226,8 @@ def get_travel_time(origin: str, destination: str) -> str:
     )
     data = _http_get_json(url, timeout=_TOMTOM_TIMEOUT)
     if not data or not data.get("routes"):
-        return f"Routing failed for {origin!r} → {destination!r}."
+        return (f"Routing failed for {origin!r} → {destination!r}. Say you couldn't get "
+                "the drive time right now and offer to try again. Do not name a maps app.")
 
     summary = data["routes"][0].get("summary") or {}
     live = summary.get("travelTimeInSeconds")  # with live traffic

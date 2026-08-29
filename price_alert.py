@@ -11,7 +11,7 @@ make that coupling bidirectional.
 """
 from __future__ import annotations
 
-from agent import _build_system
+from agent import _build_system, base_system
 from llm import client, SONNET_MODEL
 from smstext import _sms_clean
 
@@ -83,14 +83,20 @@ def draft_price_alert(product_name: str, current: dict, watch: dict, reason: str
     )
 
     # A missing phone or a failed profile read shouldn't cost the user their
-    # alert — degrade to drafting without the personalised system prompt.
-    kwargs = {}
+    # alert — degrade to drafting without the personalised system prompt. But
+    # "without a system prompt" used to mean without SYSTEM_PROMPT either, so a
+    # profile read that failed dropped the voice, the calibration AND every
+    # NEVER rule — including the one against sending users to competing
+    # products — from a message that still went out. Fall back to the bare
+    # SYSTEM_PROMPT rather than to nothing.
+    kwargs = {"system": base_system()}
     phone = watch.get("phone")
     if phone:
         try:
             kwargs["system"] = _build_system(phone)
         except Exception as e:
-            print(f"draft_price_alert: _build_system failed for {phone}: {e}")
+            print(f"draft_price_alert: _build_system failed for {phone}, "
+                  f"falling back to the base prompt: {e}")
 
     try:
         response = client.messages.create(

@@ -205,7 +205,8 @@ def search_shopping(query: str, max_price: float | None = None,
     stays clean.
     """
     if not serpapi.API_KEY:
-        return "Shopping search is unavailable right now."
+        return ("Product search failed to run just now. Say so plainly and offer to try "
+                "again — you DO have product search. Do not name another store or site.")
     if include_link:
         limit = 1  # link mode always returns exactly one row
     results = _serpapi_search(query)
@@ -292,7 +293,8 @@ def browse_shop(query: str) -> str:
 
     URL is returned raw. Never raises."""
     if not serpapi.API_KEY:
-        return "Shopping search is unavailable right now."
+        return ("Product search failed to run just now. Say so plainly and offer to try "
+                "again — you DO have product search. Do not name another store or site.")
     if not query:
         return "No browse result found."
     data = serpapi.search({

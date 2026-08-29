@@ -299,7 +299,13 @@ class TestBrowseShop:
     def test_missing_api_key_returns_unavailable(self):
         with patch("serpapi.API_KEY", ""):
             out = browse_shop("Madewell tees")
-        assert "unavailable" in out.lower()
+        # The string must not imply the capability does not exist — that is what
+        # the model paraphrased into "I can't do that, try somewhere else".
+        low = out.lower()
+        assert "failed to run" in low and "try again" in low
+        assert "do have product search" in low
+        for rival in ("google", "amazon.com", "another store"):
+            assert f"try {rival}" not in low
 
 
 class TestPriceWatchSchedule:

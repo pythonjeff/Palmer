@@ -4,6 +4,7 @@ Profile extraction/consolidation plus the two cross-send dedup gates that
 stop unprompted messages repeating a subject.
 """
 import json
+import re
 
 from db import (
     get_profile, upsert_profile, get_message_count, get_older_messages, HISTORY_LIMIT,
@@ -379,6 +380,53 @@ Reply YES or NO."""}],
         return response.content[0].text.strip().upper().startswith("YES")
     except Exception:
         return False
+
+def topic_already_covered(new_topic: str, existing: list[str]) -> str | None:
+    """The existing topic a new one duplicates, or None.
+
+    Same idea as _is_duplicate_subject below, aimed at the topic list instead of
+    outbound messages. The only dedup on that list was bidirectional substring
+    containment, which cannot see that "Kirkwood, MO news" and "St. Louis area
+    news" are the same beat — one user carried both, so both burned a slot in
+    the MAX_TOPICS rotation and both could surface the identical article on the
+    page.
+
+    Runs on the ADD path only, where topics are written rarely — never on the
+    read path, which runs on every page view. Fails open (None) so a broken
+    check never blocks someone adding a topic."""
+    if not new_topic or not existing:
+        return None
+    try:
+        listing = "\n".join(f"- {t}" for t in existing)
+        resp = client.messages.create(
+            model=HAIKU_MODEL,
+            max_tokens=40,
+            messages=[{"role": "user", "content": f"""Someone's daily news briefing already covers these subjects:
+{listing}
+
+They want to add: "{new_topic}"
+
+Would that new subject return essentially the same stories as one already listed?
+
+Reply with the existing subject it duplicates, copied EXACTLY as written above and nothing else. Reply NO if it would bring something genuinely different.
+
+Only say yes when one of them would bring almost nothing the other does not. A suburb's news IS the metro's news, so "Kirkwood, MO news" duplicates "St. Louis area news". These are NOT duplicates: "St. Louis Cardinals" vs "St. Louis area news" (a team is not its city), or "NFL headlines" vs "Philadelphia Eagles news" (the league covers 31 other teams). A wider beat that still brings its own stories is not a duplicate."""}],
+        )
+        answer = resp.content[0].text.strip().strip('"').rstrip(".")
+        if not answer or answer.upper().startswith("NO"):
+            return None
+        # Match the echo back to the list rather than trusting it. Asking for a
+        # NUMBER instead was tried and the model mis-indexed — it would answer
+        # "2" while naming the third subject in the prose after it. An echo is
+        # checkable; an index is not.
+        for t in existing:
+            if t.strip().lower() == answer.strip().lower():
+                return t
+        return None
+    except Exception as e:
+        print(f"topic_already_covered failed for {new_topic!r}: {type(e).__name__}: {e}")
+        return None
+
 
 def _is_duplicate_subject(phone: str, new_text: str, window_hours: float = 6) -> bool:
     """True if new_text covers the same subject as something already sent to this

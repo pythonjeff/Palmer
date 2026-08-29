@@ -278,4 +278,30 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
             "required": ["city"],
         },
     },
+    {
+        "name": "add_flight_watch",
+        "description": "Watch a flight route for price changes and text them when the fare moves. Use when they want ONGOING tracking — 'track flight prices LAX to Milan', 'let me know if that fare drops', 'watch this route'. For a one-off 'how much is X to Y right now', use search_flights instead. Checked once a day; they are alerted on a target hit or any move over $40. Max 3 active routes per person.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "origin": {"type": "string", "description": "IATA airport code, e.g. 'LAX'"},
+                "destination": {"type": "string", "description": "IATA airport code, e.g. 'MXP'"},
+                "outbound_date": {"type": "string", "description": "YYYY-MM-DD"},
+                "return_date": {"type": "string", "description": "YYYY-MM-DD. Omit for one-way."},
+                "target_price": {"type": "number", "description": "Alert immediately at or below this total. Optional."},
+            },
+            "required": ["origin", "destination", "outbound_date"],
+        },
+    },
+    {
+        "name": "cancel_flight_watch",
+        "description": "Stop watching a flight route. Pass text_match with an airport code or city to cancel one route; omit it to cancel all of their flight watches.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text_match": {"type": "string", "description": "Airport code or city to match, e.g. 'LAX'. Omit to cancel all."},
+            },
+            "required": [],
+        },
+    },
 ]

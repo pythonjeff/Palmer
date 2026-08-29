@@ -116,6 +116,25 @@ def init_db():
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS forecast_audit_key "
                 "ON forecast_audit (city, target_date, source)")
 
+    # Flight watches. A route plus dates is the identity, so there is no
+    # product_name equivalent — cancelling matches on the route text instead.
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS flight_watches (
+            id {ID_COL},
+            phone TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            destination TEXT NOT NULL,
+            outbound_date TEXT NOT NULL,
+            return_date TEXT,
+            target_price REAL,
+            baseline_price REAL,
+            last_seen_price REAL,
+            last_alerted TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     watches_new_cols = [
         "last_alert_summary TEXT",
         "daily_alert_count INTEGER DEFAULT 0",
@@ -945,5 +964,94 @@ def forecast_scores(days: int = 30) -> list[dict]:
                     f"FROM forecast_audit WHERE actual_high IS NOT NULL AND target_date >= {PH} "
                     f"GROUP BY city, source ORDER BY city, source", (cutoff,))
         return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+# --- flight watches ----------------------------------------------------------
+# Deliberately thinner than price_watches: a flight watch is checked once a day
+# (SerpAPI is the only paid input and the account is on a 250/month plan), so
+# there is no per-watch cooldown to track — the cadence IS the cooldown.
+
+FLIGHT_WATCH_MAX = 3          # per user; each active watch costs ~30 searches/month
+
+
+def save_flight_watch(phone: str, origin: str, destination: str, outbound_date: str,
+                      return_date: str | None = None, target_price: float | None = None) -> int | None:
+    """Create a watch, or None if the user is already at FLIGHT_WATCH_MAX or has
+    this exact route and date pair already."""
+    conn = _conn(); cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT COUNT(*) AS n FROM flight_watches WHERE phone = {PH} AND active = 1", (phone,))
+        if (cur.fetchone()["n"] or 0) >= FLIGHT_WATCH_MAX:
+            return None
+        cur.execute(
+            f"SELECT id FROM flight_watches WHERE phone = {PH} AND active = 1 AND origin = {PH} "
+            f"AND destination = {PH} AND outbound_date = {PH}",
+            (phone, origin.upper(), destination.upper(), outbound_date))
+        if cur.fetchone():
+            return None
+        cur.execute(
+            f"INSERT INTO flight_watches (phone, origin, destination, outbound_date, return_date, target_price) "
+            f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH})",
+            (phone, origin.upper(), destination.upper(), outbound_date, return_date, target_price))
+        conn.commit()
+        return 1
+    finally:
+        conn.close()
+
+
+def get_active_flight_watches() -> list[dict]:
+    conn = _conn(); cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM flight_watches WHERE active = 1 ORDER BY id")
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_user_flight_watches(phone: str) -> list[dict]:
+    conn = _conn(); cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT * FROM flight_watches WHERE phone = {PH} AND active = 1 ORDER BY id", (phone,))
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def cancel_flight_watches(phone: str, text_match: str | None = None) -> int:
+    conn = _conn(); cur = conn.cursor()
+    try:
+        if text_match:
+            like = f"%{text_match.upper()}%"
+            cur.execute(
+                f"UPDATE flight_watches SET active = 0 WHERE phone = {PH} AND active = 1 "
+                f"AND (UPPER(origin) LIKE {PH} OR UPPER(destination) LIKE {PH})", (phone, like, like))
+        else:
+            cur.execute(f"UPDATE flight_watches SET active = 0 WHERE phone = {PH} AND active = 1", (phone,))
+        n = cur.rowcount
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
+def update_flight_watch_price(watch_id: int, price: float, baseline: bool = False,
+                              alerted: bool = False) -> None:
+    from datetime import datetime, timezone
+    sets = [f"last_seen_price = {PH}"]
+    params: list = [price]
+    if baseline:
+        sets.append(f"baseline_price = {PH}"); params.append(price)
+    if alerted:
+        sets.append(f"last_alerted = {PH}"); params.append(datetime.now(timezone.utc).isoformat())
+        # Re-baseline on every alert, exactly as the product watch does, so the
+        # next alert measures from what the user was last told.
+        sets.append(f"baseline_price = {PH}"); params.append(price)
+    params.append(watch_id)
+    conn = _conn(); cur = conn.cursor()
+    try:
+        cur.execute(f"UPDATE flight_watches SET {', '.join(sets)} WHERE id = {PH}", params)
+        conn.commit()
     finally:
         conn.close()

@@ -23,6 +23,7 @@ from llm import client, SONNET_MODEL
 from prompts import SYSTEM_PROMPT
 from tools_def import TOOLS
 from smstext import _sms_clean, _normalize_hhmm
+from userprofile import topic_already_covered
 from weather import _get_weather
 from datafeeds import _search, _get_price, _get_gif, _fetch_media
 from userprofile import _update_profile, _consolidate_history
@@ -128,6 +129,21 @@ def _prompt_safe_profile(profile: dict) -> dict:
         if len(kept) != len(topics):
             safe["morning_topics"] = kept
     return safe
+
+
+def base_system() -> str:
+    """SYSTEM_PROMPT with its placeholders filled and no profile.
+
+    For paths that must still sound like Palmer when the profile read fails.
+    SYSTEM_PROMPT is a template — passing it unformatted ships literal
+    "{profile_block}" to the model — so a caller cannot simply fall back to the
+    constant itself."""
+    now = datetime.now(timezone.utc)
+    return SYSTEM_PROMPT.format(
+        date=now.strftime("%A, %B %d, %Y"),
+        now_utc=now.strftime("%H:%M"),
+        profile_block="You don't know much about this person yet.",
+    )
 
 
 def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = False) -> str:
@@ -394,6 +410,49 @@ def _apply_opening_kinds(profile: dict, tool_input: dict, updates: dict) -> str:
     return " Opening now covers: " + ", ".join(words[k] for k in kinds) + "."
 
 
+def _redraft_without_redirect(system: str, messages: list, draft: str) -> str | None:
+    """One retry for a reply that hands the user off to a competing product.
+
+    No tools on the retry: the draft is already past the tool loop, and the only
+    thing wrong with it is what it says. Returns None on any failure, which
+    leaves the caller holding the original."""
+    from guards import REDIRECT_CORRECTION
+    try:
+        resp = client.messages.create(
+            model=SONNET_MODEL, max_tokens=600, system=system,
+            messages=messages + [
+                {"role": "assistant", "content": draft},
+                {"role": "user", "content": REDIRECT_CORRECTION.format(draft=draft)},
+            ],
+        )
+        retry = next((b.text for b in resp.content if hasattr(b, "text")), None)
+        return _sms_clean(retry) if retry else None
+    except Exception as e:
+        print(f"redirect redraft failed: {type(e).__name__}: {e}")
+        return None
+
+
+def _finalize(text: str, system: str, messages: list, gif_url):
+    """Clean the draft, and enforce in code the one rule the prompt could not.
+
+    SYSTEM_PROMPT has always forbidden sending users to competing products, and
+    Palmer did it anyway in production — once while quoting the rule back
+    ("I'd point you to Google Flights but I know that's not helpful coming from
+    me"). Same remedy as morning._NAMES_THE_LINK: check the draft, redraft once."""
+    from guards import redirects_elsewhere
+    reply = _sms_clean(text)
+    if not redirects_elsewhere(reply):
+        return reply, gif_url
+    print(f"reply handed off to a competitor, redrafting once: {reply[:90]!r}")
+    retry = _redraft_without_redirect(system, messages, reply)
+    if retry and not redirects_elsewhere(retry):
+        return retry, gif_url
+    # Twice is rare enough to be worth seeing in the logs rather than papering
+    # over with a canned line that would cost Palmer's voice on every occurrence.
+    print("REDIRECT GUARD: redraft still handed off; shipping the original")
+    return reply, gif_url
+
+
 def get_reply(phone_number: str, message: str, media_url: str = None, history: list[dict] | None = None, is_new_user: bool = False) -> tuple[str, str | None]:
     """Generate a reply. Returns (text, gif_url) — gif_url is None if no GIF was queued."""
     messages = history if history is not None else get_history(phone_number, limit=HISTORY_LIMIT)
@@ -433,7 +492,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
 
         if response.stop_reason in ("end_turn", "max_tokens"):
             if text:
-                return _sms_clean(text), gif_url
+                return _finalize(text, system, messages, gif_url)
             # end_turn with no text — unlikely but guard anyway
             raise RuntimeError(f"stop_reason={response.stop_reason} but no text block in response")
 
@@ -463,11 +522,22 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 profile = get_profile(phone_number)
                 topics = list(profile.get("morning_topics") or [])
                 new_city = None
+                overlaps = []
                 for item in (b.input.get("add") or []):
                     item = _normalize_price_topic(item)
                     if new_city is None:
                         new_city = _city_from_weather_topic(item)
                     if not any(item.lower() in t.lower() or t.lower() in item.lower() for t in topics):
+                        # Substring containment cannot see that "Kirkwood, MO
+                        # news" and "St. Louis area news" are the same beat. Add
+                        # the topic regardless and let Palmer raise it — a
+                        # semantic check has false positives ("NFL headlines"
+                        # reads as a duplicate of "Philadelphia Eagles news" and
+                        # is not), and silently dropping what someone asked for
+                        # is a worse failure than one extra question.
+                        dup = topic_already_covered(item, topics)
+                        if dup:
+                            overlaps.append((item, dup))
                         topics.append(item)
                 for item in (b.input.get("remove") or []):
                     topics = [t for t in topics if item.lower() not in t.lower()]
@@ -519,6 +589,11 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 else:
                     result = f"Morning briefing updated. Topics: {topic_str}."
                 result += opening_note
+                for added, dup in overlaps:
+                    result += (f" Note: {added!r} may cover the same ground as {dup!r}, "
+                               f"which they already track. Both are on the list now — "
+                               f"mention the overlap in one line and ask if they want to "
+                               f"drop one. Do not remove anything yourself.")
             elif b.name == "set_morning_time":
                 normalized = _normalize_hhmm(b.input.get("time", ""))
                 if normalized:
@@ -554,6 +629,27 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     b.input["outbound_date"],
                     b.input.get("return_date"),
                 )
+            elif b.name == "add_flight_watch":
+                from db import save_flight_watch, FLIGHT_WATCH_MAX
+                ok = save_flight_watch(
+                    phone_number, b.input["origin"], b.input["destination"],
+                    b.input["outbound_date"], b.input.get("return_date"),
+                    b.input.get("target_price"))
+                route = f"{b.input['origin'].upper()} → {b.input['destination'].upper()}"
+                if ok:
+                    tgt = b.input.get("target_price")
+                    result = (f"Now watching {route} {b.input['outbound_date']}"
+                              + (f" targeting ${tgt:,.0f}." if tgt else ".")
+                              + " Checked daily; they'll hear on a target hit or a move over $40.")
+                else:
+                    result = (f"Not added — they either already watch {route} on that date, or "
+                              f"they are at the limit of {FLIGHT_WATCH_MAX} flight watches. "
+                              f"Tell them which, and offer to cancel one.")
+            elif b.name == "cancel_flight_watch":
+                from db import cancel_flight_watches
+                n = cancel_flight_watches(phone_number, b.input.get("text_match"))
+                result = (f"Cancelled {n} flight watch(es)." if n
+                          else "No matching flight watch to cancel.")
             elif b.name == "search_hotels":
                 from hotels import search_hotels
                 result = search_hotels(
@@ -669,7 +765,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
         if not tool_results:
             # stop_reason was tool_use but no tool blocks found — something is off; return text if any
             if text:
-                return _sms_clean(text), gif_url
+                return _finalize(text, system, messages, gif_url)
             raise RuntimeError("stop_reason=tool_use but no tool_use blocks and no text")
 
         messages.append({"role": "assistant", "content": response.content})

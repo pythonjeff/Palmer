@@ -118,6 +118,17 @@ _scheduler.add_job(
 # sends, so the forecast logged is the one users are about to be told, and it is
 # the same calendar date in both zones, which is what keeps target_date honest.
 # Sends nothing and touches no user path; a failure is a gap in the log.
+# Flight watches: once a day, and cron for the same reason as the jobs above.
+# Once daily is the cost control, not a preference — SerpAPI is the only paid
+# input and the account is on 250 searches/month, so each active watch costs
+# ~30 and db.FLIGHT_WATCH_MAX caps a user at three. 13:00 UTC is mid-morning
+# US-wide, late enough that a fare alert does not arrive before the briefing.
+from flightwatch import run_flight_watches
+_scheduler.add_job(
+    run_flight_watches, "cron", hour="13", timezone="Etc/UTC",
+    misfire_grace_time=3600,
+)
+
 from wxaudit import run_forecast_audit
 _scheduler.add_job(
     run_forecast_audit, "cron", hour="11", timezone="Etc/UTC",

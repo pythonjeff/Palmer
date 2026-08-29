@@ -675,6 +675,66 @@ Every `/sms` and `/sms-status` request is validated with Twilio's HMAC-SHA1 `Req
 ### `/sms-status` retry
 Twilio delivery failures with error codes `30019` or `21617` (content-size issues) trigger an automatic shorten-and-retry via the `/sms-status` webhook. Other delivery failures are logged and dropped — do not add blanket retry-on-any-failure without thinking about loops.
 
+### Rules the prompt states and the model breaks are enforced in code
+`SYSTEM_PROMPT` has forbidden sending users to competing products since the
+beginning — *"Palmer is the product — don't send people elsewhere... Do NOT
+suggest 'just Google it' — ever."* Palmer did it anyway, five times across two
+users, once while quoting the rule back: *"I'd point you to Google Flights but I
+know that's not helpful coming from me."*
+
+**A prompt rule was not enough, and that is the general lesson.** `guards.py`
+plus `agent._finalize` check the drafted reply and redraft exactly once — the
+same remedy as `morning._NAMES_THE_LINK`, for the same reason. When both drafts
+hand off, the better-formed one ships and the event is logged loudly rather than
+replaced with a canned line that would cost Palmer's voice every time.
+
+**The guard matches the shape of a handoff, never the brand name.** Palmer
+legitimately says "Google Cloud", "ChatGPT has hundreds of millions of users",
+and sends URLs carrying `utm_source=google`. Precision beats recall here: a
+pattern for *"Brand's app has..."* was written and **removed** because it caught
+"Anthropic's site lists the new model IDs" and "the team's site has the full
+injury report" — pointing at a primary source, which is the opposite of a
+handoff. `test_guards_and_flights.py` holds a corpus of the four real production
+violations and eight legitimate sentences, and both directions must pass.
+
+**The trigger was usually a bare failure string.** `flights.py` returned
+"Flight search is unavailable right now", which the model reasonably paraphrased
+into "I can't do flights" and then into a competitor. Failure strings handed to a
+drafting model now follow the `weather.py` pattern: say what failed, say what to
+do next, and never imply the capability is missing. `price_alert` also used to
+drop the **entire** system prompt when `_build_system` raised, taking every NEVER
+rule with it; it falls back to `agent.base_system()` instead — note
+`SYSTEM_PROMPT` is a template and passing it raw ships literal `{profile_block}`.
+
+### Flight watches
+Palmer told two users it could not track flights. `search_flights` worked the
+whole time; what was missing was the *watch*, so instead of doing the half it
+could it disclaimed the whole thing. `flightwatch.py` is that half:
+`add_flight_watch` / `cancel_flight_watch`, a **once-daily cron**, alerts on a
+target hit or any move over `MOVE_MIN_ABS` ($40 — fares wobble tens of dollars
+daily, so the flat $2 product rule would page someone every morning).
+
+**The daily cadence and `db.FLIGHT_WATCH_MAX` (3) are budget controls, not
+preferences.** SerpAPI is the only paid input and the account is on 250
+searches/month; one active watch costs ~30. Watches whose departure has passed
+retire themselves rather than spending a search a day on an unbookable flight.
+
+### Topic overlap is raised, not enforced
+Adding a topic runs `userprofile.topic_already_covered` — a Haiku check beside
+the existing substring one, because containment cannot see that "Kirkwood, MO
+news" and "St. Louis area news" are the same beat. It **adds the topic anyway**
+and tells Palmer to mention the overlap and ask. Semantic overlap has false
+positives — "NFL headlines" reads as a duplicate of "Philadelphia Eagles news"
+and is not, and one user legitimately tracks both — so silently dropping what
+someone asked for is the worse failure.
+
+Ask the model to **echo the duplicated subject**, not its index. Asking for a
+number was tried: Haiku answers "2" while naming the third item in the prose
+after it. An echo can be matched back against the list; an index cannot.
+
+`home._fetch_headlines` also dedupes by URL across topics, so two overlapping
+topics cannot render the same article twice on the page.
+
 ## Voice / prompt rules (see `SYSTEM_PROMPT` in `agent.py`)
 
 Palmer has a specific voice: dry, observational, plain-text SMS (no markdown, no bullets except the one numbered onboarding list). If you touch the system prompt or write new drafting prompts (Haiku personalizations, morning drafts, followups), keep to the same rules — no "Great question", no summarizing user words back, no ending every message with a question, and **never redirect the user to competing apps** (Google Maps, Waze, ChatGPT, etc.).

@@ -97,11 +97,16 @@ def search_flights(
     outbound_date / return_date: YYYY-MM-DD.
     """
     if not SERP_API_KEY:
-        return "Flight search is unavailable right now."
+        return ("Flight search failed to run just now. Tell the user plainly you "
+                "couldn't pull flights this second and offer to try again — you DO "
+                "have flight search, so never say you cannot do flights. Do not "
+                "name another site.")
     results = _serpapi_flights_search(origin, destination, outbound_date, return_date)
     if not results:
         trip = "round trip" if return_date else "one way"
-        return f"No flights found for {origin} → {destination} {outbound_date} ({trip})."
+        return (f"No flights returned for {origin} → {destination} {outbound_date} ({trip}). "
+                "Ask the user to confirm the airports and dates, or offer nearby dates. "
+                "Do not send them to another site.")
     results.sort(key=lambda r: r.get("price") or float("inf"))
     lines = []
     for entry in results:

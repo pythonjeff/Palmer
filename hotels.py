@@ -95,7 +95,9 @@ def search_hotels(
     min_rating: optional floor (3.5 / 4.0 / 4.5); other values snap down.
     """
     if not SERP_API_KEY:
-        return "Hotel search is unavailable right now."
+        return ("Hotel search failed to run just now. Say you couldn't pull hotels this "
+                "second and offer to try again — you DO have hotel search. Do not name "
+                "another site.")
     props = _serpapi_hotels_search(location, check_in_date, check_out_date, max_price, min_rating)
     if not props:
         return f"No hotels found in {location} {check_in_date} to {check_out_date}."
