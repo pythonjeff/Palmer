@@ -545,6 +545,25 @@ Rules:
         # violation means take the better-formed of the two, not a worse one.
         if retry and not _NAMES_THE_LINK.search(retry):
             line = retry
+    # The prompt already says not to reuse an opener and the model does it
+    # anyway: three consecutive mornings opened "103 today in Woodland Hills",
+    # "106 in Woodland Hills today", "111 today in Woodland Hills". Token
+    # overlap cannot see it — those score 0.23 against each other because the
+    # numbers and trailing clauses differ — so this compares the SHAPE of the
+    # opening instead. Suppressing the message would be wrong: they asked for a
+    # daily briefing. Only the phrasing has to move.
+    from guards import repeats_opening
+    if recent and repeats_opening(line, recent):
+        again = _draft(
+            "\n\nYou just wrote: " + repr(line) + "\nThat opens the same way as a "
+            "recent morning — same order, same first beat. Say the same facts "
+            "starting somewhere else: lead with the thing that changed, or the "
+            "event, or the commute, rather than the temperature. Keep every "
+            "number identical."
+        )
+        if again and not _NAMES_THE_LINK.search(again) and not repeats_opening(again, recent):
+            line = again
+
     if len(line) < 8:
         raise ValueError(f"generate_morning_line produced nothing usable: {repr(line)}")
     _reject_meta_commentary(line)

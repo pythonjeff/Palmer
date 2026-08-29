@@ -735,6 +735,60 @@ after it. An echo can be matched back against the list; an index cannot.
 `home._fetch_headlines` also dedupes by URL across topics, so two overlapping
 topics cannot render the same article twice on the page.
 
+### Repetition is two problems with opposite remedies
+Measured across every message sent: 39 near-duplicate pairs for one user, 11 for
+another. They are not one bug.
+
+**Suppression** — an *unprompted* message repeating one already sent. One user
+got the identical followup twice, verbatim; another got "Here you go - <link>"
+three times word for word. `_is_duplicate_subject` should have caught the first
+and did not: its window is 6h, the followup job runs every 4h, and the subject
+stayed live for days. It now runs a free lexical pass first
+(`guards.near_duplicate`, stopword-stripped Jaccard, `VERBATIM_WINDOW_HOURS` 72)
+before spending a Haiku call. Cheap enough to look back three days, which is the
+point — the semantic check never could.
+
+**Variation** — a *scheduled* message the user asked for, said the same way
+every time. Three consecutive mornings: "Morning Drew - 103 today in Woodland
+Hills", "106 in Woodland Hills today, Drew", "111 today in Woodland Hills, Drew".
+Suppressing these would be wrong — they asked for a daily briefing — so only the
+phrasing may move.
+
+**Token overlap cannot see variation, and this is the trap.** Those three score
+**0.23** against each other, because the numbers and trailing clauses differ
+every day; nothing lexical separates them from a genuinely fresh morning. What
+repeats is the *shape of the opening*, so `guards.opening_shape` flattens
+numbers to `#` and compares the first **three** meaningful words. Three, not
+five: by the fourth the trailing clause has diverged and every day looks unique
+again. `generate_morning_line` redrafts once on a match, and the correction
+insists every number stay identical — it is the phrasing that moves, never the
+facts.
+
+`URL`s are stripped before either comparison. Without that, every message ending
+in the user's page link reads as near-identical to every other one.
+
+**Reminders stay exempt from all of it**, for the reason already documented: a
+reminder is explicitly requested for a named time, and a missed one is worse
+than the duplicate it would prevent.
+
+### Palmer's own deliberation never ships
+A user received *"Both of these fall into the crime/dark content category they
+explicitly asked to avoid. Skipping."* — the drafter narrating its filtering
+decision, in the third person, to the person it was about.
+
+`morning.py` had a guard for this. It lived there, so alerts, followups, watches
+and reminders never ran it, and it matched fixed phrases the model simply wrote
+around — a rule looking for "they asked" misses "they EXPLICITLY asked".
+`guards.leaks_deliberation` replaces it with two signals, either damning alone:
+third-person reference to the reader near an intent verb, or an announcement of
+a send decision. It is checked in `sms_util.send_sms`, the one function every
+outbound message passes through.
+
+**Blocking the send is the right outcome, not a compromise.** Every one of these
+was a drafter saying it had decided *not* to send something; doing that
+silently is what it was trying to do. `send_sms` returns False and logs, and no
+fallback goes out in its place.
+
 ## Voice / prompt rules (see `SYSTEM_PROMPT` in `agent.py`)
 
 Palmer has a specific voice: dry, observational, plain-text SMS (no markdown, no bullets except the one numbered onboarding list). If you touch the system prompt or write new drafting prompts (Haiku personalizations, morning drafts, followups), keep to the same rules — no "Great question", no summarizing user words back, no ending every message with a question, and **never redirect the user to competing apps** (Google Maps, Waze, ChatGPT, etc.).

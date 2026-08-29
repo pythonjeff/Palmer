@@ -83,3 +83,137 @@ REDIRECT_CORRECTION = (
     "news. Do not name a competitor, do not describe where else the answer "
     "lives, and do not apologise for it."
 )
+
+
+# --- repetition --------------------------------------------------------------
+# Two different failures wear the same face, and they need opposite remedies.
+#
+# SUPPRESSION: an unprompted message repeating one already sent. Drew got the
+# identical followup twice — "yo how'd practice look today? hurts moving like
+# they said?" — because _is_duplicate_subject's window is six hours while the
+# followup job runs every four and the subject stayed live for days.
+#
+# VARIATION: a scheduled message the user DID ask for, said the same way every
+# time. Three consecutive mornings opened "103 today in Woodland Hills", "106 in
+# Woodland Hills today", "111 today in Woodland Hills". Suppressing those would
+# be wrong — they asked for a daily briefing — but Palmer should not sound like
+# a form letter.
+#
+# Both are answered by the same cheap measure and no model call: stopword-
+# stripped token overlap, the same shape as save_reminder's duplicate guard.
+
+_STOPWORDS = frozenset("""a an and are as at be been but by for from had has have he her his i
+if in into is it its me my not of on or our so that the their them they this to too us was we
+were what when who will with you your yours today tomorrow just get got go going""".split())
+
+_WORD = re.compile(r"[a-z0-9']+")
+# Links are not content. A reply that is a sentence plus the user's page URL
+# would otherwise read as near-identical to every other one.
+_STRIP = re.compile(r"https?://\S+")
+
+
+def _shingle(text: str) -> set[str]:
+    words = _WORD.findall(_STRIP.sub(" ", (text or "").lower()))
+    return {w for w in words if w not in _STOPWORDS and len(w) > 2}
+
+
+def similarity(a: str, b: str) -> float:
+    """Jaccard overlap of meaningful words. 1.0 is verbatim, 0.0 shares nothing."""
+    sa, sb = _shingle(a), _shingle(b)
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
+
+
+# Verbatim-ish. A proactive message this close to one already sent is a repeat,
+# not a follow-up, and no model call is needed to know it.
+REPEAT_THRESHOLD = 0.62
+
+
+def near_duplicate(text: str, recent: list[str], threshold: float = REPEAT_THRESHOLD) -> str | None:
+    """The recent message this one repeats, or None. Never raises."""
+    if not text or not recent:
+        return None
+    try:
+        for prior in recent:
+            if similarity(text, prior) >= threshold:
+                return prior
+    except Exception as e:
+        print(f"near_duplicate check failed: {type(e).__name__}: {e}")
+    return None
+
+
+# Token overlap answers SUPPRESSION and is useless for VARIATION. Three
+# consecutive Woodland Hills mornings — "Morning Drew - 103 today in Woodland
+# Hills", "106 in Woodland Hills today, Drew", "111 today in Woodland Hills,
+# Drew" — score only 0.23-0.25 against each other, because the numbers and the
+# trailing clause differ every day. Nothing lexical separates them from a
+# genuinely fresh morning.
+#
+# What actually repeats is the SHAPE of the opening: a temperature, the word
+# today, the city. So normalise the numbers away and compare the first few
+# words. That is the thing a reader recognises as "he says it the same way
+# every morning".
+# Three, not five. By the fourth word the trailing clause has diverged — "103
+# today in Woodland Hills, STAY INSIDE" vs "106 in Woodland Hills today, DREW —
+# HOTTEST" — and every day looks unique again. The repetition a reader actually
+# notices is in the first breath.
+_OPENING_WORDS = 3
+_SHAPE_WORD = re.compile(r"[a-z0-9'#]+")
+
+
+def opening_shape(text: str) -> str:
+    """A signature for how a message starts, with numbers flattened to #."""
+    body = _STRIP.sub(" ", (text or "").lower())
+    body = re.sub(r"\d+(?:\.\d+)?", " # ", body)
+    words = [w for w in _SHAPE_WORD.findall(body) if w == "#" or w not in _STOPWORDS]
+    return " ".join(words[:_OPENING_WORDS])
+
+
+def repeats_opening(text: str, recent: list[str]) -> str | None:
+    """The recent message this one opens like, or None.
+
+    Deliberately separate from near_duplicate: a morning briefing SHOULD cover
+    the same ground every day, so its content recurring is correct and only its
+    phrasing is the problem."""
+    if not text or not recent:
+        return None
+    try:
+        shape = opening_shape(text)
+        if not shape:
+            return None
+        for prior in recent:
+            if opening_shape(prior) == shape:
+                return prior
+    except Exception as e:
+        print(f"repeats_opening check failed: {type(e).__name__}: {e}")
+    return None
+
+
+# --- internal deliberation ---------------------------------------------------
+# A user received "Both of these fall into the crime/dark content category they
+# explicitly asked to avoid. Skipping." and "This one's in the crime/dark
+# content bucket they asked to avoid. Skipping it." — Palmer narrating its own
+# filtering decision, about her, in the third person.
+#
+# morning.py already had a guard for this, but it lived there, so alerts,
+# followups, watches and reminders never ran it — and it matched fixed phrases,
+# which the model simply wrote around ("they EXPLICITLY asked" missed a rule
+# looking for "they asked").
+#
+# Two signals, either of which is damning on its own: talking about the reader
+# in the third person, or announcing a decision about what to send.
+_THIRD_PERSON = re.compile(
+    r"\b(?:they|the\s+user|this\s+user|the\s+recipient)\b[^.!?\n]{0,40}"
+    r"\b(?:asked|requested|wanted|said|prefers?|set|specified|told)\b", re.I)
+_DECISION = re.compile(
+    r"\b(?:skipping|i'?ll\s+skip|not\s+sending|won'?t\s+send|can'?t\s+include|"
+    r"leaving\s+(?:this|that)\s+out|filtered\s+out|suppress(?:ing|ed)|"
+    r"doesn'?t\s+meet\s+the|below\s+the\s+threshold|no\s+alert\s+needed)\b", re.I)
+
+
+def leaks_deliberation(text: str) -> bool:
+    """True if the draft narrates Palmer's own decision-making to the reader."""
+    if not text:
+        return False
+    return bool(_THIRD_PERSON.search(text) or _DECISION.search(text))

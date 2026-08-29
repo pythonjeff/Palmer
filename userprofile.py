@@ -428,6 +428,12 @@ Only say yes when one of them would bring almost nothing the other does not. A s
         return None
 
 
+# How far back the free lexical check looks. Much wider than the semantic
+# window: a Haiku call per prior message would not be affordable over three
+# days, and word overlap is.
+VERBATIM_WINDOW_HOURS = 72
+
+
 def _is_duplicate_subject(phone: str, new_text: str, window_hours: float = 6) -> bool:
     """True if new_text covers the same subject as something already sent to this
     phone in the last window_hours — catches cross-job topical redundancy (e.g. a
@@ -436,6 +442,20 @@ def _is_duplicate_subject(phone: str, new_text: str, window_hours: float = 6) ->
     Fails open (False) on any error so a broken check never blocks a real send."""
     from datetime import datetime, timezone, timedelta
     from db import get_recent_assistant_messages
+
+    # A verbatim repeat needs no model and no six-hour window. One user got the
+    # identical followup twice — "yo how'd practice look today? hurts moving
+    # like they said?" — because the followup job runs every four hours, its
+    # subject stayed live for days, and this check only ever looked back six.
+    # The lexical pass is free, so it looks back much further.
+    from guards import near_duplicate
+    wide_cutoff = (datetime.now(timezone.utc)
+                   - timedelta(hours=max(window_hours, VERBATIM_WINDOW_HOURS))).isoformat()
+    wide = get_recent_assistant_messages(phone, wide_cutoff)
+    prior = near_duplicate(new_text, wide)
+    if prior:
+        print(f"duplicate suppressed (verbatim): {new_text[:70]!r}")
+        return True
 
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=window_hours)).isoformat()
     recent = get_recent_assistant_messages(phone, cutoff)

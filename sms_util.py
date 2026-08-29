@@ -36,6 +36,21 @@ def send_sms(to: str, body: str, *, add_status_callback: bool = True, media_url:
     elif not media_url:
         body = FALLBACK_SMS
 
+    # Last line of defence against Palmer narrating its own decisions to the
+    # reader. A user received "Both of these fall into the crime/dark content
+    # category they explicitly asked to avoid. Skipping." — the drafter
+    # announcing a suppression, in the third person, to the person it was about.
+    #
+    # Refusing the send is the RIGHT outcome, not a compromise: every one of
+    # these was a drafter saying it had decided not to send something. Doing
+    # what it said, silently, is what it was trying to do. Checked here because
+    # this is the one function every outbound message passes through, and the
+    # guard it replaces lived in morning.py where four other senders never saw it.
+    from guards import leaks_deliberation
+    if body and leaks_deliberation(body):
+        print(f"BLOCKED internal deliberation to {to}: {body[:110]!r}")
+        return False
+
     from_number = os.environ["TWILIO_PHONE_NUMBER"]
     kwargs = {"from_": from_number, "to": to}
     if media_url:
