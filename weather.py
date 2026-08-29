@@ -269,7 +269,7 @@ def _nws_report(lat: float, lon: float, resolved: str, when: str, when_lower: st
         hilo = ""
     return f"{resolved} on {target.strftime('%A, %B %d')}:{hilo} {desc}".strip()
 
-def _fetch_openmeteo(lat: float, lon: float) -> dict:
+def _fetch_openmeteo(lat: float, lon: float, model: str | None = None) -> dict:
     """One Open-Meteo call, shared by the prose report and weather_snapshot.
 
     Both need the same fields; keeping the params in one place stops the two
@@ -285,6 +285,11 @@ def _fetch_openmeteo(lat: float, lon: float) -> dict:
             "wind_speed_unit": "mph",
             "forecast_days": 8,
             "timezone": "auto",
+            # A single model returns the SAME response keys as the default, so
+            # naming one changes the numbers and nothing else. (Asking for
+            # several suffixes every key per model, which is why the ensemble
+            # spread parses differently.)
+            **({"models": model} if model else {}),
         },
         timeout=10,
     )
@@ -375,7 +380,8 @@ HIGH_SPREAD_HEDGE = 10.0
 _ENSEMBLE_MODELS = "ecmwf_ifs025,icon_seamless,gfs_seamless"
 
 
-def _ensemble_spread(lat: float, lon: float, high: float | None) -> dict:
+def _ensemble_spread(lat: float, lon: float, high: float | None,
+                     proven: bool = False) -> dict:
     """How much the forecasters disagree about today's high, for hedging only.
 
     Deliberately does not average or override the number. Neither source is
@@ -388,6 +394,12 @@ def _ensemble_spread(lat: float, lon: float, high: float | None) -> dict:
     unqualified rather than blocking the forecast."""
     if high is None:
         return {}
+    if proven:
+        # This city's source was chosen by measuring it against what actually
+        # happened, so the other models disagreeing with it is no longer a
+        # reason to hedge — it is the evidence that put this one in front. Say
+        # the number. Skipping the call also keeps the read path cheap.
+        return {"high_confident": True, "high_spread": None}
     try:
         data = _http_get_json_retry(
             "https://api.open-meteo.com/v1/forecast",
@@ -412,6 +424,42 @@ def _ensemble_spread(lat: float, lon: float, high: float | None) -> dict:
             "high_confident": spread < HIGH_SPREAD_HEDGE}
 
 
+def _proven_source(city: str) -> str | None:
+    """The forecaster this city has earned, or None to carry on as before.
+
+    Function-local import: wxaudit reads weather to log NWS, so a module-level
+    import here would be a cycle. Never raises — an audit that cannot answer
+    must not cost anyone their forecast."""
+    try:
+        from wxaudit import best_source
+        return best_source(city)
+    except Exception as e:
+        print(f"weather: source selection unavailable for {city!r}: {type(e).__name__}: {e}")
+        return None
+
+
+def _openmeteo_snapshot(lat: float, lon: float, resolved: str,
+                        model: str | None = None) -> dict:
+    """Structured weather from Open-Meteo, optionally from a named model."""
+    data = _fetch_openmeteo(lat, lon, model=model)
+    curr, daily = data["current"], data["daily"]
+    code = curr.get("weather_code")
+    return {
+        "resolved": resolved,
+        "temp_now": curr.get("temperature_2m"),
+        "feels_like": curr.get("apparent_temperature"),
+        "humidity": curr.get("relative_humidity_2m"),
+        "wind": curr.get("wind_speed_10m"),
+        "weather_code": code,
+        "description": _WMO_DESCRIPTIONS.get(code, "unknown conditions"),
+        "high": daily["temperature_2m_max"][0],
+        "low": daily["temperature_2m_min"][0],
+        "rain_pct": daily["precipitation_probability_max"][0],
+        "gusts": (daily.get("wind_gusts_10m_max") or [None])[0],
+        "source": model or "open-meteo",
+    }
+
+
 def weather_snapshot(location: str, tz: str | None = None) -> dict | None:
     """Structured weather for the page, the card and the morning line. None on
     any failure.
@@ -432,6 +480,23 @@ def weather_snapshot(location: str, tz: str | None = None) -> dict | None:
     one of the two with coverage outside the US, and it catches an NWS outage."""
     try:
         lat, lon, resolved = _geocode(location)
+
+        # Has this city earned a different forecaster? wxaudit scores every
+        # source against what actually happened and only answers once the
+        # evidence is unambiguous, so None here means "carry on" and is the
+        # answer for a city Palmer has just started serving. See wxaudit.
+        proven = _proven_source(location)
+        if proven and proven != "nws":
+            try:
+                snap = _openmeteo_snapshot(lat, lon, resolved, model=proven)
+                if snap:
+                    snap.update(_ensemble_spread(lat, lon, snap.get("high"),
+                                                 proven=True))
+                    return snap
+            except Exception as e:
+                print(f"weather: proven source {proven} failed for {location!r}: "
+                      f"{type(e).__name__}: {e}")
+
         if _is_us_coords(lat, lon):
             try:
                 snap = _nws_snapshot(lat, lon, resolved, tz)
@@ -440,23 +505,7 @@ def weather_snapshot(location: str, tz: str | None = None) -> dict | None:
             except Exception as e:
                 print(f"NWS snapshot failed for {location!r}, falling back: "
                       f"{type(e).__name__}: {e}")
-        data = _fetch_openmeteo(lat, lon)
-        curr, daily = data["current"], data["daily"]
-        code = curr.get("weather_code")
-        return {
-            "resolved": resolved,
-            "temp_now": curr.get("temperature_2m"),
-            "feels_like": curr.get("apparent_temperature"),
-            "humidity": curr.get("relative_humidity_2m"),
-            "wind": curr.get("wind_speed_10m"),
-            "weather_code": code,
-            "description": _WMO_DESCRIPTIONS.get(code, "unknown conditions"),
-            "high": daily["temperature_2m_max"][0],
-            "low": daily["temperature_2m_min"][0],
-            "rain_pct": daily["precipitation_probability_max"][0],
-            "gusts": (daily.get("wind_gusts_10m_max") or [None])[0],
-            "source": "open-meteo",
-        }
+        return _openmeteo_snapshot(lat, lon, resolved)
     except Exception as e:
         print(f"weather_snapshot failed for {location!r}: {type(e).__name__}: {e}")
         return None

@@ -20,6 +20,7 @@ from unittest.mock import patch
 import db
 import morning
 import weather
+import wxaudit
 
 
 def _fresh_db(tmp_path, monkeypatch):
@@ -143,6 +144,103 @@ class TestTheAuditLog:
         _fresh_db(tmp_path, monkeypatch)
         db.record_forecast("A", "2026-08-26", "nws", 100.0)
         assert db.forecast_scores(days=3650) == []
+
+
+class TestTheSelectorIsGatedOnEvidence:
+    """The audit stopped being a diagnostic once it could act. But the whole
+    point is that it only acts when the evidence is unambiguous — a selector
+    that switches on one good day is the anecdote-fitting this was built to
+    replace."""
+
+    def _seed(self, tmp_path, monkeypatch, rows):
+        from datetime import date, timedelta
+        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "sel.db")
+        db.init_db()
+        wxaudit._clear_best_cache()
+        for city, source, err, n in rows:
+            for i in range(n):
+                day = (date.today() - timedelta(days=i + 1)).isoformat()
+                db.record_forecast(city, day, source, 100.0 + err)
+                db.record_actual(city, day, 100.0)
+
+    def test_a_clearly_better_source_wins(self, tmp_path, monkeypatch):
+        self._seed(tmp_path, monkeypatch,
+                   [("WH", "nws", 11, 6), ("WH", "ecmwf_ifs025", 3, 6)])
+        assert wxaudit.best_source("WH") == "ecmwf_ifs025"
+
+    def test_an_incumbent_that_is_already_best_is_kept(self, tmp_path, monkeypatch):
+        self._seed(tmp_path, monkeypatch,
+                   [("CC", "nws", 2, 6), ("CC", "ecmwf_ifs025", 12, 6)])
+        assert wxaudit.best_source("CC") is None
+
+    def test_a_margin_too_thin_does_not_churn(self, tmp_path, monkeypatch):
+        """A source that changes weekly is its own kind of wrong."""
+        self._seed(tmp_path, monkeypatch,
+                   [("TIE", "nws", 5, 6), ("TIE", "ecmwf_ifs025", 4, 6)])
+        assert wxaudit.best_source("TIE") is None
+
+    def test_a_challenger_with_too_few_days_does_not_win(self, tmp_path, monkeypatch):
+        self._seed(tmp_path, monkeypatch,
+                   [("THIN", "nws", 11, 6), ("THIN", "icon_seamless", 1, 2)])
+        assert wxaudit.best_source("THIN") is None
+
+    def test_an_unmeasured_incumbent_is_never_abandoned(self, tmp_path, monkeypatch):
+        """The failure this gate exists to prevent: NWS has no historical
+        endpoint, so it starts with almost no scored days. Switching away from
+        it before measuring it would be exactly the mistake."""
+        self._seed(tmp_path, monkeypatch, [("NOBASE", "ecmwf_ifs025", 1, 6)])
+        assert wxaudit.best_source("NOBASE") is None
+
+    def test_the_answer_is_cached_per_city_per_day(self, tmp_path, monkeypatch):
+        """Consulted on the read path; the answer cannot change intraday."""
+        self._seed(tmp_path, monkeypatch,
+                   [("WH", "nws", 11, 6), ("WH", "ecmwf_ifs025", 3, 6)])
+        wxaudit.best_source("WH")
+        with patch("db.forecast_scores", side_effect=AssertionError("should not re-query")):
+            assert wxaudit.best_source("WH") == "ecmwf_ifs025"
+
+    def test_no_city_and_no_data_are_safe(self, tmp_path, monkeypatch):
+        self._seed(tmp_path, monkeypatch, [])
+        assert wxaudit.best_source("") is None
+        assert wxaudit.best_source("Nowhere") is None
+
+
+class TestAProvenSourceIsUsedAndTrusted:
+    def test_the_snapshot_switches_to_the_proven_model(self):
+        with patch("wxaudit.best_source", return_value="ecmwf_ifs025"), \
+             patch.object(weather, "_geocode", return_value=(34.17, -118.61, "Woodland Hills")), \
+             patch.object(weather, "_fetch_openmeteo", return_value={
+                 "current": {"temperature_2m": 80, "weather_code": 0},
+                 "daily": {"temperature_2m_max": [96.7], "temperature_2m_min": [69.0],
+                           "precipitation_probability_max": [0], "wind_gusts_10m_max": [5]}}) as om, \
+             patch.object(weather, "_nws_snapshot") as nws:
+            snap = weather.weather_snapshot("Woodland Hills, California")
+        assert snap["source"] == "ecmwf_ifs025" and snap["high"] == 96.7
+        assert om.call_args.kwargs["model"] == "ecmwf_ifs025"
+        nws.assert_not_called(), "a proven source must not also pay for NWS"
+
+    def test_a_proven_source_is_stated_not_hedged(self):
+        """The other models disagreeing is what put this one in front; it is no
+        longer a reason to hedge."""
+        out = weather._ensemble_spread(34.17, -118.61, 96.7, proven=True)
+        assert out["high_confident"] is True
+
+    def test_a_proven_source_costs_no_ensemble_call(self):
+        with patch.object(weather, "_http_get_json_retry") as http:
+            weather._ensemble_spread(34.17, -118.61, 96.7, proven=True)
+        http.assert_not_called()
+
+    def test_nothing_proven_leaves_todays_behaviour_alone(self):
+        with patch("wxaudit.best_source", return_value=None), \
+             patch.object(weather, "_geocode", return_value=(34.17, -118.61, "WH")), \
+             patch.object(weather, "_nws_snapshot", return_value={"high": 103, "source": "nws"}), \
+             patch.object(weather, "_ensemble_spread", return_value={"high_confident": False}):
+            snap = weather.weather_snapshot("Woodland Hills, California")
+        assert snap["source"] == "nws" and snap["high_confident"] is False
+
+    def test_a_broken_audit_never_costs_anyone_their_forecast(self):
+        with patch("wxaudit.best_source", side_effect=RuntimeError("db down")):
+            assert weather._proven_source("Anywhere") is None
 
 
 class TestTheAuditJobIsSafe:

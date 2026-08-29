@@ -119,6 +119,72 @@ def run_forecast_audit() -> None:
         print(f"wxaudit: run failed: {type(e).__name__}: {e}")
 
 
+# --- the selector -------------------------------------------------------------
+# The audit stopped being a diagnostic the moment it had enough rows to act on.
+# The best source is a property of the PLACE, not of the product: measured over
+# the same days, ECMWF is the most accurate forecaster for Woodland Hills
+# (+3.3) and the LEAST accurate for Culver City (+12.0), while NWS is the
+# reverse. Two cities 25km apart, same geocoder, same code path, inverted
+# answers. Nothing about a better location fixes that; picking per location does.
+
+LOOKBACK_DAYS = 30
+# Days a source must have been scored before it may be chosen. Below this, one
+# freak day decides.
+MIN_SAMPLES = 5
+# How much better the challenger must be before switching, in degrees of mean
+# absolute error. Without a margin the choice churns between sources that are
+# equally good, and a source that changes weekly is its own kind of wrong.
+SWITCH_MARGIN = 2.0
+
+_best_cache: dict[tuple[str, str], str | None] = {}
+
+
+def best_source(city: str, incumbent: str = "nws", today=None) -> str | None:
+    """The source proven better than `incumbent` for this city, or None.
+
+    None means "keep doing what you were doing" and is the answer until the
+    evidence is unambiguous. Three gates, all of which must pass:
+
+      * the challenger has at least MIN_SAMPLES scored days,
+      * the INCUMBENT does too — otherwise we would be switching away from
+        something we have not actually measured, which is how the first version
+        of this idea would have dropped NWS on a single day's reading,
+      * and the challenger beats it by more than SWITCH_MARGIN.
+
+    Cached per city per day: this is consulted on the read path, and the answer
+    cannot change more than once a day anyway."""
+    if not city:
+        return None
+    key = (city.strip().lower(), (today or datetime.now(timezone.utc).date()).isoformat())
+    if key in _best_cache:
+        return _best_cache[key]
+
+    choice = None
+    try:
+        from db import forecast_scores
+        rows = [r for r in forecast_scores(LOOKBACK_DAYS)
+                if (r.get("city") or "").strip().lower() == key[0]
+                and (r.get("n") or 0) >= MIN_SAMPLES and r.get("mae") is not None]
+        by_source = {r["source"]: float(r["mae"]) for r in rows}
+        base = by_source.get(incumbent)
+        if base is not None:
+            challenger = min(by_source, key=by_source.get)
+            if challenger != incumbent and by_source[challenger] <= base - SWITCH_MARGIN:
+                choice = challenger
+                print(f"wxaudit: {city} -> {challenger} "
+                      f"(mae {by_source[challenger]:.1f} vs {incumbent} {base:.1f})")
+    except Exception as e:
+        print(f"wxaudit: best_source failed for {city!r}: {type(e).__name__}: {e}")
+
+    _best_cache[key] = choice
+    return choice
+
+
+def _clear_best_cache() -> None:
+    """Tests only."""
+    _best_cache.clear()
+
+
 def report(days: int = 30) -> str:
     """Human-readable scoreboard. `python -c "import wxaudit; print(wxaudit.report())"`"""
     from db import forecast_scores

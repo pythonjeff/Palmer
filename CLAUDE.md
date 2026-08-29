@@ -652,6 +652,38 @@ snapshot carries `high_low_est`/`high_high_est` and the digest tells the drafter
 card and text come off one payload and must not disagree about how sure Palmer
 is. It qualifies the claim; it never changes the number.
 
+**The audit now chooses, not just reports.** `wxaudit.best_source(city)` returns
+the forecaster a city has *earned* — and `None`, meaning carry on, until the
+evidence is unambiguous. It is consulted by `weather_snapshot` on every read
+(cached per city per day) and the whole system re-decides daily from a rolling
+30-day window, so a source that drifts loses its place without anyone editing
+code.
+
+Three gates, all of which must pass, and the middle one is the important one:
+
+- the challenger has at least `MIN_SAMPLES` (5) scored days;
+- **the incumbent has too.** NWS has no historical-forecast endpoint, so it
+  starts with almost no scored days — switching away from it on that basis
+  would be exactly the anecdote-fitting this module exists to replace;
+- the challenger beats it by more than `SWITCH_MARGIN` (2.0 MAE). Without a
+  margin the choice churns between sources that are equally good, and a
+  forecaster that changes weekly is its own kind of wrong.
+
+**Why per-city rather than one winner:** measured over the same days, ECMWF is
+the most accurate source for Woodland Hills (+3.3) and the *least* accurate for
+Culver City (+12.0); NWS is the reverse. Two cities 25km apart, same geocoder,
+same code path, inverted answers. That is also the answer to "would a ZIP code
+help" — no. Open-Meteo's geocoder resolves `90232` and `"Culver City"` to
+identical coordinates, and `63122` to **Ceyrat, France**. The disagreement is
+between forecasters about one point, not about which point.
+
+**A proven source is stated, not hedged.** `_ensemble_spread(..., proven=True)`
+returns `high_confident` without making the call: the other models disagreeing
+is what put this source in front, so it is no longer a reason to qualify the
+number. That is what eventually retires the "somewhere between 88 and 103"
+phrasing for a city — not by loosening the hedge, but by earning the right to
+skip it.
+
 `HIGH_SPREAD_HEDGE = 10.0` is **provisional** — a round number that catches the
 observed bad case and clears the observed good one, set from days rather than
 months. `wxaudit.py` exists to replace it with a measurement: a daily cron logs
