@@ -120,7 +120,7 @@ def run_followups():
                 continue
 
             if send_sms(phone, message):
-                save_message(phone, "assistant", message)
+                save_message(phone, "assistant", message, kind="followup")
                 print(f"Follow-up sent to {phone}: {message[:80]}")
             else:
                 upsert_profile(phone, {"followup_sent_date": None})

@@ -386,7 +386,8 @@ def run_price_watches():
         get_active_price_watches, set_price_watch_baseline, update_price_watch_alerted,
         claim_price_watch_alert, release_price_watch_claim,
     )
-    from sms_util import ensure_sms
+    from sms_util import send_sms
+    from db import save_message
     import amazon
 
     watches = get_active_price_watches()
@@ -423,10 +424,21 @@ def run_price_watches():
                 release_price_watch_claim(w["id"])
                 print(f"Price watch {w['id']}: subject already covered by a recent message, skipping")
                 continue
-            if ensure_sms(w["phone"], body):
+            # send_sms, NOT ensure_sms. ensure_sms's contract is "the user is
+            # never left with silence", which is right for a reply they are
+            # waiting on and wrong here: its last resort is FALLBACK_SMS, so a
+            # failed price check texted "something went sideways on my end, try
+            # again" to someone who had asked for nothing.
+            if send_sms(w["phone"], body):
                 update_price_watch_alerted(
                     w["id"], current["price"], current["url"], current["merchant"], body
                 )
+                # Price alerts were never written to history at all, so the model
+                # had no idea it had just sent one — a user replying "how much?"
+                # got an answer with no referent — and _is_duplicate_subject
+                # above, which reads assistant messages, could never see this
+                # sender's own repeats.
+                save_message(w["phone"], "assistant", body, kind="price")
                 print(f"Price watch {w['id']} fired ({reason}) at ${current['price']:.2f}")
             else:
                 release_price_watch_claim(w["id"])  # allow retry next tick

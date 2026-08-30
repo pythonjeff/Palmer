@@ -298,7 +298,7 @@ def _profile_and_consolidate(phone_number: str, user_msg: str, reply: str, shown
 
 def save_assistant_turn(phone_number: str, user_msg: str, reply: str):
     """Persist the assistant reply and kick off profile updates in the background."""
-    save_message(phone_number, "assistant", reply)
+    save_message(phone_number, "assistant", reply, kind="reply")
     # Capture suggestion before the background thread runs (it reads the pre-update profile)
     pre_profile = get_profile(phone_number)
     shown_suggestion = pre_profile.get("pending_morning_suggestion")

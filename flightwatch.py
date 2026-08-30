@@ -80,6 +80,7 @@ def _should_alert(watch: dict, current: float) -> str | None:
 def run_flight_watches() -> None:
     """Check every active flight watch once. Never raises."""
     from sms_util import send_sms
+    from db import save_message
     from price_alert import draft_price_alert
     from userprofile import _is_duplicate_subject
     from db import cancel_flight_watches
@@ -120,6 +121,9 @@ def run_flight_watches() -> None:
             if send_sms(w["phone"], line):
                 alerted += 1
                 update_flight_watch_price(w["id"], current, alerted=True)
+                # As with price watches: invisible to history and therefore to
+                # this sender's own duplicate check.
+                save_message(w["phone"], "assistant", line, kind="flight")
         except Exception as e:
             print(f"flightwatch: watch {w.get('id')} failed: {type(e).__name__}: {e}")
     print(f"flightwatch: checked {checked} watches, sent {alerted} alerts")

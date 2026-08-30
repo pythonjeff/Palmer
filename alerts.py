@@ -240,9 +240,17 @@ def run_alert_checks():
                     upsert_profile(phone, {"alert_sent_date": None})
                     print(f"No alert for {phone}: user already mentioned this story themselves")
                     continue
-                send_sms(phone, message)
-                save_message(phone, "assistant", message)
-                print(f"Alert sent to {phone} (score={score}): {message}")
+                # Record only what actually went out. send_sms returns False on
+                # a Twilio failure AND on a leaks_deliberation block, and this
+                # saved unconditionally — so history held messages the user never
+                # received and the model referred back to them later, which reads
+                # exactly like Palmer inventing a conversation.
+                if send_sms(phone, message):
+                    save_message(phone, "assistant", message, kind="alert")
+                    print(f"Alert sent to {phone} (score={score}): {message}")
+                else:
+                    upsert_profile(phone, {"alert_sent_date": None})
+                    print(f"Alert send failed for {phone}, releasing the daily guard")
             else:
                 upsert_profile(phone, {"alert_sent_date": None})
                 print(f"No alert for {phone} (score={score})")

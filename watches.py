@@ -262,8 +262,15 @@ def run_watches():
                 print(f"Watch {watch['id']}: already claimed by another process, skipping")
                 continue
 
-            send_sms(watch["phone"], alert)
-            save_message(watch["phone"], "assistant", alert)
+            # A failed send must not become history. The watch claim above stays
+            # spent either way: it is a rate limit, not a delivery record, so
+            # burning one cooldown is far safer than retrying every tick against
+            # a body the guard will block identically each time. (The inverse of
+            # the reminder rule, where the claim IS the delivery record.)
+            if not send_sms(watch["phone"], alert):
+                print(f"Watch {watch['id']}: send failed, not recording it as sent")
+                continue
+            save_message(watch["phone"], "assistant", alert, kind="watch")
 
             # Use title for dedup context (shorter than full alert with URL)
             title = (top.get("title") or alert)[:120]

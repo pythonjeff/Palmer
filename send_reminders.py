@@ -72,7 +72,7 @@ def send_due_reminders():
             body = _personalize_reminder(phone, r["text"], profile)
             sent = send_sms(phone, body)
             if sent:
-                save_message(phone, "assistant", body)
+                save_message(phone, "assistant", body, kind="reminder")
             already.setdefault(phone, []).append(r["text"])
             print(f"Sent reminder {r['id']} to {phone}: {body}")
 

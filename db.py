@@ -154,6 +154,22 @@ def init_db():
             except Exception:
                 pass  # already exists
 
+    messages_new_cols = [
+        # Which job sent an assistant message. Nothing could tell a morning from
+        # a chat reply, so morning.py's anti-repetition guard was comparing
+        # today's line against ordinary conversation instead of yesterday's
+        # morning. NULL for everything written before this and for inbound.
+        "kind TEXT",
+    ]
+    for col_def in messages_new_cols:
+        if _DATABASE_URL:
+            cur.execute(f"ALTER TABLE messages ADD COLUMN IF NOT EXISTS {col_def}")
+        else:
+            try:
+                cur.execute(f"ALTER TABLE messages ADD COLUMN {col_def}")
+            except Exception:
+                pass  # already exists
+
     reminders_new_cols = [
         "recurrence TEXT",  # NULL = one-shot; see timeutil.RECURRENCES
     ]
@@ -245,7 +261,7 @@ def get_older_messages(phone: str, skip_recent: int = HISTORY_LIMIT) -> list[dic
     return [{"role": r["role"], "content": r["content"]} for r in rows]
 
 
-def save_message(phone: str, role: str, content: str):
+def save_message(phone: str, role: str, content: str, kind: str | None = None):
     """created_at is set explicitly (rather than left to the column's DB-side
     CURRENT_TIMESTAMP default) so it's always the same ISO8601+offset format used
     everywhere else timestamps are compared as strings in this codebase (reminders,
@@ -253,13 +269,19 @@ def save_message(phone: str, role: str, content: str):
     'YYYY-MM-DD HH:MM:SS' string with no 'T' or offset, which sorts incorrectly
     against ISO-format cutoffs for same-day comparisons (space < 'T' lexicographically),
     silently breaking any query that filters created_at against a Python-generated
-    timestamp."""
+    timestamp.
+
+    `kind` records which job sent an assistant message ("morning", "followup",
+    "alert", "watch", "price", "flight", "reminder", "reply"). Optional so every
+    existing call site keeps working; NULL means "written before this existed",
+    which readers must tolerate."""
     conn = _conn()
     cur = conn.cursor()
     now = datetime.now(timezone.utc).isoformat()
     cur.execute(
-        f"INSERT INTO messages (phone, role, content, created_at) VALUES ({PH}, {PH}, {PH}, {PH})",
-        (phone, role, content, now),
+        f"INSERT INTO messages (phone, role, content, created_at, kind) "
+        f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH})",
+        (phone, role, content, now, kind),
     )
     conn.commit()
     conn.close()

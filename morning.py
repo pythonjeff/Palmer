@@ -661,7 +661,7 @@ def send_morning_messages():
                 # A link message opts out of the status callback: the
                 # shorten-and-retry path there would cut the URL in half.
                 if send_sms(phone, message, add_status_callback=not carries_link):
-                    save_message(phone, "assistant", message)
+                    save_message(phone, "assistant", message, kind="morning")
                     print(f"Morning sent to {phone}: {message[:100]}")
                 else:
                     upsert_profile(phone, {"morning_sent_date": None})  # release claim, retry next tick
@@ -767,7 +767,7 @@ def send_missing_data_asks():
                 continue
             message = _draft_city_ask(phone)
             if send_sms(phone, message):
-                save_message(phone, "assistant", message)
+                save_message(phone, "assistant", message, kind="city_ask")
                 print(f"City ask sent to {phone}: {message[:80]}")
             else:
                 print(f"City ask send rejected by Twilio for {phone}")

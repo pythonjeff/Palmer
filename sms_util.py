@@ -121,7 +121,15 @@ def send_sms(to: str, body: str, *, add_status_callback: bool = True, media_url:
 
 
 def ensure_sms(to: str, body: str, **kwargs) -> bool:
-    """Send SMS, exhausting all fallbacks. Last resort is the plain fallback string."""
+    """Send SMS, exhausting all fallbacks. Last resort is the plain fallback string.
+
+    ONLY for a message the user is actively waiting on — i.e. a reply to a text
+    they just sent. The contract here is "never leave them with silence", and
+    that is the wrong trade for anything unprompted: a price watch used to route
+    through this, so a failed check texted "something went sideways on my end,
+    try again" to someone who had asked for nothing at all. An unprompted
+    message with nothing to say should say nothing. Proactive senders use
+    send_sms and accept False."""
     if send_sms(to, body, **kwargs):
         return True
     return send_sms(to, FALLBACK_SMS, add_status_callback=False)
