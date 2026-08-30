@@ -436,6 +436,50 @@ only when a screen row is actually present. **TMDB is free for non-commercial us
 only** — the same clause shape as Open-Meteo, and a question the day Palmer
 charges.
 
+### Live scores: the first thing in Palmer built to interrupt
+`sports.py` reads scores, `scorewatch.py` decides which moments deserve a text.
+That second half is the feature. A scoring feed is a pager by construction — an
+NFL game has six to ten scoring plays, and two followed teams on a Sunday is
+twenty texts in an afternoon — and every other proactive path in this codebase
+exists partly to ration sends. So three moments earn a text and nothing else
+does:
+
+  * the lead changes hands,
+  * someone scores inside the last five minutes,
+  * the game ends.
+
+Everything else updates the stored state **silently**, which is load-bearing:
+the comparison is against what the user was last TOLD, not the last poll, so a
+score arriving in the same tick as a lead change is one event rather than two,
+and a suppressed score does not make the next one look bigger than it was.
+`MAX_ALERTS_PER_GAME` is the backstop. Simulated over a full game, five scoring
+events produced three texts.
+
+**The obvious ESPN endpoint does not work from Heroku.**
+`site.api.espn.com/.../scoreboard` — the one every guide recommends — returns
+**403 from the dyno**, verified in production, so it is ESPN blocking datacenter
+IPs rather than a local quirk. `site.web.api.espn.com` is the same shape,
+unblocked, and returns a whole league in one call. The core API
+(`sports.core.api`) also works but is reference-based: **seven** HTTP calls for
+one game's score. Free and undocumented is a deliberate starting position; the
+ESPN shape is confined to `sports.py` so a paid feed is a one-module swap.
+
+**Polling is two-speed.** Checking every couple of minutes around the clock
+would be thousands of calls a day to learn nothing is happening; checking slowly
+during a game misses the moments. A league with something live is polled at
+`LIVE_POLL_SECONDS`, an idle one at `IDLE_POLL_SECONDS`, and the board is cached
+per league so two users following the same one cost a single fetch.
+
+**Team names are ambiguous in a way show titles are not.** `find_teams` returns
+a LIST — "Cardinals" is two teams in two sports, "Rangers" likewise — and the
+dispatch asks rather than picking, because guessing signs someone up for alerts
+about the wrong team in the wrong season. Verified live: "text me cardinals
+scores" gets *"Which Cardinals — baseball (St. Louis) or football (Arizona)?"*
+
+`teams` on the profile is the resolved follow list. It is **not** `sports_teams`,
+which is the extractor's free-text description ("Cardinals fan, emotionally
+invested...") — good for Palmer's voice, useless for lookups.
+
 ### Followed shows are not discovery
 `shows.py` tracks series a user named, and the distinction from the `screen`
 rows beside them is the whole feature. Screens answer *what is new to anyone* —

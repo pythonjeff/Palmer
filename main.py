@@ -123,6 +123,14 @@ _scheduler.add_job(
 # input and the account is on 250 searches/month, so each active watch costs
 # ~30 and db.FLIGHT_WATCH_MAX caps a user at three. 13:00 UTC is mid-morning
 # US-wide, late enough that a fare alert does not arrive before the briefing.
+# Live score alerts. INTERVAL, not cron, and it is the one job where that is
+# right: a game is a window rather than a clock time, so this has to tick often
+# enough to catch a lead change and cheaply enough to run all day. sports.py
+# does the rationing — an idle league is polled every 15 minutes and a live one
+# every ~2, so most ticks make no HTTP call at all.
+from scorewatch import run_score_alerts
+_scheduler.add_job(run_score_alerts, "interval", minutes=2, misfire_grace_time=60)
+
 from flightwatch import run_flight_watches
 _scheduler.add_job(
     run_flight_watches, "cron", hour="13", timezone="Etc/UTC",

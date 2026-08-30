@@ -637,6 +637,62 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     b.input["outbound_date"],
                     b.input.get("return_date"),
                 )
+            elif b.name == "follow_team":
+                from sports import find_teams, FOLLOW_MAX as TEAM_MAX
+                profile = get_profile(phone_number)
+                current = list(profile.get("teams") or [])
+                asked = (b.input.get("name") or "").strip()
+                matches = find_teams(asked)
+                if not matches:
+                    result = (f"No team matches {asked!r}. Ask them to confirm the team — "
+                              f"do not guess one, and do not send them elsewhere to look it up.")
+                elif len(matches) > 1:
+                    # "Cardinals" is two teams in two sports. Guessing signs them
+                    # up for alerts about the wrong one, in the wrong season.
+                    listed = ", ".join(f"{m['name']} ({m['league'].upper()})" for m in matches)
+                    result = (f"{asked!r} matches more than one team: {listed}. Ask which they "
+                              f"mean in one short line, then call follow_team again with the "
+                              f"fuller name. Do NOT pick one yourself.")
+                elif any(t.get("abbrev") == matches[0]["abbrev"]
+                         and t.get("league") == matches[0]["league"] for t in current):
+                    result = f"They already follow {matches[0]['name']}."
+                elif len(current) >= TEAM_MAX:
+                    result = (f"They already follow {TEAM_MAX} teams, which is the limit. "
+                              f"Tell them and offer to drop one.")
+                else:
+                    current.append(matches[0])
+                    upsert_profile(phone_number, {"teams": current})
+                    result = (f"Now following {matches[0]['name']}. They get a text when the lead "
+                              f"changes, when someone scores in the last five minutes, and at the "
+                              f"final — a few a game, not every play. Say that plainly.")
+            elif b.name == "unfollow_team":
+                profile = get_profile(phone_number)
+                current = list(profile.get("teams") or [])
+                # Accept `name` as well as `text_match`. Observed live: asked to
+                # "stop the eagles score texts" the model passed name=Eagles,
+                # carrying the key over from follow_team, and a dispatch reading
+                # only text_match would have silently unfollowed nothing while
+                # telling them it had.
+                match = (b.input.get("text_match") or b.input.get("name") or "").strip().lower()
+                kept = [t for t in current
+                        if match and match not in (t.get("name") or "").lower()]
+                dropped = len(current) - len(kept)
+                if dropped:
+                    upsert_profile(phone_number, {"teams": kept})
+                result = (f"Stopped score alerts for {dropped} team(s)." if dropped
+                          else "No followed team matched that.")
+            elif b.name == "get_score":
+                from sports import find_teams, team_game, describe
+                matches = find_teams(b.input.get("team", ""))
+                if not matches:
+                    result = (f"No team matches {b.input.get('team')!r}. Ask them to confirm it.")
+                elif len(matches) > 1:
+                    listed = ", ".join(f"{m['name']} ({m['league'].upper()})" for m in matches)
+                    result = f"That matches {listed} — ask which they mean."
+                else:
+                    game = team_game(matches[0])
+                    result = (f"{matches[0]['name']}: {describe(game)}" if game
+                              else f"{matches[0]['name']} have no game today.")
             elif b.name == "follow_show":
                 from shows import resolve_show, FOLLOW_MAX
                 profile = get_profile(phone_number)
@@ -667,7 +723,9 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
             elif b.name == "unfollow_show":
                 profile = get_profile(phone_number)
                 current = list(profile.get("shows") or [])
-                match = (b.input.get("text_match") or "").strip().lower()
+                # `name` too — the follow tool uses that key and the model
+                # carries it over. See the note in unfollow_team.
+                match = (b.input.get("text_match") or b.input.get("name") or "").strip().lower()
                 kept = [sh for sh in current
                         if match and match not in (sh.get("name") or "").lower()]
                 dropped = len(current) - len(kept)

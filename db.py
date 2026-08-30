@@ -135,6 +135,26 @@ def init_db():
         )
     """)
 
+    # What a user was last TOLD about a game. The comparison that decides
+    # whether a moment is worth a text is against this, not against the previous
+    # poll — otherwise a score arriving in the same tick as a lead change reads
+    # as two separate events.
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS game_alerts (
+            id {ID_COL},
+            phone TEXT NOT NULL,
+            game_id TEXT NOT NULL,
+            home_score INTEGER NOT NULL DEFAULT 0,
+            away_score INTEGER NOT NULL DEFAULT 0,
+            leader TEXT,
+            state TEXT,
+            alert_count INTEGER NOT NULL DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS game_alerts_key "
+                "ON game_alerts (phone, game_id)")
+
     watches_new_cols = [
         "last_alert_summary TEXT",
         "daily_alert_count INTEGER DEFAULT 0",
@@ -898,6 +918,52 @@ def get_artifact(token: str) -> tuple[str, bytes] | None:
     if expires < datetime.now(timezone.utc):
         return None
     return row["kind"], bytes(row["body"])
+
+
+# --- game alert state --------------------------------------------------------
+
+def get_game_alert(phone: str, game_id: str) -> dict | None:
+    """What this user was last told about this game."""
+    conn = _conn(); cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT * FROM game_alerts WHERE phone = {PH} AND game_id = {PH}",
+                    (phone, str(game_id)))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def record_game_alert(phone: str, game_id: str, home_score: int, away_score: int,
+                      leader: str | None, state: str, sent: bool) -> None:
+    """Store what they now know. `sent` distinguishes a silent baseline write
+    from an actual text, because only texts count against the per-game cap."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _conn(); cur = conn.cursor()
+    try:
+        bump = 1 if sent else 0
+        if _DATABASE_URL:
+            cur.execute(
+                f"INSERT INTO game_alerts (phone, game_id, home_score, away_score, leader, "
+                f"state, alert_count, updated_at) VALUES ({PH},{PH},{PH},{PH},{PH},{PH},{PH},{PH}) "
+                f"ON CONFLICT (phone, game_id) DO UPDATE SET home_score = EXCLUDED.home_score, "
+                f"away_score = EXCLUDED.away_score, leader = EXCLUDED.leader, "
+                f"state = EXCLUDED.state, updated_at = EXCLUDED.updated_at, "
+                f"alert_count = game_alerts.alert_count + {PH}",
+                (phone, str(game_id), home_score, away_score, leader, state, bump, now, bump))
+        else:
+            cur.execute(
+                f"INSERT INTO game_alerts (phone, game_id, home_score, away_score, leader, "
+                f"state, alert_count, updated_at) VALUES ({PH},{PH},{PH},{PH},{PH},{PH},{PH},{PH}) "
+                f"ON CONFLICT (phone, game_id) DO UPDATE SET home_score = excluded.home_score, "
+                f"away_score = excluded.away_score, leader = excluded.leader, "
+                f"state = excluded.state, updated_at = excluded.updated_at, "
+                f"alert_count = game_alerts.alert_count + {PH}",
+                (phone, str(game_id), home_score, away_score, leader, state, bump, now, bump))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # --- forecast accuracy audit -------------------------------------------------
