@@ -682,6 +682,23 @@ Adding a field means adding it to `PROFILE_FIELDS` **and** to the schema list in
 
 `upsert_profile(phone, {"key": None})` **deletes** the key. Callers already used None to mean "clear this" (releasing a send guard, retiring an alias) and every reader goes through `.get()`, so absent and null are equivalent to them — but a stored null still costs prompt tokens.
 
+**A new field must not collide with `_PROFILE_ALIASES`.** The alias table maps
+the names the *extractor* invents onto canonical ones, and `_normalize_profile`
+applies it on every inbound message. `teams` shipped as a real field while
+`teams -> sports_teams` was still in that table, so `follow_team` stored a
+follow list, Palmer confirmed it, and the user's next message migrated it into
+`sports_teams` and wrote `teams: None` — the follow gone before any alert could
+fire. It then put dicts in a field holding prose, and `_all_interests` does
+`.lower()` on those items from a call site *outside* the `try` in `alerts.py`,
+so one follower would have aborted `run_alert_checks` for themselves and every
+user after them in the loop, with the daily guard already claimed. The field is
+`followed_teams`, and `test_profile_schema.py` now asserts no alias key is ever
+a real field.
+
+A field written by tool dispatch also stays **out of `EXTRACT_PROMPT`**
+(`followed_teams`, `shows`). Listed there, Haiku fills it with prose and the
+code reading it gets strings where it expects dicts.
+
 `migrate_profile_prune.py` cleans rows that grew before the allow-list existed. It folds the stray keys into canonical fields with a Sonnet pass before dropping them, so real facts survive. Dry run by default; `--apply` writes.
 
 ### DB access patterns

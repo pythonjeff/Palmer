@@ -275,3 +275,32 @@ class TestOnboardingAskConsumption:
         with patch.object(userprofile.client.messages, "create", return_value=resp):
             userprofile._update_profile("+1564", "hey", "hey")
         assert "onboarding_ask_sent" not in db.get_profile("+1564")
+
+
+class TestNoFieldIsAlsoAnAlias:
+    """`teams` shipped as a real PROFILE_FIELD while `_PROFILE_ALIASES` still
+    mapped it to `sports_teams`. `_normalize_profile` runs on every inbound
+    message, so `follow_team` stored a follow list, Palmer confirmed it, and the
+    next message migrated it into `sports_teams` and wrote `teams: None` —
+    the follow silently gone, score alerts dead, and `_all_interests` then
+    raising AttributeError on a dict from a call site outside a try.
+    """
+
+    def test_an_alias_key_is_never_a_real_field(self):
+        import userprofile as up
+        clashes = {k: v for k, v in up._PROFILE_ALIASES.items() if k in up.PROFILE_FIELDS}
+        assert not clashes, f"these fields are silently rewritten on write: {clashes}"
+
+    def test_the_structured_follow_lists_survive_a_normalise(self):
+        import userprofile as up
+        for field in ("followed_teams", "shows"):
+            row = [{"league": "nfl", "abbrev": "PHI", "name": "Philadelphia Eagles"}]
+            out = up._canonical_updates({field: row})
+            assert out.get(field) == row, f"{field} did not survive canonicalisation"
+
+    def test_the_tool_written_lists_are_not_in_the_extractor_schema(self):
+        """They hold structured dicts written by tool dispatch. In the schema,
+        Haiku fills them with prose and downstream code gets strings."""
+        import prompts
+        for field in ("followed_teams", "shows"):
+            assert f'"{field}"' not in prompts.EXTRACT_PROMPT

@@ -118,11 +118,23 @@ _scheduler.add_job(
 # sends, so the forecast logged is the one users are about to be told, and it is
 # the same calendar date in both zones, which is what keeps target_date honest.
 # Sends nothing and touches no user path; a failure is a gap in the log.
+from wxaudit import run_forecast_audit
+_scheduler.add_job(
+    run_forecast_audit, "cron", hour="11", timezone="Etc/UTC",
+    misfire_grace_time=3600,
+)
+
 # Flight watches: once a day, and cron for the same reason as the jobs above.
 # Once daily is the cost control, not a preference — SerpAPI is the only paid
 # input and the account is on 250 searches/month, so each active watch costs
 # ~30 and db.FLIGHT_WATCH_MAX caps a user at three. 13:00 UTC is mid-morning
 # US-wide, late enough that a fare alert does not arrive before the briefing.
+from flightwatch import run_flight_watches
+_scheduler.add_job(
+    run_flight_watches, "cron", hour="13", timezone="Etc/UTC",
+    misfire_grace_time=3600,
+)
+
 # Live score alerts. INTERVAL, not cron, and it is the one job where that is
 # right: a game is a window rather than a clock time, so this has to tick often
 # enough to catch a lead change and cheaply enough to run all day. sports.py
@@ -130,18 +142,6 @@ _scheduler.add_job(
 # every ~2, so most ticks make no HTTP call at all.
 from scorewatch import run_score_alerts
 _scheduler.add_job(run_score_alerts, "interval", minutes=2, misfire_grace_time=60)
-
-from flightwatch import run_flight_watches
-_scheduler.add_job(
-    run_flight_watches, "cron", hour="13", timezone="Etc/UTC",
-    misfire_grace_time=3600,
-)
-
-from wxaudit import run_forecast_audit
-_scheduler.add_job(
-    run_forecast_audit, "cron", hour="11", timezone="Etc/UTC",
-    misfire_grace_time=3600,
-)
 if _SCHEDULER_ENABLED:
     _scheduler.start()
 else:

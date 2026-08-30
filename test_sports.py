@@ -12,6 +12,7 @@ way show titles are not — "Cardinals" is two teams in two sports.
 
 All offline.
 """
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import db
@@ -27,6 +28,29 @@ def _game(home=0, away=0, state="in", period=4, clock=200, gid="1"):
 
 def _told(home, away, leader, state="in"):
     return {"home_score": home, "away_score": away, "leader": leader, "state": state}
+
+
+@contextmanager
+def _run(game, prev=None, alert_count=0, delivered=True):
+    """Run one pass of the job over a single followed team, offline.
+
+    Yields a record of what was texted and what was written back, so tests can
+    assert on behaviour instead of on the source of the function."""
+    import scorewatch
+    rec = {"sms": [], "saved": []}
+    if prev is not None:
+        prev = {**prev, "alert_count": alert_count}
+    team = {"league": "nfl", "abbrev": "PHI", "name": "Philadelphia Eagles"}
+    profile = {"followed_teams": [team]}
+    with patch.object(scorewatch, "get_all_profiles", return_value=[("+1", profile)]), \
+         patch.object(sports, "scoreboard", return_value=[game]), \
+         patch.object(scorewatch, "get_game_alert", return_value=prev), \
+         patch.object(scorewatch, "_draft", return_value="line"), \
+         patch.object(scorewatch, "record_game_alert",
+                      side_effect=lambda p, g, h, a, l, st, sent: rec["saved"].append((h, a, sent))), \
+         patch("sms_util.send_sms", side_effect=lambda p, t, **k: rec["sms"].append(t) or delivered):
+        scorewatch.run_score_alerts()
+    yield rec
 
 
 class TestMostOfAGameIsSilent:
@@ -93,8 +117,10 @@ class TestTheClosingStretchMeansDifferentThingsPerSport:
         assert self._late("mlb", 9, 0)
         assert not self._late("mlb", 4, 0)
 
-    def test_soccer_clock_counts_up_so_it_is_ignored(self):
-        assert self._late("mls", 2, 5100)
+    def test_soccer_needs_a_floor_because_its_clock_counts_up(self):
+        assert self._late("mls", 2, 5100), "85th minute"
+        assert not self._late("mls", 2, 3000), "the 50th minute is not the closing stretch"
+
 
     def test_hockey_ends_in_the_third(self):
         assert self._late("nhl", 3, 180)
@@ -172,13 +198,16 @@ class TestTheCapIsTheBackstop:
     def test_a_suppressed_alert_still_updates_what_they_know(self):
         """Otherwise the next comparison is against a score they were never
         told, and the moment after a suppression reads as a bigger event than
-        it was. Asserts the property — every path records — rather than the
-        shape of the calls, which is what the previous version pinned."""
-        import inspect
-        import scorewatch
-        src = inspect.getsource(scorewatch.run_score_alerts)
-        assert "remember(texted=False)" in src, "the quiet path must still record"
-        assert "remember(texted=True)" in src, "the texted path must still record"
+        it was.
+
+        Driven through the job rather than grepping its source — two earlier
+        versions of this test pinned the shape of the calls and broke on a
+        refactor that preserved the behaviour exactly."""
+        routine = _game(28, 0, period=2, clock=600)      # earns no text
+        with _run(routine, prev=_told(21, 0, "home")) as rec:
+            assert rec["sms"] == [], "a routine score should stay quiet"
+            assert rec["saved"][-1][:2] == (28, 0), "but the baseline must move"
+            assert rec["saved"][-1][2] is False, "a silent update is not an alert"
 
 
 class TestPollingIsTwoSpeed:
@@ -258,3 +287,79 @@ class TestStoredState:
         self._fresh(tmp_path, monkeypatch)
         db.record_game_alert("+1", "9", 7, 0, "home", "in", sent=True)
         assert db.get_game_alert("+2", "9") is None
+
+
+class TestAFailedFetchIsNotAnAnswer:
+    """Caching a failure is worse than not caching: the empty result is served
+    for the whole TTL, and for `_teams` that TTL is the life of the dyno."""
+
+    def test_a_blip_does_not_erase_every_team_until_the_next_deploy(self):
+        sports._clear_cache()
+        with patch.object(sports, "_get", return_value=None):
+            assert sports._teams("nfl") == []
+        assert "nfl" not in sports._team_cache, "a failure was cached forever"
+        with patch.object(sports, "_get", return_value={"sports": [{"leagues": [{"teams": [
+                {"team": {"abbreviation": "PHI", "displayName": "Philadelphia Eagles"}}]}]}]}):
+            assert [t["abbrev"] for t in sports._teams("nfl")] == ["PHI"]
+
+    def test_a_blip_mid_game_keeps_the_last_board_rather_than_going_dark(self):
+        """`scorewatch` recomputes which leagues are live from the board it gets
+        back, so an empty one demotes a live league to the 15-minute poll."""
+        sports._clear_cache()
+        live = {"events": [{"id": "1", "competitions": [{
+            "status": {"type": {"state": "in"}},
+            "competitors": [{"homeAway": "home", "score": "7", "team": {"abbreviation": "PHI"}},
+                            {"homeAway": "away", "score": "0", "team": {"abbreviation": "CIN"}}]}]}]}
+        with patch.object(sports, "_get", return_value=live):
+            assert len(sports.scoreboard("nfl")) == 1
+        with patch.object(sports, "_get", return_value=None):
+            assert len(sports.scoreboard("nfl", ttl=0)) == 1, "went dark on one bad request"
+
+
+class TestFollowingATeamMidWeek:
+    def test_a_game_that_ended_before_they_followed_is_not_news(self):
+        """ESPN's NFL board carries the whole current week, so a Tuesday follow
+        used to open with a final score from Sunday."""
+        assert sports.alert_reason(None, _game(21, 17, state="post")) is None
+
+    def test_but_a_game_they_were_watching_still_gets_its_final(self):
+        assert sports.alert_reason(_told(21, 17, "home"), _game(21, 17, state="post")) == "final"
+
+
+class TestATieIsNotALeadChange:
+    def test_an_equalising_score_reads_as_tied(self):
+        assert sports.alert_reason(_told(21, 14, "home"), _game(21, 21)) == "tied"
+
+    def test_a_go_ahead_score_after_a_tie_is_still_a_lead_change(self):
+        assert sports.alert_reason(_told(21, 21, None), _game(28, 21)) == "lead"
+
+    def test_the_drafter_has_a_cue_for_it(self):
+        import inspect
+        import scorewatch
+        assert '"tied"' in inspect.getsource(scorewatch._draft)
+
+
+class TestTheCapNeverSwallowsTheResult:
+    def test_a_mid_game_score_is_suppressed_once_the_cap_is_hit(self):
+        with _run(_game(21, 24), prev=_told(21, 17, "home"),
+                  alert_count=sports.MAX_ALERTS_PER_GAME) as rec:
+            assert rec["sms"] == []
+
+    def test_but_the_result_still_arrives(self):
+        """A game wild enough to spend four alerts is exactly the one whose
+        result they want; ending on a mid-game score reads as Palmer losing
+        interest."""
+        with _run(_game(21, 24, state="post"), prev=_told(21, 17, "home"),
+                  alert_count=sports.MAX_ALERTS_PER_GAME) as rec:
+            assert rec["sms"], "the final was swallowed by the cap"
+
+    def test_an_undelivered_text_does_not_consume_the_moment(self):
+        """Twilio failing must not burn an alert slot — otherwise the moment is
+        counted against the cap without the user ever seeing it."""
+        with _run(_game(14, 17), prev=_told(14, 10, "home"), delivered=False) as rec:
+            assert rec["sms"], "it should have tried"
+            assert rec["saved"][-1][2] is False, "a text that never arrived is not an alert"
+
+    def test_a_delivered_text_does_count(self):
+        with _run(_game(14, 17), prev=_told(14, 10, "home")) as rec:
+            assert rec["saved"][-1][2] is True

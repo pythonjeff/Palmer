@@ -29,7 +29,7 @@ _live_leagues: set[str] = set()
 
 
 def followed_teams(profile: dict) -> list[dict]:
-    return [t for t in ((profile or {}).get("teams") or []) if t.get("abbrev")]
+    return [t for t in ((profile or {}).get("followed_teams") or []) if t.get("abbrev")]
 
 
 def _draft(phone: str, game: dict, team: dict, reason: str) -> str:
@@ -42,6 +42,7 @@ def _draft(phone: str, game: dict, team: dict, reason: str) -> str:
         cue = {
             "lead": "the lead just changed hands",
             "late": "someone scored in the closing stretch",
+            "tied": "the game is level again",
             "final": "the game just ended",
         }[reason]
         # Say outright whose side they are on and by how much, rather than
@@ -130,14 +131,20 @@ def run_score_alerts() -> None:
 
                 prev = get_game_alert(phone, game["id"])
                 reason = sports.alert_reason(prev, game)
-                capped = (prev or {}).get("alert_count", 0) >= sports.MAX_ALERTS_PER_GAME
+                # The cap never swallows the final. A game wild enough to spend
+                # four alerts is exactly the one whose result they want, and
+                # ending on a mid-game score with no result reads as Palmer
+                # losing interest.
+                capped = (reason != "final"
+                          and (prev or {}).get("alert_count", 0) >= sports.MAX_ALERTS_PER_GAME)
                 if not reason or capped:
                     remember(texted=False)
                     continue
-                line = _draft(phone, game, team, reason)
-                if send_sms(phone, line):
-                    sent += 1
-                remember(texted=True)
+                # Only a text that actually went out counts against the cap or
+                # consumes the moment; a Twilio failure leaves it to retry.
+                delivered = bool(send_sms(phone, _draft(phone, game, team, reason)))
+                sent += delivered
+                remember(texted=delivered)
             except Exception as e:
                 print(f"scorewatch: {team.get('abbrev')} for {phone} failed: "
                       f"{type(e).__name__}: {e}")

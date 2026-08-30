@@ -640,7 +640,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
             elif b.name == "follow_team":
                 from sports import find_teams, FOLLOW_MAX as TEAM_MAX
                 profile = get_profile(phone_number)
-                current = list(profile.get("teams") or [])
+                current = list(profile.get("followed_teams") or [])
                 asked = (b.input.get("name") or "").strip()
                 matches = find_teams(asked)
                 if not matches:
@@ -661,13 +661,13 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                               f"Tell them and offer to drop one.")
                 else:
                     current.append(matches[0])
-                    upsert_profile(phone_number, {"teams": current})
+                    upsert_profile(phone_number, {"followed_teams": current})
                     result = (f"Now following {matches[0]['name']}. They get a text when the lead "
                               f"changes, when someone scores in the last five minutes, and at the "
                               f"final — a few a game, not every play. Say that plainly.")
             elif b.name == "unfollow_team":
                 profile = get_profile(phone_number)
-                current = list(profile.get("teams") or [])
+                current = list(profile.get("followed_teams") or [])
                 # Accept `name` as well as `text_match`. Observed live: asked to
                 # "stop the eagles score texts" the model passed name=Eagles,
                 # carrying the key over from follow_team, and a dispatch reading
@@ -678,7 +678,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                         if match and match not in (t.get("name") or "").lower()]
                 dropped = len(current) - len(kept)
                 if dropped:
-                    upsert_profile(phone_number, {"teams": kept})
+                    upsert_profile(phone_number, {"followed_teams": kept})
                 result = (f"Stopped score alerts for {dropped} team(s)." if dropped
                           else "No followed team matched that.")
             elif b.name == "get_score":

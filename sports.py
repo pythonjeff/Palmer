@@ -30,6 +30,7 @@ import json
 import threading
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 BASE = "https://site.web.api.espn.com/apis/site/v2/sports"
 _UA = {"User-Agent": "Mozilla/5.0 (compatible; PalmerSMS/1.0)"}
@@ -58,6 +59,7 @@ LIVE_POLL_SECONDS = 110
 IDLE_POLL_SECONDS = 15 * 60
 
 _board_cache: dict[str, tuple[float, list[dict]]] = {}
+_team_cache: dict[str, list[dict]] = {}
 _cache_lock = threading.Lock()
 
 
@@ -74,6 +76,7 @@ def _clear_cache() -> None:
     """Tests only."""
     with _cache_lock:
         _board_cache.clear()
+        _team_cache.clear()
 
 
 def _parse_game(ev: dict, league: str) -> dict | None:
@@ -119,14 +122,16 @@ def scoreboard(league: str, ttl: float = LIVE_POLL_SECONDS) -> list[dict]:
     if hit and now - hit[0] < ttl:
         return hit[1]
     data = _get(f"{BASE}/{path}/scoreboard")
-    games = [g for g in ((_parse_game(e, league) for e in (data or {}).get("events") or []))
-             if g]
+    if data is None:
+        # Never cache a failure. Doing so served an empty board for the full
+        # TTL, and `scorewatch` recomputes "is this league live" from the board
+        # it gets back — so one flaky request during a game demoted the league
+        # to the idle poll and lost every lead change for the next 15 minutes.
+        return hit[1] if hit else []
+    games = [g for g in (_parse_game(e, league) for e in data.get("events") or []) if g]
     with _cache_lock:
         _board_cache[league] = (now, games)
     return games
-
-
-_team_cache: dict[str, list[dict]] = {}
 
 
 def _teams(league: str) -> list[dict]:
@@ -137,7 +142,12 @@ def _teams(league: str) -> list[dict]:
     if hit is not None:
         return hit
     data = _get(f"{BASE}/{LEAGUES[league]}/teams")
-    group = (((data or {}).get("sports") or [{}])[0].get("leagues") or [{}])[0]
+    if data is None:
+        # A transient blip must not be cached for the life of the dyno. It was:
+        # one failed fetch on the first `follow_team` after a deploy and Palmer
+        # answered "no team matches 'Eagles'" to everyone until the next restart.
+        return []
+    group = ((data.get("sports") or [{}])[0].get("leagues") or [{}])[0]
     out = []
     for entry in group.get("teams") or []:
         t = entry.get("team") or {}
@@ -146,9 +156,24 @@ def _teams(league: str) -> list[dict]:
                     "_match": {str(t.get(k) or "").lower()
                                for k in ("displayName", "name", "location",
                                          "abbreviation", "nickname")} - {""}})
-    with _cache_lock:
-        _team_cache[league] = out
+    if out:
+        with _cache_lock:
+            _team_cache[league] = out
     return out
+
+
+def _warm_teams() -> None:
+    """Populate the team cache for every league at once.
+
+    `find_teams` has to consult all six leagues to know whether a name is
+    ambiguous, and this runs on the inbound reply path with the per-phone lock
+    held. Serially, a cold cache against a slow ESPN was six 12-second timeouts
+    back to back; concurrently the worst case is one."""
+    cold = [lg for lg in LEAGUES if lg not in _team_cache]
+    if len(cold) < 2:
+        return
+    with ThreadPoolExecutor(max_workers=len(cold)) as pool:
+        list(pool.map(_teams, cold))
 
 
 def find_teams(query: str) -> list[dict]:
@@ -161,6 +186,7 @@ def find_teams(query: str) -> list[dict]:
     q = (query or "").strip().lower()
     if not q:
         return []
+    _warm_teams()
     out = []
     for league in LEAGUES:
         for t in _teams(league):
@@ -215,10 +241,12 @@ def side_of(game: dict, abbrev: str) -> str | None:
 # quarters, and assuming they were is what made "late" mean nothing for half
 # these sports.
 FINAL_PERIOD = {"nfl": 4, "ncaaf": 4, "nba": 4, "nhl": 3, "mlb": 9, "mls": 2}
-# Leagues with no countdown to read: baseball has innings and no clock at all,
-# and soccer's clock counts UP. Comparing either against "under five minutes
-# left" is meaningless, and doing so silently disabled late alerts for both.
-CLOCKLESS = {"mlb", "mls"}
+# Baseball has innings and no clock at all, so the inning IS the signal.
+# Soccer has a clock that counts UP toward ~90 minutes rather than down to
+# zero, so it needs a floor rather than a ceiling — treating the whole second
+# half as "late" would make a 45-minute window the closing stretch.
+CLOCKLESS = {"mlb"}
+COUNTS_UP = {"mls": 80 * 60}
 
 
 def _is_late(game: dict) -> bool:
@@ -233,6 +261,9 @@ def _is_late(game: dict) -> bool:
     if league in CLOCKLESS:
         return True
     clock = game.get("clock") or 0
+    floor = COUNTS_UP.get(league)
+    if floor is not None:
+        return clock >= floor
     return 0 < clock <= LATE_CLOCK_SECONDS
 
 
@@ -244,16 +275,23 @@ def alert_reason(prev: dict | None, game: dict) -> str | None:
     that arrives in the same tick as a lead change reads as two events."""
     if game["state"] == "pre":
         return None
-    if game["state"] == "post":
-        return None if (prev or {}).get("state") == "post" else "final"
     if not prev:
-        return None                       # first sighting is the baseline
+        # First sighting is a baseline whatever state it is in. ESPN's NFL
+        # board carries the whole current week, so following the Eagles on a
+        # Tuesday used to open with "Final: CIN 17, PHI 21" for Sunday's game.
+        return None
+    if game["state"] == "post":
+        return None if prev.get("state") == "post" else "final"
     scored = (game["home"]["score"] != prev.get("home_score")
               or game["away"]["score"] != prev.get("away_score"))
     if not scored:
         return None
-    if leader(game) != prev.get("leader"):
-        return "lead"
+    now = leader(game)
+    if now != prev.get("leader"):
+        # Somebody now leads, or nobody does. Calling a tying score a lead
+        # change handed the drafter "the lead just changed hands" next to a
+        # standing line reading "level, tied at 21".
+        return "lead" if now else "tied"
     if _is_late(game):
         return "late"
     return None
