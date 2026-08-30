@@ -33,6 +33,72 @@ def local_today(tz_name: str | None) -> date:
     return local_now(tz_name).date()
 
 
+def valid_zone(tz_name: str | None) -> str | None:
+    """`tz_name` if zoneinfo can resolve it, else None.
+
+    The resolution `_zone` already does, surfaced as a validator so `timeutil`
+    stays the single owner of what counts as a timezone. `profile["timezone"]`
+    is writable by the Haiku extractor (it is named in EXTRACT_PROMPT's schema),
+    and an unresolvable value there degrades every local_now/local_today call in
+    the codebase to UTC — silently, and for good."""
+    if not tz_name:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo(str(tz_name))
+        return str(tz_name)
+    except Exception:
+        return None
+
+
+def clock_block(tz_name: str | None, now: datetime | None = None) -> str:
+    """What time it is *where the user is*, for the system prompt.
+
+    The model used to be handed the dyno's clock and the dyno's date — "Current
+    time: 00:42 UTC", "Today is Sunday, August 31" — and asked to work out the
+    rest from the city string in the profile. Two things went wrong with that,
+    and only one of them was obvious.
+
+    The obvious one: every reminder needed a DST-aware conversion in each
+    direction, done in the model's head, off a profile field nobody had checked.
+
+    The one that actually reached users: from 17:00 Pacific onward the UTC date
+    is already tomorrow. "Today is Sunday" is simply false for a Los Angeles
+    user at 8pm Saturday, so "remind me tomorrow at 9" lands on Monday. The
+    model was not making a mistake — it was told the wrong day and reasoned
+    correctly from it.
+
+    So state the user's day and clock first and plainly, and keep the server
+    clock as a labelled aside rather than the headline. When the zone is missing
+    or unresolvable, say so and assert no local date at all: presenting UTC as
+    though it were their day is what caused this."""
+    now = now or datetime.now(timezone.utc)
+    resolved = valid_zone(tz_name)
+    server = now.astimezone(timezone.utc)
+    if not resolved:
+        return (
+            "RIGHT NOW\n"
+            f"You don't know this person's timezone. The server clock is "
+            f"{server.strftime('%H:%M')} UTC on {server.strftime('%A, %B %d, %Y')}.\n"
+            "Do not state or assume a local date or hour for them. If a time matters, "
+            "name the zone you're assuming so they can correct you."
+        )
+    local = now.astimezone(_zone(resolved))
+    from datetime import timedelta
+    tomorrow = local + timedelta(days=1)
+    return (
+        "RIGHT NOW, WHERE THEY ARE\n"
+        f"Their local time is {local.strftime('%H:%M')} on "
+        f"{local.strftime('%A, %B %d, %Y')} ({resolved}, "
+        f"UTC{local.strftime('%z')[:3]}:{local.strftime('%z')[3:]}).\n"
+        f"For this person \"today\" means {local.strftime('%A %B %d')} and \"tomorrow\" "
+        f"means {tomorrow.strftime('%A %B %d')}. Always mean their day, never the "
+        f"server's.\n"
+        f"(Server clock, for your reference only: {server.strftime('%H:%M')} UTC on "
+        f"{server.strftime('%A, %B %d')}.)"
+    )
+
+
 # Reminder recurrence. Deliberately a small closed set — these are the shapes
 # people actually ask for by text, and each one has an unambiguous "next".
 RECURRENCES = ("daily", "weekdays", "weekly")

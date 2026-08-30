@@ -158,7 +158,9 @@ class TestCancelAndRearm:
         db.save_reminder(PHONE, "Take your meds", "2026-08-11T20:00:00Z", "daily")
         claimed = db.claim_due_reminders()
         assert claimed[0]["recurrence"] == "daily"
-        assert claimed[0]["due_at"] == "2026-08-11T20:00:00Z"
+        # save_reminder canonicalizes on write: one shape in the column, because
+        # claim_due_reminders orders it lexicographically.
+        assert claimed[0]["due_at"] == "2026-08-11T20:00:00+00:00"
 
 
 class TestSendLoop:

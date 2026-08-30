@@ -17,7 +17,7 @@ import send_reminders
 
 def _render() -> str:
     """SYSTEM_PROMPT as _build_system renders it."""
-    return agent.SYSTEM_PROMPT.format(date="Monday, January 01, 2026", now_utc="12:00",
+    return agent.SYSTEM_PROMPT.format(clock_block="RIGHT NOW\n(clock)",
                                       profile_block="(none)")
 
 
@@ -70,8 +70,8 @@ class TestPromptStillRenders:
 
     def test_placeholders_survive(self):
         out = _render()
-        assert "Monday, January 01, 2026" in out
-        assert "12:00" in out
+        assert "RIGHT NOW\n(clock)" in out
+        assert "(none)" in out
 
 
 class TestBuildSystemWiring:

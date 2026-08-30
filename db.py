@@ -181,8 +181,26 @@ def init_db():
             except Exception:
                 pass  # already exists
 
+    # The messages table had no index at all, and it is the hottest table here:
+    # every inbound turn reads it, every proactive sender's dedup gate reads it
+    # twice, and each read is `WHERE phone = ? ORDER BY created_at DESC`. Both
+    # backends accept IF NOT EXISTS.
+    cur.execute("CREATE INDEX IF NOT EXISTS messages_phone_time "
+                "ON messages (phone, created_at)")
+    cur.execute("CREATE INDEX IF NOT EXISTS messages_phone_role_time "
+                "ON messages (phone, role, created_at)")
+    cur.execute("CREATE INDEX IF NOT EXISTS reminders_pending "
+                "ON reminders (sent, due_at)")
+
     conn.commit()
     conn.close()
+
+    # Repair reminders written before save_reminder canonicalized due_at. Cheap
+    # and idempotent once the table is clean; see normalize_due_at_rows.
+    try:
+        normalize_due_at_rows()
+    except Exception as e:
+        print(f"init_db: due_at normalization skipped: {type(e).__name__}: {e}")
 
 
 HISTORY_LIMIT = 20
@@ -409,9 +427,22 @@ def save_reminder(phone: str, text: str, due_at: str, recurrence: str | None = N
         (phone,),
     )
     target = _parse_due(due_at)
+    if target is None:
+        # An unparseable due_at would sit in the table forever: claim_due_reminders
+        # compares strings, so it would either never match or match wrongly. Drop
+        # it here rather than storing something no reader can honour.
+        print(f"save_reminder: unparseable due_at {due_at!r} for {phone}, not saved")
+        conn.close()
+        return
+    # ONE canonical shape, always. claim_due_reminders decides due-ness with a
+    # LEXICOGRAPHIC `due_at <= now` against a Python `+00:00` isoformat, so that
+    # comparison is correct only while every writer agrees on the format — and
+    # until now nothing made them. A '-05:00' offset from the model was read as
+    # if it were UTC and fired five hours early.
+    due_at = target.astimezone(timezone.utc).isoformat(timespec="seconds")
     for row in cur.fetchall():
         existing = _parse_due(row["due_at"])
-        if target is None or existing is None:
+        if existing is None:
             continue
         # Same minute: the model re-drafting the same ask lands on the same
         # timestamp, so time is the strong signal and text disambiguates two
@@ -452,9 +483,52 @@ def cancel_reminders(phone: str, text_match: str = None) -> int:
     return count
 
 
+def normalize_due_at_rows() -> int:
+    """Rewrite pending reminders into the canonical UTC string. Returns the count.
+
+    `due_at` is TEXT and claim_due_reminders orders it lexicographically, so a
+    row stored with a non-UTC offset or without seconds sorts wrongly and fires
+    early. save_reminder now normalizes on write; this repairs what was written
+    before it did. Idempotent — a row already canonical is skipped, so running
+    it from init_db on every boot costs one select once the table is clean.
+
+    A row that will not parse is left alone and logged: it can never be claimed,
+    which is worth seeing rather than silently rewriting."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(f"SELECT id, due_at FROM reminders WHERE sent = 0")
+    fixed = 0
+    for row in cur.fetchall():
+        parsed = _parse_due(row["due_at"])
+        if parsed is None:
+            print(f"normalize_due_at_rows: reminder {row['id']} has unparseable "
+                  f"due_at {row['due_at']!r} — it can never fire")
+            continue
+        canonical = parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
+        if canonical != row["due_at"]:
+            cur.execute(f"UPDATE reminders SET due_at = {PH} WHERE id = {PH}",
+                        (canonical, row["id"]))
+            fixed += 1
+    if fixed:
+        conn.commit()
+        print(f"normalize_due_at_rows: repaired {fixed} reminder(s)")
+    conn.close()
+    return fixed
+
+
 def claim_due_reminders() -> list[dict]:
-    """Atomically mark due reminders as sent and return them. Prevents double-sends."""
-    now = datetime.now(timezone.utc).isoformat()
+    """Atomically mark due reminders as sent and return them. Prevents double-sends.
+
+    The `due_at <= now` below is a LEXICOGRAPHIC comparison on a TEXT column, so
+    it equals a chronological comparison only while every row holds the same
+    shape: `YYYY-MM-DDTHH:MM:SS+00:00`. save_reminder guarantees that on write
+    and normalize_due_at_rows repairs the rest; do not write due_at anywhere
+    else without going through one of them.
+
+    Widening this predicate and re-filtering in Python is not an option — on
+    Postgres this is a single UPDATE ... RETURNING, so a wider window would mark
+    not-yet-due reminders as sent."""
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     conn = _conn()
     cur = conn.cursor()
     if _DATABASE_URL:

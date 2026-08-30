@@ -8,8 +8,9 @@ _build_system is the one helper siblings still take from here: it assembles the
 system prompt for every user-facing message (see CLAUDE.md "One voice").
 """
 import json
+import re
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from db import (
     init_db, get_history, save_message, get_profile, upsert_profile, save_reminder, cancel_reminders,
@@ -138,10 +139,11 @@ def base_system() -> str:
     SYSTEM_PROMPT is a template — passing it unformatted ships literal
     "{profile_block}" to the model — so a caller cannot simply fall back to the
     constant itself."""
-    now = datetime.now(timezone.utc)
+    from timeutil import clock_block
     return SYSTEM_PROMPT.format(
-        date=now.strftime("%A, %B %d, %Y"),
-        now_utc=now.strftime("%H:%M"),
+        # No profile means no timezone, which is exactly the case clock_block's
+        # no-zone form is for: state the server clock, assert no local day.
+        clock_block=clock_block(None),
         profile_block="You don't know much about this person yet.",
     )
 
@@ -185,10 +187,12 @@ def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = 
             "asked for directly outranks whatever you inferred from how they text. Adjusting "
             "register never means dropping your spine."
         )
-    now = datetime.now(timezone.utc)
+    from timeutil import clock_block
     system = SYSTEM_PROMPT.format(
-        date=now.strftime("%A, %B %d, %Y"),
-        now_utc=now.strftime("%H:%M"),
+        # The profile is already read above, so the zone is in hand. Handing the
+        # model the UTC date instead is what filed "remind me tomorrow" a day
+        # late for every user west of UTC after 5pm — see clock_block.
+        clock_block=clock_block((profile or {}).get("timezone")),
         profile_block=profile_block,
     )
     if is_new_user:
@@ -410,6 +414,58 @@ def _apply_opening_kinds(profile: dict, tool_input: dict, updates: dict) -> str:
     return " Opening now covers: " + ", ".join(words[k] for k in kinds) + "."
 
 
+def _normalize_due_at(phone: str, raw: str) -> tuple[str | None, str, str | None]:
+    """Vet the model's `due_at`. Returns (canonical_utc, local_label, error).
+
+    Three things could go wrong on the write path and nothing checked any of
+    them. `due_at` is stored as TEXT and `db.claim_due_reminders` decides
+    due-ness with a LEXICOGRAPHIC `due_at <= now` against a Python `+00:00`
+    isoformat — so the comparison is only correct while every writer stores the
+    same shape, and nothing made them. A model reasoning in local time naturally
+    emits `2026-08-31T09:00:00-05:00`; the string compare reads that `09:00` as
+    UTC and the reminder fires five hours early. A seconds-less string sorts
+    early for the same reason.
+
+    `db._parse_due` already normalizes every one of these shapes correctly — it
+    was simply never on this path. So use it, emit the one canonical form, and
+    hand back the LOCAL time as a formatted string so the dispatch can echo it
+    rather than making the model convert a second time.
+
+    A naive string (no offset at all) is read as the user's LOCAL clock, not as
+    UTC. That is the non-obvious call here: a model that drops the offset was
+    thinking in the user's day, and reading it as UTC would move the reminder by
+    the whole offset. With no timezone on file there is nothing to read it
+    against and UTC is the only answer left."""
+    from db import _parse_due
+    from timeutil import valid_zone, _zone
+
+    tz_name = valid_zone(get_profile(phone).get("timezone"))
+    parsed = _parse_due(raw)
+    if parsed is None:
+        return None, "", f"{raw!r} isn't a time I can read."
+
+    naive = not re.search(r"(?:Z|[+-]\d{2}:?\d{2})\s*$", str(raw).strip())
+    if naive and tz_name:
+        parsed = parsed.replace(tzinfo=_zone(tz_name))
+
+    now = datetime.now(timezone.utc)
+    if parsed <= now - timedelta(minutes=1):
+        return None, "", (
+            "that time is already past. Work the date out from the RIGHT NOW block "
+            "and call set_reminder again."
+        )
+    if parsed > now + timedelta(days=400):
+        return None, "", "that time is over a year out — check the date and try again."
+
+    canonical = parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
+    if tz_name:
+        local = parsed.astimezone(_zone(tz_name))
+        label = local.strftime("%A, %B %d at %-I:%M %p").replace(" 0", " ")
+    else:
+        label = parsed.astimezone(timezone.utc).strftime("%A, %B %d at %H:%M UTC")
+    return canonical, label, None
+
+
 def _redraft_without_redirect(system: str, messages: list, draft: str) -> str | None:
     """One retry for a reply that hands the user off to a competing product.
 
@@ -511,13 +567,22 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 result = f"GIF queued: {gif_url}" if gif_url else "No GIF found for that query."
             elif b.name == "set_reminder":
                 recurrence = b.input.get("recurrence")
-                save_reminder(phone_number, b.input["text"], b.input["due_at"], recurrence)
-                if recurrence:
-                    result = (f"Recurring reminder saved ({recurrence}), first send "
-                              f"{b.input['due_at']}. It repeats at the same local time "
-                              f"until they cancel it.")
+                due_utc, when_local, err = _normalize_due_at(phone_number, b.input["due_at"])
+                if err:
+                    # Nothing saved. Hand the model the problem rather than a
+                    # confirmation, so it can fix it inside this same turn
+                    # instead of telling the user a reminder exists that doesn't.
+                    result = f"Didn't save that reminder — {err}"
                 else:
-                    result = f"Reminder saved for {b.input['due_at']}."
+                    save_reminder(phone_number, b.input["text"], due_utc, recurrence)
+                    # Echo the LOCAL time back. The old result echoed the raw UTC
+                    # string, which made the model convert a second time for the
+                    # confirmation the user actually reads — a second chance to
+                    # get it wrong, on the half they see.
+                    result = (f"Reminder saved for {when_local} their local time. "
+                              "Confirm it in exactly those words - do not convert it.")
+                    if recurrence:
+                        result += f" It repeats ({recurrence}) at that same local time until they cancel."
             elif b.name == "update_morning_briefing":
                 profile = get_profile(phone_number)
                 topics = list(profile.get("morning_topics") or [])
