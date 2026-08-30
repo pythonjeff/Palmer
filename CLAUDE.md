@@ -479,6 +479,66 @@ only when a screen row is actually present. **TMDB is free for non-commercial us
 only** — the same clause shape as Open-Meteo, and a question the day Palmer
 charges.
 
+### Live scores: the first thing in Palmer built to interrupt
+`sports.py` reads scores, `scorewatch.py` decides which moments deserve a text.
+That second half is the feature. A scoring feed is a pager by construction — an
+NFL game has six to ten scoring plays, and two followed teams on a Sunday is
+twenty texts in an afternoon — and every other proactive path in this codebase
+exists partly to ration sends. So three moments earn a text and nothing else
+does:
+
+  * the lead changes hands,
+  * someone scores inside the last five minutes,
+  * the game ends.
+
+Everything else updates the stored state **silently**, which is load-bearing:
+the comparison is against what the user was last TOLD, not the last poll, so a
+score arriving in the same tick as a lead change is one event rather than two,
+and a suppressed score does not make the next one look bigger than it was.
+`MAX_ALERTS_PER_GAME` is the backstop. Simulated over a full game, five scoring
+events produced three texts.
+
+**The obvious ESPN endpoint does not work from Heroku.**
+`site.api.espn.com/.../scoreboard` — the one every guide recommends — returns
+**403 from the dyno**, verified in production, so it is ESPN blocking datacenter
+IPs rather than a local quirk. `site.web.api.espn.com` is the same shape,
+unblocked, and returns a whole league in one call. The core API
+(`sports.core.api`) also works but is reference-based: **seven** HTTP calls for
+one game's score. Free and undocumented is a deliberate starting position; the
+ESPN shape is confined to `sports.py` so a paid feed is a one-module swap.
+
+**"The closing stretch" is not one rule.** `_is_late` originally compared a
+countdown against five minutes, which is meaningless in two of the six leagues:
+baseball has innings and `clock` is always 0, and soccer's clock counts UP. Late
+alerts were therefore silently dead for MLB and MLS — including the sport a real
+user follows. It now asks two questions: are we in `FINAL_PERIOD` for this
+league (`>=`, so extra time counts), and *if the sport has a countdown*, is it
+nearly done.
+
+**The drafter is told whose side they are on and by how much.** Leaving it to
+infer "PHI" from `CIN 17, PHI 21` mostly worked and is the wrong thing to lean
+on — a buddy does not deduce who you support, and the margin is what sets the
+tone. It is also told, in as many words, that it can see the score and the clock
+and **nothing else**: given only a final score it was writing "that one had to be
+close the whole way", which it cannot know. Same failure as the weather
+over-claiming, wearing personality.
+
+**Polling is two-speed.** Checking every couple of minutes around the clock
+would be thousands of calls a day to learn nothing is happening; checking slowly
+during a game misses the moments. A league with something live is polled at
+`LIVE_POLL_SECONDS`, an idle one at `IDLE_POLL_SECONDS`, and the board is cached
+per league so two users following the same one cost a single fetch.
+
+**Team names are ambiguous in a way show titles are not.** `find_teams` returns
+a LIST — "Cardinals" is two teams in two sports, "Rangers" likewise — and the
+dispatch asks rather than picking, because guessing signs someone up for alerts
+about the wrong team in the wrong season. Verified live: "text me cardinals
+scores" gets *"Which Cardinals — baseball (St. Louis) or football (Arizona)?"*
+
+`teams` on the profile is the resolved follow list. It is **not** `sports_teams`,
+which is the extractor's free-text description ("Cardinals fan, emotionally
+invested...") — good for Palmer's voice, useless for lookups.
+
 ### Followed shows are not discovery
 `shows.py` tracks series a user named, and the distinction from the `screen`
 rows beside them is the whole feature. Screens answer *what is new to anyone* —
@@ -730,6 +790,23 @@ actually travelled.
 Adding a field means adding it to `PROFILE_FIELDS` **and** to the schema list in `prompts.EXTRACT_PROMPT`. A key missing from the allow-list is silently discarded on write, so `test_profile_schema.py` asserts that every field the code reads is allowed.
 
 `upsert_profile(phone, {"key": None})` **deletes** the key. Callers already used None to mean "clear this" (releasing a send guard, retiring an alias) and every reader goes through `.get()`, so absent and null are equivalent to them — but a stored null still costs prompt tokens.
+
+**A new field must not collide with `_PROFILE_ALIASES`.** The alias table maps
+the names the *extractor* invents onto canonical ones, and `_normalize_profile`
+applies it on every inbound message. `teams` shipped as a real field while
+`teams -> sports_teams` was still in that table, so `follow_team` stored a
+follow list, Palmer confirmed it, and the user's next message migrated it into
+`sports_teams` and wrote `teams: None` — the follow gone before any alert could
+fire. It then put dicts in a field holding prose, and `_all_interests` does
+`.lower()` on those items from a call site *outside* the `try` in `alerts.py`,
+so one follower would have aborted `run_alert_checks` for themselves and every
+user after them in the loop, with the daily guard already claimed. The field is
+`followed_teams`, and `test_profile_schema.py` now asserts no alias key is ever
+a real field.
+
+A field written by tool dispatch also stays **out of `EXTRACT_PROMPT`**
+(`followed_teams`, `shows`). Listed there, Haiku fills it with prose and the
+code reading it gets strings where it expects dicts.
 
 `migrate_profile_prune.py` cleans rows that grew before the allow-list existed. It folds the stray keys into canonical fields with a Sonnet pass before dropping them, so real facts survive. Dry run by default; `--apply` writes.
 

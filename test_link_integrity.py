@@ -102,6 +102,10 @@ class TestTheStatusCallbackIsSuppressedForLinks:
             def create(self, **kw):
                 seen.update(kw)
 
+        # send_sms reads the from-number from the environment at call time, so
+        # without this the suite only passes on a machine holding live Twilio
+        # credentials — a trap for CI and for anyone with a partial .env.
+        monkeypatch.setenv("TWILIO_PHONE_NUMBER", "+15550000000")
         monkeypatch.setattr(sms_util, "_twilio", type("T", (), {"messages": _Msgs()})())
         monkeypatch.setattr(sms_util, "_STATUS_CALLBACK_URL", "https://app/sms-status")
         sms_util.send_sms("+15550001111", body)
