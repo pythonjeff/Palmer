@@ -329,4 +329,33 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
             "required": [],
         },
     },
+    {
+        "name": "follow_team",
+        "description": "Follow a sports team for live score alerts. Use when they say they want score updates — 'follow the Eagles', 'text me Cardinals scores', 'track the Blues'. They get a text when the lead changes, when someone scores in the last five minutes, and at the final — a few a game, not every play. Team names are ambiguous ('Cardinals' is two teams, 'Rangers' is two), so if the result comes back with more than one match, ASK which they mean before following.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Team as they said it, e.g. 'Eagles'. Add the sport or city if they gave one, e.g. 'St. Louis Cardinals'."},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "unfollow_team",
+        "description": "Stop live score alerts for a team. Pass text_match with part of the team name; omit to stop all of them.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"text_match": {"type": "string", "description": "Part of the team name. Omit to unfollow all."}},
+            "required": [],
+        },
+    },
+    {
+        "name": "get_score",
+        "description": "Live or final score for a team's game today. Use for 'what's the Eagles score', 'are the Cardinals winning', 'did the Blues win'. This is a one-off lookup and does NOT start alerts — that is follow_team.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"team": {"type": "string", "description": "Team name, e.g. 'Eagles'"}},
+            "required": ["team"],
+        },
+    },
 ]
