@@ -14,6 +14,11 @@ from tavily import TavilyClient
 
 import sources
 from smstext import _parse_published
+from timeutil import local_today
+
+# US equities trade on New York's calendar, not the server's and not the
+# reader's. timeutil imports nothing from Palmer, so this adds no cycle.
+_MARKET_TZ = "America/New_York"
 
 
 _CRYPTO_IDS = {
@@ -229,8 +234,13 @@ def _get_price(asset: str) -> str:
         if current is None or current == 0:
             return f"Couldn't find price data for '{asset}'. Check the ticker symbol."
 
-        # Determine what trading day this data is actually from
-        today = _date.today()
+        # Determine what trading day this data is actually from, on the
+        # EXCHANGE's calendar. This used to be _date.today() — the dyno's UTC
+        # day — so from 19:00 ET the UTC date had already rolled and that
+        # afternoon's close was labelled "yesterday". Deliberately not the
+        # reader's zone either: a session closes when New York says it does,
+        # whoever is asking.
+        today = local_today(_MARKET_TZ)
         last_trade_date = hist.index[-1].date() if not hist.empty else None
 
         if last_trade_date == today:

@@ -373,7 +373,7 @@ Writing the row:
 If nothing clears the bar, return {{"rows": []}}. An empty section is correct and normal; a padded one is not."""
 
 
-def _curate(city: str, candidates: list[dict]) -> list[dict]:
+def _curate(city: str, candidates: list[dict], today: date | None = None) -> list[dict]:
     """The taste gate. One Haiku call, on the write path only.
 
     Everything upstream of this is a firehose: local press runs listicles and
@@ -399,7 +399,13 @@ def _curate(city: str, candidates: list[dict]) -> list[dict]:
             model=HAIKU_MODEL,
             max_tokens=900,
             messages=[{"role": "user", "content": _CURATE_PROMPT.format(
-                today=date.today().strftime("%A, %B %d, %Y"), city=city,
+                # The READER's date, not the dyno's. CLAUDE.md documents that
+                # stating today is load-bearing here — without it the model
+                # dated events against its training cutoff and dropped a whole
+                # metro's week as stale. From 5pm Pacific the server is already
+                # on tomorrow, so a UTC date tells the curator to drop tonight's
+                # show as "already past".
+                today=(today or date.today()).strftime("%A, %B %d, %Y"), city=city,
                 candidates=json.dumps(candidates)[:9000], max_rows=CURATE_POOL)}],
         )
         parsed = _parse_json(resp.content[0].text) or {}
@@ -580,7 +586,7 @@ def opening_snapshot(profile: dict) -> list[dict]:
                          "blurb": " ".join(str(x) for x in
                                            (ev.get("genre"), ev.get("venue"), ev.get("date"))
                                            if x)})
-        hit = _curate(metro or _metro(city), pool)
+        hit = _curate(metro or _metro(city), pool, today=today)
         with _cache_lock:
             _local_cache[dkey] = hit
 

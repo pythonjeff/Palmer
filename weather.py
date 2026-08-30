@@ -1,4 +1,5 @@
 """Weather: geocoding, NWS (US) and Open-Meteo (everywhere else)."""
+import re
 from datetime import datetime, timedelta, timezone, date as _date
 
 from netutil import _http_get_json_retry
@@ -62,25 +63,39 @@ def _resolve_day_delta(when: str, when_lower: str, tz: str | None = None) -> int
     from timeutil import local_today
     today = local_today(tz)
     wd = today.weekday()
-    day_offsets = {
-        "tomorrow": 1,
-        "monday": (0 - wd) % 7 or 7,
-        "tuesday": (1 - wd) % 7 or 7,
-        "wednesday": (2 - wd) % 7 or 7,
-        "thursday": (3 - wd) % 7 or 7,
-        "friday": (4 - wd) % 7 or 7,
-        "saturday": (5 - wd) % 7 or 7,
-        "sunday": (6 - wd) % 7 or 7,
-        "weekend": (5 - wd) % 7 or 7,
+    # Raw distance to the next occurrence of each weekday, where 0 means today.
+    base = {
+        "monday": (0 - wd) % 7,
+        "tuesday": (1 - wd) % 7,
+        "wednesday": (2 - wd) % 7,
+        "thursday": (3 - wd) % 7,
+        "friday": (4 - wd) % 7,
+        "saturday": (5 - wd) % 7,
+        "sunday": (6 - wd) % 7,
+        "weekend": (5 - wd) % 7,
     }
-    for k, v in day_offsets.items():
+    if "tomorrow" in when_lower:
+        return 1
+    # "next friday" is the Friday AFTER this coming one. Without this the two
+    # were indistinguishable, so someone planning a week out silently got this
+    # week's forecast under next week's name.
+    #
+    # The two rules have to compose, which is why this is not a flat +7 on top
+    # of the table: a bare weekday naming TODAY resolves to a week out (asking
+    # "how's Friday" on a Friday means the next one — see
+    # test_timeutil.TestResolveDayDeltaHonorsTz), so adding 7 to that would put
+    # "next friday" a fortnight away.
+    explicit_next = bool(re.search(
+        r"\bnext\s+(?:week|weekend|mon|tue|wed|thu|fri|sat|sun)", when_lower))
+    for k, v in base.items():
         if k in when_lower:
-            return v
+            return v + 7 if explicit_next else (v or 7)
     try:
         target = datetime.strptime(when.strip(), "%Y-%m-%d").date()
         return (target - today).days
     except Exception:
         return None
+
 
 # Grid cells don't move either. /points is a pure coordinate -> grid lookup, so
 # cache it for the dyno's lifetime the way _geocode is cached — it saves a round
@@ -246,12 +261,21 @@ def _nws_report(lat: float, lon: float, resolved: str, when: str, when_lower: st
     # Future date
     delta = _resolve_day_delta(when, when_lower, tz=tz)
     if delta is None:
-        delta = 1
+        # Unrecognised input used to silently become TOMORROW, so an unparseable
+        # phrase was answered confidently for the wrong day. Today is the modal
+        # ask, and the return line below names the date it actually answered, so
+        # a wrong guess is visible rather than silent.
+        print(f"weather: couldn't read {when!r} as a day, answering for today")
+        delta = 0
     if delta < 0:
         raise ValueError("Past date")
-    from timeutil import local_today as _lt
-    local_today = _period_date(periods[0].get("startTime")) or _lt(tz)
-    target = local_today + timedelta(days=delta)
+    from timeutil import valid_zone, local_today as _lt
+    # Anchor on the READER's calendar. delta was computed in the user's zone and
+    # then added to the FORECAST LOCATION's day, so asking from Los Angeles at
+    # 10pm about New York landed a day off. With no zone on file there is no
+    # reader's day to use, so fall back to the grid's own first period as before.
+    anchor = _lt(tz) if valid_zone(tz) else (_period_date(periods[0].get("startTime")) or _lt(tz))
+    target = anchor + timedelta(days=delta)
     matching = [p for p in periods if _period_date(p.get("startTime")) == target]
     if not matching:
         raise ValueError(f"NWS has no forecast for {target.isoformat()}")
@@ -559,7 +583,8 @@ def _openmeteo_report(lat: float, lon: float, resolved: str, when: str, when_low
     # Future date
     delta = _resolve_day_delta(when, when_lower, tz=tz)
     if delta is None:
-        delta = 1
+        print(f"weather: couldn't read {when!r} as a day, answering for today")
+        delta = 0
     if delta < 0 or delta >= len(daily["time"]):
         return f"No forecast available for that date in {resolved} — forecast covers 8 days out."
     from timeutil import local_today as _lt
