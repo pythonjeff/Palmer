@@ -248,13 +248,25 @@ def _gather_morning_data(profile: dict) -> list[str]:
 
 
 def _recent_assistant_texts(phone: str, n: int = 4) -> list[str]:
-    """Full-text of the last N assistant messages, oldest→newest. Used in the
-    morning prompt for anti-repetition: the 250-char truncation in
+    """Full text of the last N MORNING messages, oldest→newest.
+
+    Used in the morning prompt for anti-repetition: the 250-char truncation in
     _build_system cuts off the personal engagement question at the end of prior
-    mornings, so the drafting model can't otherwise see what it asked yesterday."""
+    mornings, so the drafting model can't otherwise see what it said yesterday.
+
+    It used to take the last N assistant messages of any kind out of a 25-message
+    window, which for anyone who actually texts Palmer is four chat replies. So
+    guards.repeats_opening — written for three consecutive mornings that all
+    opened the same way — was comparing today's morning against ordinary
+    conversation and almost never against yesterday's morning. The `kind` column
+    is what makes the right query possible; fall back to any assistant message
+    for users whose history predates it."""
+    from db import get_recent_messages_of_kind
+    texts = get_recent_messages_of_kind(phone, "morning", limit=n)
+    if texts:
+        return texts
     history = get_history(phone, limit=25)
-    texts = [m["content"] for m in history if m["role"] == "assistant"]
-    return texts[-n:]
+    return [m["content"] for m in history if m["role"] == "assistant"][-n:]
 
 
 _META_COMMENTARY_PHRASES = [

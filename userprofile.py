@@ -35,6 +35,10 @@ PROFILE_FIELDS = frozenset({
     "pending_morning_suggestion", "pending_preference_notice",
     "alert_sent_date", "followup_sent_date", "city_ask_sent_date",
     "onboarding_ask_sent",
+    # Which thread the last check-in was about, so the next one moves on.
+    # Bookkeeping, NOT an extraction field — deliberately absent from
+    # EXTRACT_PROMPT's schema so Haiku never writes it.
+    "followup_last_thread",
     "field_dates",
 })
 

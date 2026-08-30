@@ -756,6 +756,24 @@ def get_recent_assistant_messages(phone: str, since_iso: str) -> list[str]:
     return [r["content"] for r in rows]
 
 
+def get_recent_messages_of_kind(phone: str, kind: str, limit: int = 4) -> list[str]:
+    """The last `limit` assistant messages of one kind, oldest first.
+
+    Lets a sender compare against its OWN prior sends rather than against
+    whatever happened to be in the conversation. Returns [] for a user whose
+    history predates the kind column, and callers must handle that."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT content FROM messages WHERE phone = {PH} AND role = 'assistant' "
+        f"AND kind = {PH} ORDER BY created_at DESC LIMIT {PH}",
+        (phone, kind, limit),
+    )
+    rows = list(reversed(cur.fetchall()))
+    conn.close()
+    return [r["content"] for r in rows]
+
+
 def get_recent_user_messages(phone: str, since_iso: str) -> list[str]:
     """Return the text of user messages Palmer received since since_iso, oldest
     first. Used to suppress proactive alerts on stories the user already brought

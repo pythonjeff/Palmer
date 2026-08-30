@@ -234,6 +234,49 @@ There used to be a second tier of paths carrying their own one-line persona ("Yo
 
 The deliberate exception is `traffic.py`: its output is *source data* for a draft that already carries the system prompt (morning briefings, and the `get_city_traffic` tool inside `get_reply`), so it is a plain factual summarizer on Haiku. Voicing it there would layer a second, uncalibrated Palmer under a real one.
 
+### A reply never dies because the turn was long
+`agent.TOOL_ITERATION_CAP` bounds the tool loop, and hitting it used to **raise**.
+`main.py` catches that, leaves `reply` falsy, and answers a falsy reply with
+`FALLBACK_SMS` — so a turn that merely needed one call too many ("add Apple,
+Nvidia and Tesla, then what's my commute" is five before Palmer speaks) died
+outright, threw away every tool result already gathered, and told the user
+something went sideways. The cap is 8 now, and on exhaustion `get_reply` asks
+once more **with `tools` omitted**, so the model must answer from what it has.
+
+`stop_reason == "max_tokens"` no longer ships the partial draft either — it lands
+mid-word. `_trim_to_sentence` cuts back to the last complete sentence, but only
+when that leaves most of the message standing: trimming "Ok. <thirty truncated
+words>" back to "Ok." throws away everything the reply was for, so there the
+fragment wins.
+
+### A check-in is about something the profile actually says
+`followup.py` fetches no data at all — it is pure model output conditioned on a
+profile string — so every guard has to be structural.
+
+**`_pick_thread` returns a string copied from the profile, never the model's own
+words.** It used to return whatever Haiku emitted and hand it straight to the
+drafter, so a confabulated thread was written up as though it were real: a
+specific-sounding question about something that never happened. It now
+echo-matches against `ongoing_threads` and fails closed, exactly as
+`userprofile.topic_already_covered` already did, and for the stated reason — an
+echo can be checked against the list, a paraphrase cannot.
+
+**`life_context` alone no longer triggers a check-in.** It is a paragraph about
+someone's life, not a thread with a follow-up, and handing that to a model asked
+to find something "worth a check-in today" is how one gets invented.
+
+**The draft prompt no longer asks for invented specificity.** "A statement that
+just shows you remembered" is an instruction to make something up; it now says to
+use only what the thread text and recent messages actually say, and to ask one
+short question when that is not enough.
+
+**Every bail path restores `followup_sent_date`, it does not null it.**
+`claim_daily_guard` overwrites the field with today, so nulling it on a bail
+erased the record of the last real send — and `_should_send_followup` measures
+the 3-to-14-day pacing gap against exactly that field. The gap is the thing
+standing between a check-in and a drumbeat. `followup_last_thread` then keeps the
+next pick from landing on the same thread twice running.
+
 ### Reactions (tapback.py)
 iMessage and Google Messages degrade reactions to plain text over SMS (`Liked "..."`), so they arrive as ordinary inbound messages. `main._handle_sms_inner` short-circuits on them before anything else runs:
 
@@ -605,6 +648,25 @@ one user and `"Maintain single-message format"` for another — notes about
 Palmer's own operation, read back every turn as facts about a person.
 `EXTRACT_PROMPT` now says these fields are about the user's life and that
 recording Palmer's performance in them is not an option.
+
+### A daily guard means the READER's day
+`alerts.py` keyed its once-a-day guard on the UTC date while `_in_alert_window`
+gates on the **local** hour 13-21. For Pacific that window is 20:00Z-04:00Z, so
+the UTC day rolled over at 17:00 local — *inside* the window — and a user could
+take two "daily" alerts in one local day and none the next. `morning.py` and
+`followup.py` already keyed on `timeutil.local_today`; alerts now does too.
+
+`_daily_alert_hour`'s UTC date is deliberately left alone: it is only reached when
+the profile has no timezone, so there is no local day to key on, and it only needs
+to stay stable within a UTC day.
+
+**`morning._recent_assistant_texts` selects prior MORNINGS**, via
+`db.get_recent_messages_of_kind` and the `kind` column. It took the last four
+assistant messages of any kind, which for anyone who actually texts Palmer is
+four chat replies — so `guards.repeats_opening`, written for three consecutive
+mornings that opened identically, was comparing today's line against ordinary
+conversation and almost never against yesterday's morning. Falls back to any
+assistant message for users whose history predates the column.
 
 ### Empty paid sections retry sooner than full ones
 The `_tried` stamp is written before the call so a failure cannot be retried in

@@ -12,7 +12,12 @@ from rubrics import classify_genre, rubric_for
 
 
 def _daily_alert_hour(phone: str) -> int:
-    """Deterministic 'random' UTC hour (13-21) for today's alert window. Different every day per user."""
+    """Deterministic 'random' UTC hour (13-21) for today's alert window. Different every day per user.
+
+    The UTC date here is correct and deliberate, unlike the daily guard in
+    run_alert_checks: this is only reached when the profile has NO timezone, so
+    there is no local day to key on. All it needs is to stay stable within a UTC
+    day, and it does."""
     key = f"{phone}{date_type.today().isoformat()}"
     h = int(hashlib.md5(key.encode()).hexdigest(), 16)
     return 13 + (h % 9)  # 1pm-9pm UTC = roughly 8am-4pm Central
@@ -183,12 +188,18 @@ def _draft_alert(phone: str, summary: str) -> str:
 
 def run_alert_checks():
     from sms_util import send_sms
-    today = date_type.today().isoformat()
+    from timeutil import local_today
 
     for phone, profile in get_all_profiles():
 
         if not profile.get("morning_onboarded"):
             continue
+        # The user's local day, not the server's. _in_alert_window gates on the
+        # LOCAL hour 13-21, and for Pacific that window is 20:00Z-04:00Z — so a
+        # UTC-keyed guard rolled over at 17:00 local, INSIDE the window. One
+        # user could take two "daily" alerts in a single local day and none the
+        # next. morning.py and followup.py already key on the local day.
+        today = local_today(profile.get("timezone")).isoformat()
         if profile.get("alert_sent_date") == today:
             continue
         if not _in_alert_window(phone, profile):

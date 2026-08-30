@@ -466,6 +466,35 @@ def _normalize_due_at(phone: str, raw: str) -> tuple[str | None, str, str | None
     return canonical, label, None
 
 
+# One more than the six it was, because the ceiling was reachable in ordinary
+# use: adding three tickers and asking for the commute is five calls before the
+# model has said anything. Kept low deliberately — this bounds a live reply.
+TOOL_ITERATION_CAP = 8
+
+_SENTENCE_END = re.compile(r"(?s)^.*[.!?](?=\s|$)")
+
+
+def _trim_to_sentence(text: str) -> str:
+    """Cut a truncated draft back to its last complete sentence.
+
+    A max_tokens stop lands mid-word, and half a sentence reads as a bug to the
+    person holding the phone.
+
+    The trim is kept only if it leaves most of the message standing. Cutting
+    "Ok. <thirty words of truncated clause>" back to "Ok." throws away
+    everything the reply was for, so in that case the fragment wins — it is
+    ugly, but it carries the content, and there is no second draft to offer.
+    Likewise a text with no sentence boundary at all is returned unchanged."""
+    if not text:
+        return text
+    body = text.rstrip()
+    m = _SENTENCE_END.match(body)
+    trimmed = m.group(0).strip() if m else ""
+    if trimmed and len(trimmed) >= max(12, 0.4 * len(body)):
+        return trimmed
+    return body.strip()
+
+
 def _redraft(system: str, messages: list, draft: str, correction: str) -> str | None:
     """One retry for a draft that broke a rule the prompt already stated.
 
@@ -549,7 +578,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
     # the weather helpers degrade to server UTC (same as before this change).
     user_tz = get_profile(phone_number).get("timezone")
 
-    for _ in range(6):  # cap tool call iterations
+    for iteration in range(TOOL_ITERATION_CAP):
         response = client.messages.create(
             model=SONNET_MODEL,
             max_tokens=600,
@@ -563,6 +592,13 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
 
         if response.stop_reason in ("end_turn", "max_tokens"):
             if text:
+                if response.stop_reason == "max_tokens":
+                    # The draft ran out of budget mid-word. Shipping it as-is
+                    # sends half a sentence; SYSTEM_PROMPT's own limit is 800
+                    # CHARACTERS, so hitting 600 tokens means the draft was far
+                    # too long anyway and trimming loses nothing worth keeping.
+                    text = _trim_to_sentence(text)
+                    print(f"reply hit max_tokens, trimmed to a sentence boundary: {text[-60:]!r}")
                 return _finalize(text, system, messages, gif_url)
             # end_turn with no text — unlikely but guard anyway
             raise RuntimeError(f"stop_reason={response.stop_reason} but no text block in response")
@@ -902,4 +938,30 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
         messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": tool_results})
 
-    raise RuntimeError("tool loop exceeded max iterations without end_turn")
+    # The cap is reached, but everything gathered along the way is still in
+    # `messages`. Raising here threw all of it away and handed main.py a falsy
+    # reply, which answers with FALLBACK_SMS — so a turn that merely needed one
+    # tool call too many ("add Apple, Nvidia and Tesla, and what's my commute")
+    # died outright and told the user something went sideways. Ask once more
+    # with the tools taken away, so the model has to answer from what it has.
+    print(f"tool loop hit {TOOL_ITERATION_CAP} iterations; answering from what was gathered")
+    try:
+        final = client.messages.create(
+            model=SONNET_MODEL,
+            max_tokens=600,
+            system=system,
+            messages=messages + [{
+                "role": "user",
+                "content": ("Answer them now, in your own voice, using only what you have "
+                            "already looked up above. Do not ask for anything else and do "
+                            "not mention that you ran out of steps. If part of what they "
+                            "asked is genuinely missing, say that part plainly and give "
+                            "them the rest."),
+            }],
+        )
+        text = next((b.text for b in final.content if hasattr(b, "text")), None)
+        if text:
+            return _finalize(_trim_to_sentence(text), system, messages, gif_url)
+    except Exception as e:
+        print(f"final no-tools answer failed: {type(e).__name__}: {e}")
+    raise RuntimeError("tool loop exceeded max iterations and the final answer failed")
