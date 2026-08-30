@@ -35,10 +35,11 @@ PROFILE_FIELDS = frozenset({
     "pending_morning_suggestion", "pending_preference_notice",
     "alert_sent_date", "followup_sent_date", "city_ask_sent_date",
     "onboarding_ask_sent",
-    # Which thread the last check-in was about, so the next one moves on.
-    # Bookkeeping, NOT an extraction field — deliberately absent from
-    # EXTRACT_PROMPT's schema so Haiku never writes it.
-    "followup_last_thread",
+    # Which thread the last check-in was about, so the next one moves on, and
+    # the message count at the last consolidation, so it does not re-run every
+    # turn. Both bookkeeping, NOT extraction fields — deliberately absent from
+    # EXTRACT_PROMPT's schema so Haiku never writes them.
+    "followup_last_thread", "consolidated_at_count",
     "field_dates",
 })
 
@@ -268,17 +269,46 @@ def fresh_profile_for_prompt(profile: dict, today=None) -> dict:
 
 
 def _apply_profile_updates(phone: str, profile: dict, updates: dict) -> dict:
-    """Merge canonical profile updates and derive timezone when city is set."""
+    """Merge canonical profile updates, and keep `timezone` honest.
+
+    `timezone` is the field every local_now/local_today call in the codebase
+    depends on, and an unresolvable value degrades all of them to UTC silently
+    and for good. Two things could put one there, and both are handled here."""
     if not updates:
         return profile
     updates = _canonical_updates(updates)
+    from timeutil import valid_zone
+
+    # 1. The extractor. `timezone` is named in EXTRACT_PROMPT's schema, so Haiku
+    #    can write any string it likes — "Pacific Time", "PST", a guess. Only
+    #    _derive_timezone validated its own output; nothing validated this.
+    if "timezone" in updates and updates["timezone"] is not None:
+        if not valid_zone(updates["timezone"]):
+            print(f"profile: dropping unresolvable timezone {updates['timezone']!r} for {phone!r}")
+            updates.pop("timezone")
+
     new_city = updates.get("city")
     old_city = profile.get("city")
     if new_city and old_city and new_city != old_city:
         print(f"profile: city changing for {phone!r}: {old_city!r} -> {new_city!r}")
-    if new_city and not profile.get("timezone") and "timezone" not in updates:
+
+    # 2. A move. The timezone was derived only when ABSENT, so someone who moved
+    #    from Chicago to Los Angeles kept America/Chicago forever, with no tool,
+    #    no repair job and no way to correct it — their morning arrived two hours
+    #    early from then on. Re-derive when the city actually changes.
+    #
+    #    This is safe against the rule that correcting a forecast must not move
+    #    the hour the morning arrives: the weather-topic city write in
+    #    update_morning_briefing's dispatch calls upsert_profile DIRECTLY and
+    #    never reaches this function. See test_weather_city.py.
+    needs_tz = new_city and "timezone" not in updates and (
+        not profile.get("timezone") or (old_city and new_city != old_city))
+    if needs_tz:
         tz = _derive_timezone(new_city)
         if tz:
+            if profile.get("timezone") and tz != profile.get("timezone"):
+                print(f"profile: timezone re-derived for {phone!r}: "
+                      f"{profile['timezone']!r} -> {tz!r} (city moved)")
             updates["timezone"] = tz
     _stamp_volatile(profile, updates)
     upsert_profile(phone, updates)
@@ -286,13 +316,29 @@ def _apply_profile_updates(phone: str, profile: dict, updates: dict) -> dict:
         _eager_build_home(phone)
     return get_profile(phone)
 
+# How many new messages must accumulate before consolidating again. Without a
+# gate this ran on EVERY turn past 40 messages, re-summarising a near-identical
+# 80-message window each time — one Haiku call per turn, forever, for a profile
+# that had barely moved.
+CONSOLIDATE_EVERY = 20
+
+
 def _consolidate_history(phone: str):
     """Fold messages beyond the live window into long-term profile fields."""
-    if get_message_count(phone) < HISTORY_LIMIT * 2:
+    count = get_message_count(phone)
+    if count < HISTORY_LIMIT * 2:
+        return
+    # Only re-consolidate once the conversation has actually moved on. The
+    # window slides by one message per turn, so without this the same content
+    # was summarised over and over at full price.
+    profile = get_profile(phone)
+    last_at = profile.get("consolidated_at_count") or 0
+    if count - last_at < CONSOLIDATE_EVERY:
         return
     older = get_older_messages(phone, skip_recent=HISTORY_LIMIT)
     if len(older) < 10:
         return
+    upsert_profile(phone, {"consolidated_at_count": count})
     profile = get_profile(phone)
     profile = _normalize_profile(phone, profile)
     transcript = "\n".join(

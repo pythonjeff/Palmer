@@ -737,6 +737,53 @@ shortens the wait to a quarter of the window (floor one hour) **only when the
 section holds no data at all**. Once it holds something, a stale row beats a
 blank one and the full window applies again.
 
+### Every date is computed on the calendar that owns it
+Three different calendars are in play and each answer belongs to exactly one.
+
+**The exchange's.** `datafeeds._MARKET_TZ` is `America/New_York`. The stock day
+label used `date.today()`, so from 19:00 ET the UTC date had rolled and that
+afternoon's close was reported as *"yesterday"*. Deliberately not the reader's
+zone either — a session closes when New York says it does, whoever is asking.
+
+**The reader's.** `weather._nws_report` anchors its target on `local_today(tz)`.
+The delta was computed in the user's zone and then added to the FORECAST
+LOCATION's day, so asking from Los Angeles at 10pm about New York landed a day
+off. With no zone on file there is no reader's day, so it falls back to the
+grid's own first period as before. `opening._curate` likewise takes the reader's
+date for the `{today}` its prompt uses to drop past events — a UTC date there
+tells the curator to drop tonight's show.
+
+**Nobody's, when the input cannot be read.** `_resolve_day_delta` returning None
+used to mean *tomorrow*, so an unreadable phrase was answered confidently for a
+day the user never named. It means today now, and it logs. Both report paths
+print the resolved date, so a wrong guess is visible rather than silent.
+
+`"next friday"` is the Friday after this coming one. The two rules have to
+compose rather than stack: a bare weekday naming TODAY resolves a week out
+(`test_timeutil.TestResolveDayDeltaHonorsTz` fixes that decision), so a flat +7
+on top would put "next friday" a fortnight away.
+
+### `timezone` is validated on write, and re-derived when someone moves
+It is the field every `local_now`/`local_today` call depends on, and an
+unresolvable value degrades all of them to UTC silently and permanently. Two
+paths could put one there and `_apply_profile_updates` now handles both: the
+Haiku extractor (it is named in `EXTRACT_PROMPT`'s schema, so it can write
+`"Pacific Time"`) is validated through `timeutil.valid_zone`, and a city change
+re-derives the zone instead of only filling it when absent — someone who moved
+from Chicago to Los Angeles kept `America/Chicago` forever, with no tool and no
+repair job, and their morning arrived two hours early from then on.
+
+This does not violate the rule that correcting a forecast must not move the hour
+the morning arrives: the weather-topic city write in `update_morning_briefing`'s
+dispatch calls `upsert_profile` **directly** and never reaches this function.
+
+### Consolidation runs on a batch, not on every turn
+`_consolidate_history` fired on every turn once a user passed 40 messages,
+re-summarising a near-identical 80-message window each time — one Haiku call per
+turn, forever, for a profile that had barely moved. `CONSOLIDATE_EVERY` (20) and
+the `consolidated_at_count` watermark gate it on how far the conversation has
+actually travelled.
+
 ### The profile is a bounded schema
 `userprofile.PROFILE_FIELDS` is the complete set of keys a profile may hold, and `_canonical_updates` drops anything outside it. This is not tidiness — the whole profile is dumped as JSON into **every** system prompt, and the per-turn extractor is a language model that will invent a new key every turn if nothing stops it. One profile reached 624 keys, 604 of them one-offs (`monday_night_behavior`, `kendrick_fan`, `tv_taste_update`, `alternatively`): ~21,700 tokens of noise per message, roughly double SYSTEM_PROMPT and the tool schemas combined, burying the 20 keys that mattered.
 
