@@ -77,7 +77,7 @@ Dependencies run strictly downward: `llm`/`netutil`/`sources` ← `smstext`/`wea
 
 Underscore prefixes still mean "internal to Palmer", not "private to this module" — `smstext._sms_clean` is imported by six modules. Grep before renaming.
 
-**Patching in tests follows the code, not the name.** `patch("agent.client")` stopped working when functions moved out; patch the module the function actually lives in (`patch("userprofile.client")`). A dead patch target does not fail loudly — it lets the test make real API calls. Watch the suite runtime: 643 tests in ~4s, and a jump means something is hitting the network.
+**Patching in tests follows the code, not the name.** `patch("agent.client")` stopped working when functions moved out; patch the module the function actually lives in (`patch("userprofile.client")`). A dead patch target does not fail loudly — it lets the test make real API calls. Watch the suite runtime: 1058 tests in ~10s, and a jump means something is hitting the network.
 
 ### Scheduler cadence (main.py)
 ```
@@ -86,7 +86,7 @@ send_morning_messages    every 5 min   (each user has a local target time; per-d
 run_watches              every 30 min
 run_alert_checks         every 60 min
 send_missing_data_asks   every 60 min  (asks users with no city so mornings can target them; DATA_ASK_DRY_RUN=1 to preview)
-run_followups            every 4 hr
+run_followups            every 2 hr   (cron, NOT interval — see main.py; the per-user daily claim, not the tick, is what bounds cost)
 run_price_watches        00:00 + 16:00 UTC (cron, NOT interval — see below; SerpAPI Google Shopping + Amazon; baseline seeded at watch creation, alerts on target-hit or ANY move over $2 in either direction, then re-baselines)
 ```
 
@@ -788,6 +788,93 @@ forward from the day the job was added.
 
 ### Landmarks vs. addresses in the traffic pipeline
 TomTom's geocoder is a mapping API, not a search engine, and mis-ranks landmark names (e.g. "White House", "Fenway", "LAX"). `traffic.py` and the `get_travel_time` tool run landmark destinations through Sonnet to resolve them to street addresses *before* geocoding. Preserve this indirection when touching routing code.
+
+### The model is told the reader's clock, not the dyno's
+`timeutil.clock_block` builds the RIGHT NOW block in every system prompt, and
+`SYSTEM_PROMPT` has one `{clock_block}` placeholder where it used to have
+`{date}` and `{now_utc}`. Both were UTC, which is a lie for most of the day: from
+17:00 Pacific onward the UTC date is already tomorrow, so "Today is Monday" was
+simply false for a Los Angeles user at 5:42pm Sunday, and "remind me tomorrow at
+9" filed for Tuesday. The model was not confused — it was told the wrong day and
+reasoned correctly from it.
+
+With no resolvable zone the block says so and asserts **no local date at all**.
+Presenting UTC as though it were their day is the whole defect, so the honest
+form is the safe one. `timeutil.valid_zone` is the gate — `profile["timezone"]`
+is named in `EXTRACT_PROMPT`, so Haiku can write anything there, and an
+unresolvable value silently degrades every `local_now`/`local_today` call.
+
+**`due_at` is vetted on the write path, and that is not optional.**
+`claim_due_reminders` decides due-ness with a **lexicographic** `due_at <= now`
+on a TEXT column, so the comparison equals a chronological one only while every
+writer stores `YYYY-MM-DDTHH:MM:SS+00:00`. Nothing enforced that: a model
+reasoning in local time emits `-05:00`, the string compare read that hour as
+UTC, and the reminder fired five hours early. `agent._normalize_due_at` corrects
+the offset, refuses a past or unreadable time with something the model can act
+on **inside the same turn**, and returns the LOCAL time so the dispatch echoes it
+instead of making the model convert a second time for the half the user reads.
+A naive string is read as the user's local clock, not UTC — a model that drops
+the offset was thinking in their day.
+
+`db.normalize_due_at_rows` repairs rows written before this, from `init_db`,
+idempotently. Widening the SQL claim window and re-filtering in Python is not an
+alternative: on Postgres the claim is one `UPDATE ... RETURNING`, so a wider
+predicate marks not-yet-due reminders as sent.
+
+### A URL survives this codebase byte for byte, or is not sent
+Three independent mechanical defects produced every "bad link", none of them in
+the code that chooses a link:
+
+- the markdown scrub was `[text](anything) -> text`, **deleting** the target, so
+  a reply reading `[your page](https://...)` arrived as "your page";
+- `encode('ascii', 'ignore')` **drops** bytes rather than failing, so a
+  non-ASCII path became a shorter URL that still looks like one — a dead link
+  that looks alive is worse than a visibly broken one;
+- three paths truncated at a fixed offset (`shorten_message`'s slice,
+  `send_sms`'s `body[:320]`, `_split_for_sms`'s hard chunker), each landing
+  mid-URL on exactly the messages most likely to carry one.
+
+`smstext.URL_RE` is the one definition. `_protect_urls`/`_restore_urls` hold
+links out of every transform and put them back percent-encoded;
+`truncate_preserving_urls` never cuts inside one and returns a link alone when it
+cannot fit beside prose.
+
+**`shorten_message` never shows the model a URL.** Asking it to preserve a
+placeholder was tried and is the worse bet — a dropped marker loses the link
+silently. Prose is shortened alone and links are re-appended last, the shape that
+lets an app draw a preview.
+
+**`send_sms` decides the status-callback question, not the caller.**
+`/sms-status` answers a content-size failure by rerunning the original body
+through `shorten_message`, so a message carrying a URL must opt out. `morning.py`
+did this by hand and said why; chat replies, watch alerts and price alerts all
+carried URLs and did not. Deciding it centrally means a new sender inherits the
+rule instead of remembering it.
+
+### History records what was sent, and unprompted means silent-on-failure
+`send_sms` returns False on a Twilio failure **and** on a `leaks_deliberation`
+block. `alerts.py` and `watches.py` ignored it and saved unconditionally, so
+history held messages the user never received — and `_build_system` feeds history
+back to the model, which then refers to them. `shopping.py` and `flightwatch.py`
+never saved at all, making their alerts invisible both to the model and to their
+own `_is_duplicate_subject` check, which reads assistant messages.
+
+The asymmetry on a failed **watch** send is deliberate: the claim stays spent,
+because it is a rate limit rather than a delivery record, and retrying every tick
+against a body the guard blocks identically is worse than burning one cooldown.
+That is the inverse of the reminder rule, for the same reason the reminder rule
+gives.
+
+**`ensure_sms` is for replies only.** Its contract — never leave them with
+silence — is right for a message the user is waiting on and wrong for anything
+unprompted: a failed price check used to text "something went sideways on my
+end, try again" to someone who had asked for nothing. Proactive senders use
+`send_sms` and accept False. `test_phantom_history.py` asserts none of them
+reaches for `ensure_sms` again.
+
+`messages.kind` records which job sent an assistant message (`morning`,
+`followup`, `alert`, `watch`, `price`, `flight`, `reminder`, `reply`, `city_ask`).
+NULL means written before the column existed; readers must tolerate it.
 
 ### SMS send pipeline
 All outbound SMS goes through `sms_util.send_sms` / `ensure_sms`. It cleans text (`_sms_clean` strips markdown and non-SMS glyphs), splits on paragraph breaks over 1500 chars, and falls back through progressively shorter candidates (original → `shorten_message` → hard truncate → `FALLBACK_SMS`) so a user is never left with silence. Never call Twilio's `messages.create` directly from feature code; go through this module.
