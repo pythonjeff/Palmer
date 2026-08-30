@@ -994,10 +994,29 @@ third-person reference to the reader near an intent verb, or an announcement of
 a send decision. It is checked in `sms_util.send_sms`, the one function every
 outbound message passes through.
 
-**Blocking the send is the right outcome, not a compromise.** Every one of these
-was a drafter saying it had decided *not* to send something; doing that
+**Blocking the send is the right outcome for an unprompted message.** Every one
+of these was a drafter saying it had decided *not* to send something; doing that
 silently is what it was trying to do. `send_sms` returns False and logs, and no
 fallback goes out in its place.
+
+**On a reply it is the wrong trade, so `agent._finalize` redrafts first.** The
+user is waiting on an answer, and a block there means `main.py`'s falsy-send path
+hands them `FALLBACK_SMS` instead — the guard turns a good reply into "something
+went sideways on my end, try again". Same shape as `redirects_elsewhere`: check,
+redraft once, ship the better-formed of the two. The `send_sms` block stays
+behind it as the backstop, and proactive senders never reach `_finalize` at all.
+
+**Neither signal is safe alone, and that was the actual defect.** The first
+version fired on EITHER third-person reference or a send decision, and both have
+common legitimate forms: *"they said the deal closes Friday"* is news Palmer
+exists to send, and *"got it, not sending those anymore"* is Palmer agreeing to
+stop. So the guard is two tiers now. Damning alone: calling the reader **"the
+user"** (nobody texting a friend does), and **internal machinery** vocabulary —
+threshold, criteria, filtered out, suppressing — which are words about Palmer's
+own plumbing. Damning only **together**: a send decision plus a third-person
+claim about the reader's preferences. `"said"` is deliberately not one of those
+intent verbs. `test_repetition.py` holds both directions, including the four
+real replies the loose version blocked.
 
 ## Voice / prompt rules (see `SYSTEM_PROMPT` in `agent.py`)
 

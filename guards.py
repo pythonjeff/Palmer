@@ -201,19 +201,62 @@ def repeats_opening(text: str, recent: list[str]) -> str | None:
 # which the model simply wrote around ("they EXPLICITLY asked" missed a rule
 # looking for "they asked").
 #
-# Two signals, either of which is damning on its own: talking about the reader
-# in the third person, or announcing a decision about what to send.
+# The version that replaced it fired on EITHER of two signals, and that was too
+# loose in both directions. Real replies were blocked and — because send_sms
+# returns False and main.py answers a falsy send with FALLBACK_SMS — the user
+# got "something went sideways on my end, try again" instead of their answer:
+#
+#   "got it, not sending those anymore"     <- a commitment, TO them
+#   "they said the deal closes Friday"      <- news about a third party
+#
+# So a bare send-decision is not damning, and neither is a bare third-person
+# sentence. What is damning is Palmer talking about its own reader as "the
+# user", or reciting internal machinery no friend has words for. Everything else
+# needs corroboration.
+
+# Nobody texting a friend calls them "the user". Damning on its own.
+_NAMES_THE_READER = re.compile(
+    r"\b(?:the\s+user|this\s+user|the\s+recipient|the\s+reader)\b", re.I)
+
+# The vocabulary of a filter explaining itself. Also damning on its own — these
+# are words about Palmer's own plumbing, not about the reader's life.
+_MACHINERY = re.compile(
+    r"\b(?:doesn'?t\s+meet\s+the|below\s+the\s+threshold|meets?\s+the\s+threshold|"
+    r"no\s+alert\s+needed|filtered\s+out|suppress(?:ing|ed)|"
+    r"the\s+(?:criteria|threshold|rubric)|scored?\s+(?:below|under|too\s+low))\b", re.I)
+
+# Third person ABOUT THE READER'S PREFERENCES. On its own this is ambiguous —
+# "they asked for a recount" is news — so it only counts alongside a send
+# decision. Note "said" is deliberately NOT here: "they said the deal closes
+# Friday" is exactly the sentence Palmer exists to send.
 _THIRD_PERSON = re.compile(
-    r"\b(?:they|the\s+user|this\s+user|the\s+recipient)\b[^.!?\n]{0,40}"
-    r"\b(?:asked|requested|wanted|said|prefers?|set|specified|told)\b", re.I)
-_DECISION = re.compile(
+    r"\b(?:they)\b[^.!?\n]{0,40}"
+    r"\b(?:asked|requested|wanted|prefers?|specified|don'?t\s+want|do\s+not\s+want)\b", re.I)
+
+# An announcement that something is being withheld. Ambiguous alone — it is also
+# how Palmer agrees to stop doing something — so it needs corroboration.
+_SEND_DECISION = re.compile(
     r"\b(?:skipping|i'?ll\s+skip|not\s+sending|won'?t\s+send|can'?t\s+include|"
-    r"leaving\s+(?:this|that)\s+out|filtered\s+out|suppress(?:ing|ed)|"
-    r"doesn'?t\s+meet\s+the|below\s+the\s+threshold|no\s+alert\s+needed)\b", re.I)
+    r"leaving\s+(?:this|that|it)\s+out|omitting)\b", re.I)
 
 
 def leaks_deliberation(text: str) -> bool:
-    """True if the draft narrates Palmer's own decision-making to the reader."""
+    """True if the draft narrates Palmer's own decision-making to the reader.
+
+    Two tiers, because precision matters as much as recall here: a false
+    positive on the reply path costs the user their answer and hands them a
+    canned apology instead."""
     if not text:
         return False
-    return bool(_THIRD_PERSON.search(text) or _DECISION.search(text))
+    if _NAMES_THE_READER.search(text) or _MACHINERY.search(text):
+        return True
+    return bool(_SEND_DECISION.search(text) and _THIRD_PERSON.search(text))
+
+
+DELIBERATION_CORRECTION = (
+    "\n\nYou just wrote: {draft!r}\n"
+    "That narrates your own filtering out loud — talking about them in the third "
+    "person, or naming criteria they never asked about. Write it again as a "
+    "message TO them, in your own voice. If you are declining to do something, "
+    "say so plainly as yourself; never explain the machinery behind it."
+)

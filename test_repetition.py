@@ -20,7 +20,7 @@ other senders never ran it.
 
 The corpora here are real messages. All offline.
 """
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import guards
 
@@ -118,6 +118,15 @@ class TestDeliberationNeverShips:
         "They beat the Pirates 4-1 last night - Mathews got his first career win.",
         "You asked me to watch that fare - it's down to $668.",
         "90 in Culver City today, low 70, barely a rain chance.",
+        # These four were BLOCKED by the either-signal version. Because
+        # send_sms returns False and main.py answers a falsy send with
+        # FALLBACK_SMS, the user got "something went sideways on my end, try
+        # again" in place of a perfectly good reply. Agreeing to stop doing
+        # something is not a leak, and neither is news about someone else.
+        "got it, not sending those anymore",
+        "noted - won't send you the crime stuff again",
+        "they said the deal closes Friday",
+        "they asked for a recount and the board agreed",
     ]
 
     def test_the_real_leaks_are_caught(self):
@@ -129,6 +138,31 @@ class TestDeliberationNeverShips:
         "you asked me to watch that fare" is Palmer talking TO someone."""
         for text in self.FINE:
             assert not guards.leaks_deliberation(text), text
+
+    def test_agreeing_to_stop_is_not_a_leak(self):
+        """The distinction the guard has to make: "not sending those anymore" is
+        a commitment TO the reader; "not sending, doesn't meet the threshold" is
+        Palmer explaining its plumbing to them."""
+        assert not guards.leaks_deliberation("sure, not sending those anymore")
+        assert guards.leaks_deliberation("Not sending - it doesn't meet the threshold.")
+
+    def test_news_about_a_third_party_survives(self):
+        """"said" is deliberately not an intent verb here: "they said the deal
+        closes Friday" is the sort of sentence Palmer exists to send."""
+        for text in ("they said the deal closes Friday",
+                     "they wanted a bigger deal and walked",
+                     "she told me they prefer the early show"):
+            assert not guards.leaks_deliberation(text), text
+
+    def test_naming_the_reader_as_the_user_is_damning_alone(self):
+        """Nobody texting a friend calls them "the user"."""
+        assert guards.leaks_deliberation("the user prefers shorter updates")
+
+    def test_internal_machinery_is_damning_alone(self):
+        for text in ("scored below the bar so no alert needed",
+                     "this one was filtered out",
+                     "suppressing that one"):
+            assert guards.leaks_deliberation(text), text
 
     def test_paraphrase_does_not_escape_it(self):
         """The guard it replaces matched fixed phrases, so the model wrote
@@ -151,3 +185,54 @@ class TestDeliberationNeverShips:
             sent = sms_util.send_sms("+1555", self.LEAKED[0])
         assert sent is False
         tw.messages.create.assert_not_called(), "nothing may go out, not even a fallback"
+
+
+class TestADeliberationLeakInAReplyIsRedraftedNotDropped:
+    """send_sms blocks a leak outright, and for an unprompted message that is
+    exactly right — every real violation was a drafter announcing it had decided
+    NOT to send something, so doing that silently is what it was trying to do.
+
+    On a reply it is the wrong trade. The user is waiting on an answer, and a
+    block there means main.py's falsy-send path hands them FALLBACK_SMS. So
+    _finalize redrafts first, and the send_sms block stays behind it."""
+
+    def _finalize(self, first, *retries):
+        import agent
+        calls = []
+
+        def _create(**kw):
+            calls.append(kw)
+            text = retries[min(len(calls) - 1, len(retries) - 1)] if retries else first
+            return MagicMock(content=[MagicMock(text=text)])
+
+        with patch.object(agent.client.messages, "create", side_effect=_create):
+            out, _ = agent._finalize(first, "sys", [{"role": "user", "content": "hi"}], None)
+        return out, calls
+
+    def test_a_leak_is_redrafted_once(self):
+        out, calls = self._finalize(
+            "This one doesn't meet the threshold, not sending.",
+            "nothing worth flagging today")
+        assert "threshold" not in out
+        assert len(calls) == 1
+
+    def test_a_clean_reply_still_costs_nothing(self):
+        out, calls = self._finalize("sure, not sending those anymore")
+        assert calls == []
+        assert out == "sure, not sending those anymore"
+
+    def test_a_failed_redraft_keeps_the_original_rather_than_going_silent(self):
+        import agent
+        leak = "This one doesn't meet the threshold, not sending."
+        with patch.object(agent.client.messages, "create", side_effect=RuntimeError("down")):
+            out, _ = agent._finalize(leak, "sys", [], None)
+        assert out == leak, "send_sms is the backstop; _finalize must not blank it"
+
+    def test_the_correction_tells_it_what_to_do_instead(self):
+        assert "TO them" in guards.DELIBERATION_CORRECTION
+
+    def test_the_send_sms_block_is_still_there(self):
+        """The chokepoint stays — proactive senders never reach _finalize."""
+        import inspect
+        import sms_util
+        assert "leaks_deliberation" in inspect.getsource(sms_util.send_sms)

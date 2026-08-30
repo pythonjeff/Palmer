@@ -466,46 +466,61 @@ def _normalize_due_at(phone: str, raw: str) -> tuple[str | None, str, str | None
     return canonical, label, None
 
 
-def _redraft_without_redirect(system: str, messages: list, draft: str) -> str | None:
-    """One retry for a reply that hands the user off to a competing product.
+def _redraft(system: str, messages: list, draft: str, correction: str) -> str | None:
+    """One retry for a draft that broke a rule the prompt already stated.
 
     No tools on the retry: the draft is already past the tool loop, and the only
     thing wrong with it is what it says. Returns None on any failure, which
     leaves the caller holding the original."""
-    from guards import REDIRECT_CORRECTION
     try:
         resp = client.messages.create(
             model=SONNET_MODEL, max_tokens=600, system=system,
             messages=messages + [
                 {"role": "assistant", "content": draft},
-                {"role": "user", "content": REDIRECT_CORRECTION.format(draft=draft)},
+                {"role": "user", "content": correction.format(draft=draft)},
             ],
         )
         retry = next((b.text for b in resp.content if hasattr(b, "text")), None)
         return _sms_clean(retry) if retry else None
     except Exception as e:
-        print(f"redirect redraft failed: {type(e).__name__}: {e}")
+        print(f"redraft failed: {type(e).__name__}: {e}")
         return None
 
 
 def _finalize(text: str, system: str, messages: list, gif_url):
-    """Clean the draft, and enforce in code the one rule the prompt could not.
+    """Clean the draft, and enforce in code the rules the prompt could not.
 
     SYSTEM_PROMPT has always forbidden sending users to competing products, and
     Palmer did it anyway in production — once while quoting the rule back
     ("I'd point you to Google Flights but I know that's not helpful coming from
-    me"). Same remedy as morning._NAMES_THE_LINK: check the draft, redraft once."""
-    from guards import redirects_elsewhere
+    me"). Same remedy as morning._NAMES_THE_LINK: check the draft, redraft once.
+
+    Deliberation leaks are checked here too, and that placement is the point.
+    sms_util.send_sms blocks them outright, which is the right answer for an
+    unprompted message — every real violation was a drafter announcing it had
+    decided NOT to send something, so doing that silently is what it wanted. But
+    on a REPLY the user is waiting on an answer, and a block there means
+    main.py's falsy-send path hands them FALLBACK_SMS instead. Redrafting keeps
+    the answer; the send_sms block stays as the last resort behind it."""
+    from guards import (redirects_elsewhere, leaks_deliberation,
+                        REDIRECT_CORRECTION, DELIBERATION_CORRECTION)
     reply = _sms_clean(text)
-    if not redirects_elsewhere(reply):
-        return reply, gif_url
-    print(f"reply handed off to a competitor, redrafting once: {reply[:90]!r}")
-    retry = _redraft_without_redirect(system, messages, reply)
-    if retry and not redirects_elsewhere(retry):
-        return retry, gif_url
-    # Twice is rare enough to be worth seeing in the logs rather than papering
-    # over with a canned line that would cost Palmer's voice on every occurrence.
-    print("REDIRECT GUARD: redraft still handed off; shipping the original")
+
+    for failed, correction, label in (
+        (redirects_elsewhere, REDIRECT_CORRECTION, "handed off to a competitor"),
+        (leaks_deliberation, DELIBERATION_CORRECTION, "narrated its own filtering"),
+    ):
+        if not failed(reply):
+            continue
+        print(f"reply {label}, redrafting once: {reply[:90]!r}")
+        retry = _redraft(system, messages, reply, correction)
+        if retry and not failed(retry):
+            reply = retry
+            continue
+        # Twice is rare enough to be worth seeing in the logs rather than
+        # papering over with a canned line that would cost Palmer's voice on
+        # every occurrence.
+        print(f"GUARD: redraft still {label}; shipping the original")
     return reply, gif_url
 
 
