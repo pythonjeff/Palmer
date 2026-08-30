@@ -68,7 +68,40 @@ class TestTheThreeMomentsThatEarnATex:
         assert not sports._is_late(_game(period=1, clock=60))
 
     def test_a_tie_has_no_leader(self):
-        assert sports._leader(_game(10, 10)) is None
+        assert sports.leader(_game(10, 10)) is None
+
+
+class TestTheClosingStretchMeansDifferentThingsPerSport:
+    """`_is_late` compared a countdown against five minutes. Baseball has no
+    clock at all (`clock` is always 0) and soccer's counts UP, so late alerts
+    were silently dead for two of six leagues — including the one a real user
+    follows."""
+
+    def _late(self, league, period, clock):
+        return sports._is_late({"league": league, "period": period, "clock": clock})
+
+    def test_football_needs_both_the_period_and_the_clock(self):
+        assert self._late("nfl", 4, 200)
+        assert not self._late("nfl", 4, 720), "twelve minutes left is not the closing stretch"
+        assert not self._late("nfl", 2, 200), "a low clock in Q2 is just halftime approaching"
+
+    def test_overtime_counts(self):
+        assert self._late("nfl", 5, 120)
+        assert self._late("mlb", 11, 0), "extra innings"
+
+    def test_baseball_has_no_clock_to_read(self):
+        assert self._late("mlb", 9, 0)
+        assert not self._late("mlb", 4, 0)
+
+    def test_soccer_clock_counts_up_so_it_is_ignored(self):
+        assert self._late("mls", 2, 5100)
+
+    def test_hockey_ends_in_the_third(self):
+        assert self._late("nhl", 3, 180)
+        assert not self._late("nhl", 2, 180)
+
+    def test_an_unknown_league_assumes_four_periods(self):
+        assert not self._late("quidditch", 1, 10)
 
 
 class TestAmbiguousTeamNames:
@@ -139,11 +172,13 @@ class TestTheCapIsTheBackstop:
     def test_a_suppressed_alert_still_updates_what_they_know(self):
         """Otherwise the next comparison is against a score they were never
         told, and the moment after a suppression reads as a bigger event than
-        it was."""
+        it was. Asserts the property — every path records — rather than the
+        shape of the calls, which is what the previous version pinned."""
         import inspect
         import scorewatch
         src = inspect.getsource(scorewatch.run_score_alerts)
-        assert src.count("sent=False") >= 2
+        assert "remember(texted=False)" in src, "the quiet path must still record"
+        assert "remember(texted=True)" in src, "the texted path must still record"
 
 
 class TestPollingIsTwoSpeed:

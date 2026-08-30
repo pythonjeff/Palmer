@@ -186,7 +186,7 @@ def team_game(team: dict, ttl: float = LIVE_POLL_SECONDS) -> dict | None:
     return None
 
 
-def describe(game: dict, team_abbrev: str | None = None) -> str:
+def describe(game: dict) -> str:
     """One plain line: who is winning and where the game is."""
     h, a = game["home"], game["away"]
     if game["state"] == "pre":
@@ -195,21 +195,45 @@ def describe(game: dict, team_abbrev: str | None = None) -> str:
     return f"{line} - {game['detail']}" if game.get("detail") else line
 
 
-def _leader(game: dict) -> str | None:
+def leader(game: dict) -> str | None:
+    """"home", "away", or None when it is tied."""
     h, a = game["home"]["score"], game["away"]["score"]
     if h == a:
         return None
     return "home" if h > a else "away"
 
 
-def _is_late(game: dict) -> bool:
-    """Inside the last five minutes of what is plausibly the final period.
+def side_of(game: dict, abbrev: str) -> str | None:
+    """Which side of this game a team is on."""
+    for side in ("home", "away"):
+        if game[side]["abbrev"] == abbrev:
+            return side
+    return None
 
-    Deliberately loose about period counts: an NFL fourth quarter, an NBA
-    fourth, an NHL third and extra innings all mean different numbers, and
-    being approximately right here costs at most one extra text."""
-    return bool(game.get("clock")) and game["clock"] <= LATE_CLOCK_SECONDS \
-        and (game.get("period") or 0) >= 3
+
+# The last period of regulation, per league. Innings and halves are not
+# quarters, and assuming they were is what made "late" mean nothing for half
+# these sports.
+FINAL_PERIOD = {"nfl": 4, "ncaaf": 4, "nba": 4, "nhl": 3, "mlb": 9, "mls": 2}
+# Leagues with no countdown to read: baseball has innings and no clock at all,
+# and soccer's clock counts UP. Comparing either against "under five minutes
+# left" is meaningless, and doing so silently disabled late alerts for both.
+CLOCKLESS = {"mlb", "mls"}
+
+
+def _is_late(game: dict) -> bool:
+    """Is this the closing stretch — the point where a score changes the game?
+
+    Two questions, not one: are we in the final period, and if the sport has a
+    countdown, is it nearly done. Extra time counts, which is why the period
+    test is `>=`."""
+    league = game.get("league") or ""
+    if (game.get("period") or 0) < FINAL_PERIOD.get(league, 4):
+        return False
+    if league in CLOCKLESS:
+        return True
+    clock = game.get("clock") or 0
+    return 0 < clock <= LATE_CLOCK_SECONDS
 
 
 def alert_reason(prev: dict | None, game: dict) -> str | None:
@@ -228,7 +252,7 @@ def alert_reason(prev: dict | None, game: dict) -> str | None:
               or game["away"]["score"] != prev.get("away_score"))
     if not scored:
         return None
-    if _leader(game) != prev.get("leader"):
+    if leader(game) != prev.get("leader"):
         return "lead"
     if _is_late(game):
         return "late"

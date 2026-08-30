@@ -464,6 +464,22 @@ unblocked, and returns a whole league in one call. The core API
 one game's score. Free and undocumented is a deliberate starting position; the
 ESPN shape is confined to `sports.py` so a paid feed is a one-module swap.
 
+**"The closing stretch" is not one rule.** `_is_late` originally compared a
+countdown against five minutes, which is meaningless in two of the six leagues:
+baseball has innings and `clock` is always 0, and soccer's clock counts UP. Late
+alerts were therefore silently dead for MLB and MLS — including the sport a real
+user follows. It now asks two questions: are we in `FINAL_PERIOD` for this
+league (`>=`, so extra time counts), and *if the sport has a countdown*, is it
+nearly done.
+
+**The drafter is told whose side they are on and by how much.** Leaving it to
+infer "PHI" from `CIN 17, PHI 21` mostly worked and is the wrong thing to lean
+on — a buddy does not deduce who you support, and the margin is what sets the
+tone. It is also told, in as many words, that it can see the score and the clock
+and **nothing else**: given only a final score it was writing "that one had to be
+close the whole way", which it cannot know. Same failure as the weather
+over-claiming, wearing personality.
+
 **Polling is two-speed.** Checking every couple of minutes around the clock
 would be thousands of calls a day to learn nothing is happening; checking slowly
 during a game misses the moments. A league with something live is polled at

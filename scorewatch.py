@@ -41,20 +41,38 @@ def _draft(phone: str, game: dict, team: dict, reason: str) -> str:
         from smstext import _sms_clean
         cue = {
             "lead": "the lead just changed hands",
-            "late": "someone scored inside the last five minutes",
+            "late": "someone scored in the closing stretch",
             "final": "the game just ended",
         }[reason]
+        # Say outright whose side they are on and by how much, rather than
+        # leaving the model to work it out from "CIN 17, PHI 21". It managed
+        # that most of the time, but a buddy does not deduce who you support,
+        # and the margin is what sets the tone — a one-point game and a
+        # twenty-point game are not the same text.
+        side = sports.side_of(game, team["abbrev"])
+        other = "away" if side == "home" else "home"
+        mine, theirs = game[side]["score"], game[other]["score"]
+        standing = ("ahead by" if mine > theirs else
+                    "behind by" if mine < theirs else "level, tied at")
+        margin = abs(mine - theirs) or mine
         resp = client.messages.create(
             model=SONNET_MODEL, max_tokens=90, system=_build_system(phone),
             messages=[{"role": "user", "content":
-                       f"""They follow {team['name']}. {cue.capitalize()}.
+                       f"""Their team is {team['name']}, playing {game[other]['name']}. {cue.capitalize()}.
 
-State: {sports.describe(game)}
+{team['name']} {standing} {margin}. Score: {sports.describe(game)}
 
 Write ONE short text telling them, the way you would shout it across a room —
 this is the fun kind of interruption, not a bulletin. Lead with what happened.
-Use the real numbers. No preamble, no question at the end, no emoji, plain
-ASCII, under 140 characters."""}],
+Use the real numbers.
+
+You are watching the same feed they are, which means you know the score and the
+clock and NOTHING ELSE. Do not narrate how the game has gone, who played well,
+or whether it was close throughout — you did not see it. React to the number in
+front of you.
+
+No preamble, no question at the end, no emoji, plain ASCII, under 140
+characters."""}],
         )
         line = _sms_clean(resp.content[0].text.strip())
         return line or plain
@@ -100,26 +118,26 @@ def run_score_alerts() -> None:
                             None)
                 if not game or game["state"] == "pre":
                     continue
+                def remember(texted: bool) -> None:
+                    """Move the baseline to what they now know.
+
+                    Runs on every path, texted or not: the next comparison is
+                    against what the user was last told, so a moment we chose
+                    to stay quiet about must still count as known."""
+                    record_game_alert(phone, game["id"], game["home"]["score"],
+                                      game["away"]["score"], sports.leader(game),
+                                      game["state"], sent=texted)
+
                 prev = get_game_alert(phone, game["id"])
                 reason = sports.alert_reason(prev, game)
-                if not reason:
-                    # Keep the baseline current without spending a text, so the
-                    # next comparison is against what they actually know.
-                    record_game_alert(phone, game["id"], game["home"]["score"],
-                                      game["away"]["score"], sports._leader(game),
-                                      game["state"], sent=False)
-                    continue
-                if (prev or {}).get("alert_count", 0) >= sports.MAX_ALERTS_PER_GAME:
-                    record_game_alert(phone, game["id"], game["home"]["score"],
-                                      game["away"]["score"], sports._leader(game),
-                                      game["state"], sent=False)
+                capped = (prev or {}).get("alert_count", 0) >= sports.MAX_ALERTS_PER_GAME
+                if not reason or capped:
+                    remember(texted=False)
                     continue
                 line = _draft(phone, game, team, reason)
                 if send_sms(phone, line):
                     sent += 1
-                record_game_alert(phone, game["id"], game["home"]["score"],
-                                  game["away"]["score"], sports._leader(game),
-                                  game["state"], sent=True)
+                remember(texted=True)
             except Exception as e:
                 print(f"scorewatch: {team.get('abbrev')} for {phone} failed: "
                       f"{type(e).__name__}: {e}")
