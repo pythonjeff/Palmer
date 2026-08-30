@@ -29,7 +29,12 @@ MOVE_MIN_ABS = 40.0
 
 
 def _route(watch: dict) -> str:
-    trip = f"{watch['origin']} → {watch['destination']}"
+    # "LAX to MXP", not an arrow. _sms_clean folds to ASCII, and an unmapped
+    # glyph was DELETED rather than replaced — price_alert._fallback shipped
+    # "LAX  MXP 2026-09-10 is $842.00 on flight search." with a hole in it.
+    # _UNICODE_MAP now covers the arrow too, but correct copy should not depend
+    # on the fold: a route read aloud in a text is "LAX to MXP".
+    trip = f"{watch['origin']} to {watch['destination']}"
     return f"{trip} {watch['outbound_date']}" + (
         f" / {watch['return_date']}" if watch.get("return_date") else "")
 

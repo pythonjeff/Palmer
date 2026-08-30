@@ -2,7 +2,7 @@ import os
 
 from twilio.rest import Client as TwilioClient
 
-from smstext import _sms_clean, shorten_message
+from smstext import URL_RE, _sms_clean, shorten_message, truncate_preserving_urls
 
 _twilio = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
 _APP_URL = os.environ.get("APP_URL", "").rstrip("/")
@@ -23,7 +23,19 @@ def _split_for_sms(text: str, max_chars: int = _SMS_CHUNK_LIMIT) -> list[str]:
     parts = [p.strip() for p in text.split("\n\n") if p.strip()]
     if len(parts) > 1:
         return parts
-    return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
+    # Hard chunking: break on whitespace and never mid-URL. The old
+    # fixed-width slice split a link across two SMS parts, so neither half was
+    # tappable and the message read as corrupted.
+    chunks, rest = [], text
+    while len(rest) > max_chars:
+        head = truncate_preserving_urls(rest, max_chars)
+        if not head or head == rest:
+            head = rest[:max_chars]
+        chunks.append(head.strip())
+        rest = rest[len(head):].lstrip()
+    if rest.strip():
+        chunks.append(rest.strip())
+    return chunks or [text]
 
 
 def send_sms(to: str, body: str, *, add_status_callback: bool = True, media_url: str | None = None) -> bool:
@@ -51,6 +63,17 @@ def send_sms(to: str, body: str, *, add_status_callback: bool = True, media_url:
         print(f"BLOCKED internal deliberation to {to}: {body[:110]!r}")
         return False
 
+    # A message carrying a URL must not opt into the delivery-status callback.
+    # /sms-status answers a content-size failure by running the original body
+    # back through shorten_message and resending it, and until now that was a
+    # Haiku rewrite plus a hard slice — i.e. the retry could mangle the very
+    # link the message existed to deliver. morning.py already passed False for
+    # this reason; chat replies, watch alerts and price alerts all carried URLs
+    # and did not. Deciding it here means every sender inherits the rule
+    # instead of each one remembering it.
+    if add_status_callback and body and URL_RE.search(body):
+        add_status_callback = False
+
     from_number = os.environ["TWILIO_PHONE_NUMBER"]
     kwargs = {"from_": from_number, "to": to}
     if media_url:
@@ -70,7 +93,9 @@ def send_sms(to: str, body: str, *, add_status_callback: bool = True, media_url:
             yield body
             if len(body) > 320:
                 yield shorten_message(body)
-                yield body[:320]
+                # Was body[:320], which cut mid-URL on exactly the messages most
+                # likely to carry one.
+                yield truncate_preserving_urls(body, 320)
         yield FALLBACK_SMS
 
     seen: set[str] = set()
