@@ -10,7 +10,9 @@ asked for "a statement that just shows you remembered", which is an instruction
 to invent specificity. Separately, every bail path nulled followup_sent_date
 instead of restoring it, which silently voided the 3-to-14-day pacing gap.
 """
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import db
 import followup
@@ -18,6 +20,24 @@ import followup
 
 PHONE = "+15550001111"
 THREADS = ["interviewing at Stripe next week", "sister's wedding in Portland"]
+
+# The one instant every clock-dependent test here is frozen to. _local_now and
+# _local_today must be patched TOGETHER off this value: _should_send_followup
+# reads the first, but the claim_daily_guard write in run_followups reads the
+# second, so patching only _local_now left the assertion comparing a frozen day
+# against the real clock. It passed on 2026-08-30 and failed every day after.
+FROZEN = datetime(2026, 8, 30, 15, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+# The last real send, as the bail tests expect to find it restored. Derived
+# from FROZEN rather than written out, so it stays comfortably outside the
+# 14-day maximum pacing gap whatever FROZEN is set to — hardcoding it meant a
+# date after FROZEN made the gap negative and suppressed the send.
+PRIOR_SENT = (FROZEN - timedelta(days=29)).date().isoformat()
+
+
+def _freeze(monkeypatch):
+    monkeypatch.setattr(followup, "_local_now", lambda tz: FROZEN)
+    monkeypatch.setattr(followup, "_local_today", lambda tz: FROZEN.date())
 
 
 def _fresh(tmp_path, monkeypatch):
@@ -83,11 +103,7 @@ class TestLifeContextAloneNeverTriggersACheckIn:
         })
 
     def test_a_real_thread_does(self, monkeypatch):
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        monkeypatch.setattr(followup, "_local_now",
-                            lambda tz: datetime(2026, 8, 30, 15, 0,
-                                                tzinfo=ZoneInfo("America/Chicago")))
+        _freeze(monkeypatch)
         assert followup._should_send_followup({
             "morning_onboarded": True, "timezone": "America/Chicago",
             "ongoing_threads": THREADS,
@@ -102,15 +118,11 @@ class TestThePacingGapSurvivesABail:
     def _run(self, tmp_path, monkeypatch, *, thread, drafted="hey, how'd it go?",
              dup=False, sent=True):
         _fresh(tmp_path, monkeypatch)
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
         db.upsert_profile(PHONE, {
             "morning_onboarded": True, "timezone": "America/Chicago",
-            "ongoing_threads": THREADS, "followup_sent_date": "2026-08-01",
+            "ongoing_threads": THREADS, "followup_sent_date": PRIOR_SENT,
         })
-        monkeypatch.setattr(followup, "_local_now",
-                            lambda tz: datetime(2026, 8, 30, 15, 0,
-                                                tzinfo=ZoneInfo("America/Chicago")))
+        _freeze(monkeypatch)
         with patch.object(followup, "get_all_profiles",
                           return_value=[(PHONE, db.get_profile(PHONE))]), \
              patch.object(followup, "_pick_thread", return_value=thread), \
@@ -122,23 +134,23 @@ class TestThePacingGapSurvivesABail:
 
     def test_no_thread_restores_the_prior_date(self, tmp_path, monkeypatch):
         p = self._run(tmp_path, monkeypatch, thread=None)
-        assert p["followup_sent_date"] == "2026-08-01"
+        assert p["followup_sent_date"] == PRIOR_SENT
 
     def test_an_empty_draft_restores_it(self, tmp_path, monkeypatch):
         p = self._run(tmp_path, monkeypatch, thread=THREADS[0], drafted="")
-        assert p["followup_sent_date"] == "2026-08-01"
+        assert p["followup_sent_date"] == PRIOR_SENT
 
     def test_a_duplicate_restores_it(self, tmp_path, monkeypatch):
         p = self._run(tmp_path, monkeypatch, thread=THREADS[0], dup=True)
-        assert p["followup_sent_date"] == "2026-08-01"
+        assert p["followup_sent_date"] == PRIOR_SENT
 
     def test_a_failed_send_restores_it(self, tmp_path, monkeypatch):
         p = self._run(tmp_path, monkeypatch, thread=THREADS[0], sent=False)
-        assert p["followup_sent_date"] == "2026-08-01"
+        assert p["followup_sent_date"] == PRIOR_SENT
 
     def test_a_real_send_advances_it_and_records_the_thread(self, tmp_path, monkeypatch):
         p = self._run(tmp_path, monkeypatch, thread=THREADS[0])
-        assert p["followup_sent_date"] == "2026-08-30"
+        assert p["followup_sent_date"] == FROZEN.date().isoformat()
         assert p["followup_last_thread"] == THREADS[0]
 
 
