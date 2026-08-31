@@ -302,5 +302,5 @@ class TestNoFieldIsAlsoAnAlias:
         """They hold structured dicts written by tool dispatch. In the schema,
         Haiku fills them with prose and downstream code gets strings."""
         import prompts
-        for field in ("followed_teams", "shows"):
+        for field in ("followed_teams", "shows", "weather_locations"):
             assert f'"{field}"' not in prompts.EXTRACT_PROMPT

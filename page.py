@@ -295,6 +295,24 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
             out.append(f'<span class=chip>{w["wind"]:.0f} mph wind</span>')
         out.append("</div>")
 
+    extra_w = payload.get("weather_extra") or []
+    if extra_w:
+        out.append('<div class=card><div class=label>Weather'
+                   f'<span class=as>{e(_ago(fetched.get("weather_extra")))}</span></div>')
+        for ew in extra_w:
+            etemp = ew.get("temp_now")
+            place = ew.get("resolved") or ""
+            ttxt = f'{etemp:.0f}°' if etemp is not None else "—"
+            edesc = (ew.get("description") or "").capitalize()
+            out.append(
+                '<div style="display:flex;align-items:center;justify-content:space-between;'
+                f'padding:12px 0;border-top:1px solid var(--rule)">'
+                f'<div><div class=tick style="font-weight:700">{e(place)}</div>'
+                f'{f"<div class=src>{e(edesc)}</div>" if edesc else ""}</div>'
+                f'<div style="font-family:var(--mono);font-weight:700;font-size:20px">{e(ttxt)}</div></div>'
+            )
+        out.append("</div>")
+
     if t:
         delay = t.get("delay_min") or 0
         tier, span = _traffic_tier(t.get("ratio") or 1.0)

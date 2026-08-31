@@ -60,8 +60,8 @@ TTL_HOURS = 24 * 400          # effectively permanent; refreshed on every write
 # four hours of margin against a send that drifts. The refetch is nearly free
 # anyway — opening.py caches by metro and week, so a "refresh" inside the same
 # week is a dict lookup.
-STALE = {"weather": 600, "traffic": 300, "prices": 300, "headlines": 6 * 3600,
-         "opening": 20 * 3600}
+STALE = {"weather": 600, "weather_extra": 600, "traffic": 300, "prices": 300,
+         "headlines": 6 * 3600, "opening": 20 * 3600}
 
 # Score a story must clear to reach the page from OUTSIDE the trusted list.
 # Higher than the trusted floor (0.5) on purpose: an unvetted source has to earn
@@ -108,6 +108,23 @@ def _fetch_weather(profile: dict) -> dict | None:
     from weather import weather_snapshot
     city = profile.get("city")
     return weather_snapshot(city, profile.get("timezone")) if city else None
+
+
+def _fetch_weather_extra(profile: dict) -> list[dict]:
+    """Secondary locations pinned to the page via add_weather_location, shown
+    alongside the primary city. Same fetcher and same STALE window as the
+    primary slot — one failed location just drops that row rather than
+    costing the whole section, the same shape as _fetch_prices keeping a
+    stale row over a vanished one. Page-only: the PNG card has no room for
+    it (see weather.WEATHER_LOCATIONS_MAX) and the morning text is basics
+    plus a link, not a full briefing."""
+    from weather import weather_snapshot
+    out = []
+    for loc in (profile.get("weather_locations") or []):
+        snap = weather_snapshot(loc, profile.get("timezone"))
+        if snap:
+            out.append(snap)
+    return out
 
 
 def _fetch_traffic(profile: dict) -> dict | None:
@@ -316,6 +333,7 @@ def rebuild(phone: str, refresh_news: bool = True) -> dict:
         "name": profile.get("name"),
         "timezone": profile.get("timezone"),
         "weather": _fetch_weather(profile),
+        "weather_extra": _fetch_weather_extra(profile),
         "traffic": _fetch_traffic(profile),
         "prices": _fetch_prices(profile, previous.get("prices")),
         "headlines": _fetch_headlines(profile) if refresh_news
@@ -324,7 +342,7 @@ def rebuild(phone: str, refresh_news: bool = True) -> dict:
                    else (previous.get("opening") or []),
         "tracking": _tracking(phone, profile),
         "episode_alerts": bool((profile.get("morning_prefs") or {}).get("episode_alerts")),
-        "fetched": {"weather": now, "traffic": now, "prices": now,
+        "fetched": {"weather": now, "weather_extra": now, "traffic": now, "prices": now,
                     "headlines": now if refresh_news
                                  else (previous.get("fetched", {}).get("headlines") or now),
                     "headlines_tried": now if refresh_news
@@ -405,6 +423,7 @@ def refresh_stale(token: str, payload: dict) -> dict:
     now = _now()
     changed = _refresh_identity(payload, profile, payload.get("phone") or "")
     for section, fetcher in (("weather", _fetch_weather),
+                             ("weather_extra", _fetch_weather_extra),
                              ("traffic", _fetch_traffic),
                              ("prices", lambda p: _fetch_prices(p, payload.get("prices")))):
         window = STALE.get(section)
