@@ -613,6 +613,50 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 result = _get_weather(b.input["location"], b.input.get("when", "today"), tz=user_tz)
             elif b.name == "get_price":
                 result = _get_price(_resolve_asset(b.input["asset"]))
+            elif b.name == "add_weather_location":
+                from weather import resolve_weather_location, WEATHER_LOCATIONS_MAX
+                profile = get_profile(phone_number)
+                current = list(profile.get("weather_locations") or [])
+                asked = (b.input.get("location") or "").strip()
+                # Resolve on the WRITE path, once — never on read, which runs
+                # on every page view. Same terms as resolve_show/_normalize_price_topic.
+                resolved = resolve_weather_location(asked)
+                if not resolved:
+                    result = (f"Couldn't find a location matching {asked!r}. Ask them to "
+                              f"confirm the city and state — do not guess one.")
+                elif resolved.lower() == (profile.get("city") or "").lower():
+                    result = f"{resolved} is already their primary city."
+                elif any(loc.lower() == resolved.lower() for loc in current):
+                    result = f"{resolved} is already on their page."
+                elif len(current) >= WEATHER_LOCATIONS_MAX:
+                    result = (f"They already have {WEATHER_LOCATIONS_MAX} extra weather "
+                              f"locations, which is the limit. Tell them and offer to drop one.")
+                else:
+                    current.append(resolved)
+                    upsert_profile(phone_number, {"weather_locations": current})
+                    try:
+                        from home import invalidate
+                        invalidate(phone_number, ("weather_extra",))
+                    except Exception as e:
+                        print(f"home.invalidate after add_weather_location failed: {e}")
+                    result = (f"Added {resolved} to the weather section on their page, "
+                              f"alongside their primary city. It's page-only — not in the "
+                              f"morning text.")
+            elif b.name == "remove_weather_location":
+                profile = get_profile(phone_number)
+                current = list(profile.get("weather_locations") or [])
+                match = (b.input.get("text_match") or "").strip().lower()
+                kept = [loc for loc in current if match and match not in loc.lower()]
+                dropped = len(current) - len(kept)
+                if dropped:
+                    upsert_profile(phone_number, {"weather_locations": kept})
+                    try:
+                        from home import invalidate
+                        invalidate(phone_number, ("weather_extra",))
+                    except Exception as e:
+                        print(f"home.invalidate after remove_weather_location failed: {e}")
+                result = (f"Removed {dropped} location(s)." if dropped
+                          else "No extra weather location matched that.")
             elif b.name == "send_gif":
                 gif_url = _get_gif(b.input["query"])
                 result = f"GIF queued: {gif_url}" if gif_url else "No GIF found for that query."

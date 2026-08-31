@@ -56,6 +56,28 @@ def _geocode(location: str) -> tuple[float, float, str]:
     _geocode_cache[key] = coords
     return coords
 
+
+# Cap on secondary weather locations a user can pin to their Home page,
+# beyond their primary city. Small on purpose: this is a page section, not a
+# watch list, and the PNG card has no free vertical room for it at all (see
+# home._fetch_weather_extra) — the page is the only place these show up, so
+# a long list would just be a long scroll nobody asked for.
+WEATHER_LOCATIONS_MAX = 3
+
+
+def resolve_weather_location(location: str) -> str | None:
+    """Confirm a place name geocodes to somewhere real and return it in the
+    same display form _geocode/weather_snapshot use ("City, State"). Runs on
+    the WRITE path when a user adds a location — never on read, which happens
+    on every page view — same terms as tickers.resolve_company_ticker and
+    shows.resolve_show. None means the model should ask rather than guess."""
+    try:
+        _, _, resolved = _geocode(location)
+        return resolved
+    except Exception:
+        return None
+
+
 def _resolve_day_delta(when: str, when_lower: str, tz: str | None = None) -> int | None:
     """Convert 'tomorrow' / weekday name / 'YYYY-MM-DD' into a day offset from
     the user's local today. Falls back to server UTC if tz is missing.

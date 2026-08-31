@@ -905,6 +905,43 @@ routes to NWS and makes a real call. `test_weather_source.py` patches every hop
 and clears `_nws_points_cache`; `test_cards.py`'s Open-Meteo shape test reaches
 that branch through Paris.
 
+### A second weather location is additive, never a second `city`
+`profile["city"]` stays the one primary location every tool, the morning send,
+and the timezone derivation key off — none of that changes. `weather_locations`
+(`add_weather_location` / `remove_weather_location`) is a small separate list of
+places a user pins to their page *alongside* their city — a second home,
+family elsewhere, somewhere they check often. Modeled on `follow_show`/
+`follow_team`, not on the weather-topic path in `update_morning_briefing`'s
+dispatch: `weather.resolve_weather_location` (a thin wrapper over `_geocode`)
+runs once on the write path so an unresolvable place asks rather than guesses,
+`weather.WEATHER_LOCATIONS_MAX` caps the list, and `home.invalidate(phone,
+("weather_extra",))` expires the cache the same turn so a location just added
+doesn't sit missing for up to ten minutes.
+
+It is page-only, on purpose, in both halves of the render:
+
+- **The page** (`page.py`) renders `payload["weather_extra"]` as its own
+  "Weather" card, one row per location — the primary city keeps its unlabeled
+  hero treatment, so this is the first place the word "Weather" appears at
+  all, not a duplicate of anything.
+- **The PNG card** (`cards.py`) does not render it, and that is not an
+  oversight: the hero's chips already run to their cap of 3 and bottom out
+  around y=354, and the gap above the Opening band (~y374) and the news rule
+  (`H-90`) is ~26px on a fixed 1200×630 image — there is nowhere to put a
+  second location without shrinking something else. Same tradeoff as Opening
+  itself being capped to 3 rows on the card against 5 on the page.
+- **The morning text** never mentions it either, for the same reason tracked
+  topics, prices and headlines don't: the morning update is basics plus a
+  link, and anything beyond that lives on the page only.
+
+`home._fetch_weather_extra` fetches one `weather_snapshot` per location and
+keeps whatever succeeds — a single bad geocode or a transient failure drops
+that one row rather than blanking the section, the same shape `_fetch_prices`
+uses for a ticker that 429s. It shares the primary slot's 600s `STALE` window
+and rides the same generic per-section loop in `refresh_stale` that already
+handles `prices` as a list-valued section, so no new refresh machinery was
+needed — only a second entry in the fetcher tuple.
+
 ### When the forecasters disagree, Palmer says so instead of picking one
 A Woodland Hills user was told 103, 106, 107 and 111 on four consecutive days
 against actual highs of 98.3, 96.8, 97.8 and 99.5 — corroborated by Van Nuys and

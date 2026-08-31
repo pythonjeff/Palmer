@@ -35,7 +35,7 @@ def _payload(**over):
          # A profile-derived identity field, so a payload missing it reads as
          # changed on every view — the thing this helper exists to avoid.
          "episode_alerts": False,
-         "fetched": {"weather": now, "traffic": now, "prices": now,
+         "fetched": {"weather": now, "weather_extra": now, "traffic": now, "prices": now,
                      "headlines": now, "headlines_tried": now,
                      "opening": now, "opening_tried": now},
          "built_at": now}
@@ -54,12 +54,13 @@ class TestCostGuarantee:
         """Second view inside the cooldown must cost nothing."""
         with patch.object(home, "get_profile", return_value=PROFILE), \
              patch.object(home, "_fetch_weather") as w, \
+             patch.object(home, "_fetch_weather_extra") as we, \
              patch.object(home, "_fetch_traffic") as t, \
              patch.object(home, "_fetch_prices") as p, \
              patch.object(home, "_fetch_headlines") as h, \
              patch.object(home, "save"):
             home.refresh_stale("tok", _payload())
-        for m in (w, t, p, h):
+        for m in (w, we, t, p, h):
             m.assert_not_called()
 
     def test_headlines_do_not_refresh_inside_the_window(self):

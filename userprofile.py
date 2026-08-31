@@ -29,7 +29,7 @@ PROFILE_FIELDS = frozenset({
     # briefing / scheduling config
     "morning_topics", "morning_time", "morning_enabled", "morning_onboarded",
     "morning_prefs", "morning_sent_date", "interest_genres", "home_token",
-    "shows", "followed_teams",
+    "shows", "followed_teams", "weather_locations",
     # bookkeeping the jobs and handlers read
     "intro_sent", "conversation_topics", "reactions", "reactions_folded_count",
     "pending_morning_suggestion", "pending_preference_notice",

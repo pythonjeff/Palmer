@@ -30,6 +30,28 @@ TOOLS = [
         },
     },
     {
+        "name": "add_weather_location",
+        "description": "Pin a SECOND (or third) place to the weather section of their Palmer Home page, shown alongside their primary city — a second home, family elsewhere, somewhere they check often. Use for 'also show me the weather in Holiday Shores', 'add Chicago weather too', 'can you put my mom's place on there too'. This does NOT change their primary city (still set by saying where they live, or a weather-topic add via update_morning_briefing) and it does NOT appear in the morning text — only on the page. A one-off question about weather somewhere else is still get_weather, not this.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "location": {"type": "string", "description": "Place name as they said it, e.g. 'Holiday Shores, IL'. It is geocoded for you."},
+            },
+            "required": ["location"],
+        },
+    },
+    {
+        "name": "remove_weather_location",
+        "description": "Drop a secondary weather location from their page. Pass text_match with part of the place name to drop one; omit it to drop all extras. Never removes their primary city — that isn't this tool.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text_match": {"type": "string", "description": "Part of the place name, e.g. 'Holiday Shores'. Omit to remove every extra location."},
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "get_price",
         "description": "Get real-time price for crypto or stocks. Use for Bitcoin, Ethereum, other crypto, any stock ticker (AAPL, TSLA, SPY, QQQ), or a company name you don't have a ticker for — company names are resolved for you, so pass 'SpaceX' or 'Nvidia' rather than declining. Returns current price and % change. Call this before saying a company is private or untradeable; the live lookup is authoritative and your memory of listings is not.",
         "input_schema": {

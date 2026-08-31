@@ -195,6 +195,11 @@ def render_dashboard(*, city: str, weather: dict | None, traffic: dict | None,
     right_w = W - PAD - right_x
 
     # --- weather hero (left column) -----------------------------------------
+    # Primary city only. A user's secondary weather_locations render on the
+    # page (page.py) but never here — the chips already run at their cap of 3
+    # and the gap between them (~y354) and the opening band (~y374, itself
+    # only 26px above the news rule at H-90) leaves no room for a second
+    # location on a fixed 1200x630 image. See home._fetch_weather_extra.
     if weather:
         temp = weather.get("temp_now")
         if temp is not None:
