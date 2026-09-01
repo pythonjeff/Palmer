@@ -589,6 +589,46 @@ what a section is called. `test_page.py::TestSectionLabelsAreOneWord` reads the
 labels out of `page.py`'s markup and fails on a space in any of them, and also
 checks the card image kept in step.
 
+### The page is arranged by the user, in a text, never in a form
+`arrange_page` is presentation only — sort, order, visibility — and never
+touches what is tracked; content stays `update_morning_briefing`'s job, and
+Opening kinds stay `opening_add`/`opening_remove`. The prefs nest under
+`morning_prefs` (`markets_sort`, `section_order`, `hidden_sections`) — same
+trick as `opening_kinds`, so no `PROFILE_FIELDS` entry and nothing for the
+extractor to write prose into.
+
+The two halves take effect through different channels, deliberately:
+
+- **`markets_sort` is baked into the prices list at fetch** (`_fetch_prices`),
+  because the page, the card's `[:MAX_PRICES]` slice, and the og:description
+  all render from that one list and must not disagree about which ticker
+  leads. That is why the dispatch calls `home.invalidate(phone, ("prices",))`
+  on a sort change and only then — the 5-minute stamp would otherwise serve
+  the old order right after the user asked.
+- **Order and visibility ride the payload** as `page_prefs`, set in `rebuild`
+  and `_refresh_identity` (the `episode_alerts` pattern), so a change lands on
+  the next view with no invalidate. `_page_prefs` returns **None, not `{}`,
+  when nothing is set** — the same value a payload written before the field
+  existed reads back, so an untouched profile settles instead of rewriting the
+  row on every view (`test_home.py::TestIdentityFreshness` is the guard).
+
+`SECTION_WORDS` and `DEFAULT_SECTION_ORDER` live in `page.py` — the module
+that knows what a section is — and the dispatch imports them, so the arranger
+and the renderer cannot disagree. Kind words ("movies", "concerts") are
+deliberately absent from the map: they belong to `opening_remove`, and mapping
+them would let "hide movies" silently hide the whole Opening section instead
+of trimming a kind. An unknown word is echoed back for Palmer to ask about,
+never guessed. Sections the user named come first in their order; everything
+unnamed keeps its default position after them, so "put markets first" is a
+one-item list and nothing vanishes. The TMDB notice follows the RENDERED page,
+not the payload — a screen row in a hidden section shows no TMDB data and
+gets no notice.
+
+The "edit button" is the name-ask pattern: an `.ask` tap target that opens
+Messages pre-filled with "Arrange my page: " (`quote()`, never `quote_plus()` —
+sms: URIs have no form encoding). The page has no auth and nothing to POST to,
+and that stays true.
+
 ### The preview image must change URL, or nobody ever refetches it
 `og:image` points at `/h/{token}.png?v={fingerprint}`. The query stamp is the
 whole point: link-preview scrapers — iMessage most stubbornly — cache og:images

@@ -172,6 +172,32 @@ PWATCH_CHIP_CAP = 4
 TOPIC_CHIP_CAP = 6
 CHIP_TEXT_MAX = 40
 
+# The sections a user may reorder or hide by texting Palmer ("put markets
+# first", "hide the commute"). The canonical names live HERE because page.py is
+# the module that knows what a section is — agent.py's arrange_page dispatch
+# imports them, so the arranger and the renderer can never disagree about what
+# a section is called. The masthead, the temperature hero, the name-ask block
+# and the footer are deliberately not in the list: they are the page's
+# identity, not cards. "weather" is the extra-locations card — the hero always
+# shows the primary city.
+DEFAULT_SECTION_ORDER = ("weather", "commute", "markets", "news", "opening", "watching")
+
+# The words users actually reach for, folded to canonical section names.
+# Same contract as opening.KIND_WORDS: an unknown word is surfaced by the
+# dispatch so Palmer can ask, never guessed. Kind words ("movies", "concerts")
+# are deliberately absent — those route to opening_add/opening_remove, and
+# mapping them here would let "hide movies" silently hide the whole Opening
+# section instead of trimming a kind.
+SECTION_WORDS = {
+    "weather": "weather", "weather locations": "weather", "temps": "weather",
+    "commute": "commute", "traffic": "commute", "drive": "commute",
+    "markets": "markets", "market": "markets", "stocks": "markets",
+    "prices": "markets", "tickers": "markets", "crypto": "markets",
+    "news": "news", "headlines": "news", "stories": "news",
+    "opening": "opening", "openings": "opening", "what's opening": "opening",
+    "watching": "watching", "watches": "watching", "tracking": "watching",
+}
+
 
 def _chip_text(s: str, limit: int = CHIP_TEXT_MAX) -> str:
     """Keyword-length chip text. Watch descriptions are short user-authored
@@ -295,53 +321,62 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
             out.append(f'<span class=chip>{w["wind"]:.0f} mph wind</span>')
         out.append("</div>")
 
+    # Every .card section renders into this dict and ships in the user's
+    # preferred order below. Building the HTML unconditionally and ordering at
+    # the end is what lets arrange_page reorder or hide sections without this
+    # function growing a second copy of any of them.
+    sections: dict[str, str] = {}
+
     extra_w = payload.get("weather_extra") or []
     if extra_w:
-        out.append('<div class=card><div class=label>Weather'
-                   f'<span class=as>{e(_ago(fetched.get("weather_extra")))}</span></div>')
+        sec = ['<div class=card><div class=label>Weather'
+               f'<span class=as>{e(_ago(fetched.get("weather_extra")))}</span></div>']
         for ew in extra_w:
             etemp = ew.get("temp_now")
             place = ew.get("resolved") or ""
             ttxt = f'{etemp:.0f}°' if etemp is not None else "—"
             edesc = (ew.get("description") or "").capitalize()
-            out.append(
+            sec.append(
                 '<div style="display:flex;align-items:center;justify-content:space-between;'
                 f'padding:12px 0;border-top:1px solid var(--rule)">'
                 f'<div><div class=tick style="font-weight:700">{e(place)}</div>'
                 f'{f"<div class=src>{e(edesc)}</div>" if edesc else ""}</div>'
                 f'<div style="font-family:var(--mono);font-weight:700;font-size:20px">{e(ttxt)}</div></div>'
             )
-        out.append("</div>")
+        sec.append("</div>")
+        sections["weather"] = "".join(sec)
 
     if t:
         delay = t.get("delay_min") or 0
         tier, span = _traffic_tier(t.get("ratio") or 1.0)
         note = "clear" if tier == "up" else f"+{delay} min vs normal"
-        out += [f'<div class=card><div class=label>Commute'
-                f'<span class=as>{e(_ago(fetched.get("traffic")))}</span></div>',
-                f'<div class=big>{e(t.get("live_min", 0))} min '
-                f'<span class="note {tier}">{e(note)}</span></div>',
-                _gauge(t.get("ratio") or 1.0, tier, span), "</div>"]
+        sections["commute"] = "".join(
+            [f'<div class=card><div class=label>Commute'
+             f'<span class=as>{e(_ago(fetched.get("traffic")))}</span></div>',
+             f'<div class=big>{e(t.get("live_min", 0))} min '
+             f'<span class="note {tier}">{e(note)}</span></div>',
+             _gauge(t.get("ratio") or 1.0, tier, span), "</div>"])
 
     if prices:
-        out.append('<div class=card><div class=label>Markets'
-                   f'<span class=as>{e(_ago(fetched.get("prices")))}</span></div>')
+        sec = ['<div class=card><div class=label>Markets'
+               f'<span class=as>{e(_ago(fetched.get("prices")))}</span></div>']
         for p in prices:
             pct = p.get("pct_24h") or 0.0
             cls = "up" if pct >= 0 else "down"
             colour = _TIER_HEX["up"] if pct >= 0 else _TIER_HEX["down"]
             price = p.get("price") or 0
             ptxt = f"${price:,.0f}" if price >= 1000 else f"${price:,.2f}"
-            out += [f'<a class=row href="{e(_price_link(p))}" target="_blank" rel="noopener noreferrer">',
+            sec += [f'<a class=row href="{e(_price_link(p))}" target="_blank" rel="noopener noreferrer">',
                     f'<div><div class=tick style="font-weight:700">{e(p.get("label",""))}</div>',
                     f'<div class="note {cls}" style="margin-top:2px">{pct:+.1f}%</div></div>',
                     f'<div style="display:flex;align-items:center;gap:12px">{_spark(p.get("series"), colour)}',
                     f'<div style="font-family:var(--mono);font-weight:700;font-size:17px">{e(ptxt)}</div>{_CHEV}</div></a>']
-        out.append("</div>")
+        sec.append("</div>")
+        sections["markets"] = "".join(sec)
 
     if heads:
-        out.append('<div class=card><div class=label>News'
-                   f'<span class=as>{e(_ago(fetched.get("headlines")))}</span></div>')
+        sec = ['<div class=card><div class=label>News'
+               f'<span class=as>{e(_ago(fetched.get("headlines")))}</span></div>']
         for h in heads:
             t_ = h.get("title", "")
             url = h.get("url")
@@ -349,16 +384,17 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
             inner = (f'<div><div class=tick>{e(t_)}</div>'
                      f'{f"<div class=src>{e(src)}</div>" if src else ""}</div>')
             if url:
-                out.append(f'<a class=row href="{e(url)}" target="_blank" rel="noopener noreferrer">'
+                sec.append(f'<a class=row href="{e(url)}" target="_blank" rel="noopener noreferrer">'
                            f'{inner}{_CHEV}</a>')
             else:
-                out.append(f'<div class=row>{inner}</div>')
-        out.append("</div>")
+                sec.append(f'<div class=row>{inner}</div>')
+        sec.append("</div>")
+        sections["news"] = "".join(sec)
 
     opening = payload.get("opening") or []
     if opening:
-        out.append('<div class=card><div class=label>Opening'
-                   f'<span class=as>{e(_ago(fetched.get("opening")))}</span></div>')
+        sec = ['<div class=card><div class=label>Opening'
+               f'<span class=as>{e(_ago(fetched.get("opening")))}</span></div>']
         for o in opening[:OPENING_ROW_CAP]:
             sub = o.get("subtitle") or ""
             # when and source share one muted line: "Friday - ticketmaster.com".
@@ -372,11 +408,12 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
                      f'{f"<div class=src>{meta}</div>" if meta else ""}</div>')
             url = o.get("url")
             if url:
-                out.append(f'<a class=row href="{e(url)}" target="_blank" rel="noopener noreferrer">'
+                sec.append(f'<a class=row href="{e(url)}" target="_blank" rel="noopener noreferrer">'
                            f'{inner}{_CHEV}</a>')
             else:
-                out.append(f'<div class=row>{inner}</div>')
-        out.append("</div>")
+                sec.append(f'<div class=row>{inner}</div>')
+        sec.append("</div>")
+        sections["opening"] = "".join(sec)
 
     watches = tracking.get("watches") or []
     pwatches = tracking.get("price_watches") or []
@@ -385,9 +422,9 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         ann = ""
         if topics and tracking.get("morning_time"):
             ann = f'<span class=as>morning &middot; {e(tracking["morning_time"])}</span>'
-        out.append(f'<div class=card><div class=label>Watching{ann}</div><div class=chips>')
+        sec = [f'<div class=card><div class=label>Watching{ann}</div><div class=chips>']
         for w in watches[:WATCH_CHIP_CAP]:
-            out.append(_chip(e, w.get("description", ""), w.get("url")))
+            sec.append(_chip(e, w.get("description", ""), w.get("url")))
         for w in pwatches[:PWATCH_CHIP_CAP]:
             product = _chip_text(w.get("product", ""), 28)
             price, target = w.get("last_seen"), w.get("target")
@@ -397,7 +434,7 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
                 text = f'{product} → ${target:,.2f}'
             else:
                 text = product
-            out.append(_chip(e, text, w.get("url")))
+            sec.append(_chip(e, text, w.get("url")))
         head_by_topic = {}
         for h in heads:
             key = h.get("topic")
@@ -405,14 +442,40 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
                 head_by_topic[key] = h
         for topic in topics[:TOPIC_CHIP_CAP]:
             h = head_by_topic.get(topic)
-            out.append(_chip(e, topic, h.get("url") if h else None))
-        out.append("</div></div>")
+            sec.append(_chip(e, topic, h.get("url") if h else None))
+        sec.append("</div></div>")
+        sections["watching"] = "".join(sec)
+
+    # The user's arrangement, carried on the payload by home.rebuild /
+    # home._refresh_identity (the episode_alerts pattern) so this render never
+    # needs a profile read. Sections they named come first in their order;
+    # anything unnamed keeps its default position after them, so a partial
+    # instruction ("put markets first") never silently drops a section.
+    prefs = payload.get("page_prefs") or {}
+    order = [s for s in (prefs.get("section_order") or []) if s in sections]
+    order += [s for s in DEFAULT_SECTION_ORDER if s in sections and s not in order]
+    hidden = set(prefs.get("hidden_sections") or [])
+    shown = [s for s in order if s not in hidden]
+    out += [sections[s] for s in shown]
+
+    # The product is SMS, so the "edit button" is a pre-filled text back to
+    # Palmer — same affordance as the name ask above, and for the same reason:
+    # the page has no auth and nothing to POST to. quote(), not quote_plus():
+    # the sms: URI scheme has no form encoding, so a "+" is a literal plus.
+    arrange_num = os.environ.get("TWILIO_PHONE_NUMBER", "")
+    if arrange_num:
+        arrange_href = f'sms:{arrange_num}?&body={quote("Arrange my page: ")}'
+        out.append(
+            f'<a class=ask href="{e(arrange_href)}">'
+            '<div class=h>Want this arranged differently?</div>'
+            '<div class=s>Tap to tell Palmer &rarr;</div></a>'
+        )
 
     out.append('<div class=foot>Palmer keeps this current<br>tap anything to open the source')
-    # Required by TMDB's terms wherever their data is shown. Rendered only when
-    # a screen row is actually on the page, so a user whose Opening section is
-    # all local does not get an unexplained third-party notice.
-    if any(o.get("kind") == "screen" for o in opening):
+    # Required by TMDB's terms wherever their data is shown — so only when a
+    # screen row actually renders: present in the payload AND not hidden by the
+    # user's arrangement.
+    if "opening" in shown and any(o.get("kind") == "screen" for o in opening):
         out.append('<br>This product uses the TMDB API but is not endorsed or certified by TMDB.')
     out.append('</div>')
     out.append("</div></body></html>")

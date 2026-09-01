@@ -762,6 +762,75 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                                f"which they already track. Both are on the list now — "
                                f"mention the overlap in one line and ask if they want to "
                                f"drop one. Do not remove anything yourself.")
+            elif b.name == "arrange_page":
+                from page import DEFAULT_SECTION_ORDER, SECTION_WORDS
+                profile = get_profile(phone_number)
+                prefs = dict(profile.get("morning_prefs") or {})
+                unknown: list[str] = []
+
+                def _sections(words):
+                    got = []
+                    for word in (words or []):
+                        canon = SECTION_WORDS.get(str(word).strip().lower())
+                        if canon:
+                            if canon not in got:
+                                got.append(canon)
+                        else:
+                            unknown.append(str(word))
+                    return got
+
+                notes = []
+                sort = b.input.get("markets_sort")
+                sort_changed = False
+                if sort in ("movers", "alpha", "added"):
+                    stored = None if sort == "added" else sort
+                    sort_changed = prefs.get("markets_sort") != stored
+                    if stored is None:
+                        prefs.pop("markets_sort", None)
+                    else:
+                        prefs["markets_sort"] = stored
+                    notes.append({"movers": "Markets now leads with the biggest movers.",
+                                  "alpha": "Markets is alphabetical now.",
+                                  "added": "Markets is back in the order they added things."}[sort])
+                order = _sections(b.input.get("section_order"))
+                if order:
+                    prefs["section_order"] = order
+                    notes.append("Section order: " + ", ".join(order)
+                                 + " first; anything they didn't name keeps its usual spot after those.")
+                hide = _sections(b.input.get("hide"))
+                show = _sections(b.input.get("show"))
+                if hide or show:
+                    # Set arithmetic on the stored list, exactly as
+                    # _apply_opening_kinds does — "hide the commute" is one
+                    # delta, and a model made to restate the whole hidden set
+                    # from a profile dump eventually drops a section nobody
+                    # mentioned.
+                    current = prefs.get("hidden_sections")
+                    current = list(current) if isinstance(current, list) else []
+                    hidden = [s for s in DEFAULT_SECTION_ORDER
+                              if (s in current or s in hide) and s not in show]
+                    prefs["hidden_sections"] = hidden
+                    notes.append("Hidden sections: " + (", ".join(hidden) if hidden else "none") + ".")
+                if notes:
+                    upsert_profile(phone_number, {"morning_prefs": prefs})
+                if sort_changed:
+                    # The sort is baked into the prices payload at fetch, and
+                    # the page caches prices for 5 minutes — without expiring
+                    # the stamp the old order keeps serving right after the
+                    # user asked, which reads as "it didn't work". Order and
+                    # visibility need no invalidate: they are render-time,
+                    # carried onto the payload on every view.
+                    try:
+                        from home import invalidate
+                        invalidate(phone_number, ("prices",))
+                    except Exception as e:
+                        print(f"home.invalidate after arrange_page failed: {e}")
+                result = ("Page arrangement updated. " + " ".join(notes)) if notes \
+                    else "Nothing recognizable to change."
+                if unknown:
+                    result += (" Didn't recognize: " + ", ".join(unknown)
+                               + ". The arrangeable sections are: " + ", ".join(DEFAULT_SECTION_ORDER)
+                               + " — ask which they meant in one short line, don't guess.")
             elif b.name == "set_morning_time":
                 normalized = _normalize_hhmm(b.input.get("time", ""))
                 if normalized:

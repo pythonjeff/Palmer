@@ -255,3 +255,88 @@ class TestWatchingSection:
                                   "morning_time": "7:00 AM"})
         assert "7:00 AM" in html
         assert "in your morning update" not in html, "old per-row phrasing should be gone"
+
+
+ARRANGE_BASE = dict(
+    BASE,
+    traffic={"live_min": 17, "delay_min": 0, "ratio": 1.0},
+    prices=[{"label": "NVDA", "price": 214.0, "pct_24h": -5.0}],
+    headlines=[{"title": "a story", "url": "https://example.com/s", "source": "example.com"}],
+)
+
+
+def _order_of(html):
+    labels = [("commute", ">Commute<"), ("markets", ">Markets<"),
+              ("news", ">News<"), ("opening", ">Opening<")]
+    found = [(html.index(tag), name) for name, tag in labels if tag in html]
+    return [name for _, name in sorted(found)]
+
+
+class TestArrangement:
+    """arrange_page's order and visibility, honoured at render from
+    payload["page_prefs"]. Sections the user named come first in their order;
+    anything unnamed keeps its default position after them, so a partial
+    instruction never silently drops a section."""
+
+    def test_default_order_without_prefs(self):
+        assert _order_of(_render(**ARRANGE_BASE)) == ["commute", "markets", "news"]
+
+    def test_a_full_order_is_honoured(self):
+        html = _render(**ARRANGE_BASE,
+                       page_prefs={"section_order": ["news", "markets", "commute"]})
+        assert _order_of(html) == ["news", "markets", "commute"]
+
+    def test_a_partial_order_keeps_unnamed_sections_in_default_order_after(self):
+        """'put markets first' is section_order=["markets"] and nothing else
+        moves or vanishes."""
+        html = _render(**ARRANGE_BASE, page_prefs={"section_order": ["markets"]})
+        assert _order_of(html) == ["markets", "commute", "news"]
+
+    def test_a_hidden_section_does_not_render(self):
+        html = _render(**ARRANGE_BASE, page_prefs={"hidden_sections": ["commute"]})
+        assert _order_of(html) == ["markets", "news"]
+
+    def test_an_unknown_name_in_the_order_is_ignored(self):
+        """Stored prefs outlive code changes; a stale name must not break the
+        page or eat a section."""
+        html = _render(**ARRANGE_BASE, page_prefs={"section_order": ["bogus", "news"]})
+        assert _order_of(html) == ["news", "commute", "markets"]
+
+
+class TestTmdbNoticeFollowsVisibility:
+    """TMDB's terms require the notice wherever their data APPEARS — so it
+    tracks the rendered page, not the payload: a screen row in a section the
+    user hid shows no TMDB data and gets no unexplained third-party notice."""
+
+    SCREEN = [{"title": "A Film", "kind": "screen"}]
+
+    def test_notice_shown_when_a_screen_row_renders(self):
+        assert "TMDB" in _render(**ARRANGE_BASE, opening=self.SCREEN)
+
+    def test_notice_suppressed_when_opening_is_hidden(self):
+        html = _render(**ARRANGE_BASE, opening=self.SCREEN,
+                       page_prefs={"hidden_sections": ["opening"]})
+        assert "TMDB" not in html
+
+
+class TestArrangeAffordance:
+    """The 'edit button' is a pre-filled text back to Palmer — same mechanics
+    as the name ask, and for the same reason: the page has no auth and nothing
+    to POST to."""
+
+    def test_tap_target_present_with_a_number(self):
+        with patch.dict(os.environ, {"TWILIO_PHONE_NUMBER": "+15550001111"}):
+            html = _render(name="Jeff")
+        assert "Want this arranged differently?" in html
+        assert 'href="sms:+15550001111?&amp;body=Arrange%20my%20page%3A%20"' in html
+
+    def test_body_uses_quote_not_quote_plus(self):
+        """sms: URIs have no form encoding — a '+' is a literal plus, and
+        quote_plus would put 'Arrange+my+page' in the user's Messages draft."""
+        with patch.dict(os.environ, {"TWILIO_PHONE_NUMBER": "+15550001111"}):
+            html = _render(name="Jeff")
+        assert "Arrange+my" not in html
+
+    def test_absent_without_a_number(self):
+        with patch.dict(os.environ, {}, clear=True):
+            assert "Want this arranged differently?" not in _render(name="Jeff")

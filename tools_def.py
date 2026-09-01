@@ -127,6 +127,28 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
         },
     },
     {
+        "name": "arrange_page",
+        "description": "Change how the user's Palmer Home page is ARRANGED — presentation only, never what is tracked. Use when they ask to reorder, sort, or hide sections of their page: 'sort my stocks by biggest movers', 'put markets at the top', 'move news below markets', 'hide the commute', 'bring the news section back'.\n\nSections: weather (their extra pinned locations — the main city's forecast at the top always stays), commute, markets, news, opening, watching. Pass the words they used; unrecognized ones come back for you to ask about, so never guess a mapping yourself.\n\nThis is NOT for changing WHAT they track — 'add Apple', 'drop the Eagles' is update_morning_briefing, and trimming Opening kinds ('no more concerts') is opening_add/opening_remove. 'Take news off my page' is this tool only when they mean hide the section; if they mean stop following the topics, that is update_morning_briefing. When it is genuinely unclear, ask in one short line. Confirm what changed in your own voice, without reading back internal section names.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "markets_sort": {
+                    "type": "string", "enum": ["movers", "alpha", "added"],
+                    "description": "How the Markets section orders its tickers: 'movers' = biggest movers first (largest % change, either direction), 'alpha' = alphabetical, 'added' = the order they added them (the default). Use for 'sort my stocks by biggest movers', 'put them alphabetical', 'go back to my order'."},
+                "section_order": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "The desired top-to-bottom order of page sections, in the user's words ('markets', 'news', ...). Name only what they mentioned — anything unnamed keeps its usual spot after the named ones, so 'put markets first' is just ['markets']."},
+                "hide": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "Sections to hide from the page, e.g. 'hide the commute' → ['commute']. Hiding is presentation only — everything behind the section keeps updating and comes back with show."},
+                "show": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "Hidden sections to bring back, e.g. 'bring back the news' → ['news']."},
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "set_morning_time",
         "description": "Change what time the user's daily morning briefing is sent, in their local timezone. Use when they ask to get their morning update earlier, later, or at a specific time (e.g. 'send my update at 8', 'make my briefing 9am'). The default is 07:00. Convert whatever they say into 24-hour HH:MM.",
         "input_schema": {
