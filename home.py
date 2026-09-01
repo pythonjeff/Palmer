@@ -170,6 +170,16 @@ def _fetch_prices(profile: dict, previous: list[dict] | None = None) -> list[dic
         snapshot = price_snapshot(symbol, label) or stale.get(label.lower())
         if snapshot:
             out.append(snapshot)
+    # The user's chosen order, applied to the PAYLOAD rather than at render:
+    # the page, the card (which slices [:cards.MAX_PRICES]) and the og
+    # description all render from this one list and must not disagree about
+    # which ticker leads. Set by arrange_page; absent means the order they
+    # added topics, which is what the loop above already produced.
+    sort = (profile.get("morning_prefs") or {}).get("markets_sort")
+    if sort == "movers":
+        out.sort(key=lambda p: abs(p.get("pct_24h") or 0.0), reverse=True)
+    elif sort == "alpha":
+        out.sort(key=lambda p: (p.get("label") or "").lower())
     return out
 
 
@@ -321,6 +331,23 @@ def _tracking(phone: str, profile: dict | None = None) -> dict:
     }
 
 
+def _page_prefs(profile: dict) -> dict | None:
+    """The arrangement page.render honours — carried on the payload (the
+    episode_alerts pattern) so a page view never needs a profile read of its
+    own. markets_sort is deliberately NOT here: it is baked into the prices
+    list at fetch, so the card inherits it too.
+
+    None, not an empty dict, when nothing is set: a payload written before
+    this field existed reads back None as well, so an untouched profile
+    settles in _refresh_identity instead of rewriting the row on every view."""
+    prefs = profile.get("morning_prefs") or {}
+    order = list(prefs.get("section_order") or [])
+    hidden = list(prefs.get("hidden_sections") or [])
+    if not order and not hidden:
+        return None
+    return {"section_order": order, "hidden_sections": hidden}
+
+
 def rebuild(phone: str, refresh_news: bool = True) -> dict:
     """Full build — what the morning job calls. Includes the paid news pass."""
     profile = get_profile(phone)
@@ -342,6 +369,7 @@ def rebuild(phone: str, refresh_news: bool = True) -> dict:
                    else (previous.get("opening") or []),
         "tracking": _tracking(phone, profile),
         "episode_alerts": bool((profile.get("morning_prefs") or {}).get("episode_alerts")),
+        "page_prefs": _page_prefs(profile),
         "fetched": {"weather": now, "weather_extra": now, "traffic": now, "prices": now,
                     "headlines": now if refresh_news
                                  else (previous.get("fetched", {}).get("headlines") or now),
@@ -371,6 +399,9 @@ def _refresh_identity(payload: dict, profile: dict, phone: str) -> bool:
         # payload so _payload_digest can honour it without a profile read of
         # its own — being on the page is passive, being texted is not.
         "episode_alerts": bool((profile.get("morning_prefs") or {}).get("episode_alerts")),
+        # The page arrangement, so "put markets first" takes effect on the
+        # next view with no invalidate — this runs on every page load.
+        "page_prefs": _page_prefs(profile),
     }
     changed = any(payload.get(k) != v for k, v in fresh.items())
     payload.update(fresh)

@@ -665,3 +665,72 @@ class TestHeadlineSourcing:
         first = search.call_args_list[0].kwargs
         assert first.get("trusted_only") is True
         assert first.get("min_score") == 0.5
+
+
+class TestMarketsSort:
+    """arrange_page's markets_sort is applied to the PAYLOAD at fetch, not at
+    render — the page, the card (which slices [:cards.MAX_PRICES]) and the og
+    description all render from this one list and must not disagree about
+    which ticker leads."""
+
+    PROF = {"morning_topics": ["Bitcoin price", "Nvidia stock", "Apple stock"]}
+    ROWS = [{"label": "Bitcoin", "price": 77000.0, "pct_24h": 1.0},
+            {"label": "NVDA", "price": 214.0, "pct_24h": -5.0},
+            {"label": "AAPL", "price": 230.0, "pct_24h": 3.0}]
+
+    def _fetch(self, prefs):
+        prof = dict(self.PROF)
+        if prefs:
+            prof["morning_prefs"] = prefs
+        with patch("datafeeds.price_snapshot", side_effect=list(self.ROWS)):
+            return [p["label"] for p in home._fetch_prices(prof, None)]
+
+    def test_absent_prefs_keep_topic_order(self):
+        assert self._fetch(None) == ["Bitcoin", "NVDA", "AAPL"]
+
+    def test_movers_orders_by_absolute_move_either_direction(self):
+        """-5% is a bigger mover than +3%; the direction is not the point."""
+        assert self._fetch({"markets_sort": "movers"}) == ["NVDA", "AAPL", "Bitcoin"]
+
+    def test_alpha_orders_by_label(self):
+        assert self._fetch({"markets_sort": "alpha"}) == ["AAPL", "Bitcoin", "NVDA"]
+
+    def test_a_stale_fallback_row_sorts_with_the_rest(self):
+        """The stale-row fallback (a 429'd ticker keeps its last row) must not
+        bypass the sort — a kept row with no pct sorts as a 0% mover."""
+        prev = [{"label": "Bitcoin", "price": 77000.0}]
+        prof = dict(self.PROF, morning_prefs={"markets_sort": "movers"})
+        with patch("datafeeds.price_snapshot",
+                   side_effect=[None, self.ROWS[1], self.ROWS[2]]):
+            out = [p["label"] for p in home._fetch_prices(prof, prev)]
+        assert out == ["NVDA", "AAPL", "Bitcoin"]
+
+
+class TestPagePrefsRideThePayload:
+    """page.render sees only the payload, so the arrangement is carried onto it
+    in rebuild and _refresh_identity — and 'nothing set' is None, the same
+    value a payload written before the field existed reads back, so an
+    untouched profile settles instead of rewriting the row on every view."""
+
+    def test_nothing_set_is_none_not_an_empty_dict(self):
+        assert home._page_prefs({}) is None
+        assert home._page_prefs({"morning_prefs": {"episode_alerts": True}}) is None
+
+    def test_set_prefs_come_through(self):
+        prof = {"morning_prefs": {"section_order": ["markets"],
+                                  "hidden_sections": ["commute"]}}
+        assert home._page_prefs(prof) == {"section_order": ["markets"],
+                                          "hidden_sections": ["commute"]}
+
+    def test_refresh_identity_carries_an_arrangement_change(self):
+        payload = {"city": "Kirkwood, MO", "name": "Jeff",
+                   "timezone": "America/Chicago", "tracking": {"topics": []},
+                   "episode_alerts": False}
+        prof = {"city": "Kirkwood, MO", "name": "Jeff",
+                "timezone": "America/Chicago",
+                "morning_prefs": {"section_order": ["news", "markets"]}}
+        with patch.object(home, "_tracking", return_value={"topics": []}):
+            changed = home._refresh_identity(payload, prof, "+1555")
+        assert changed
+        assert payload["page_prefs"] == {"section_order": ["news", "markets"],
+                                         "hidden_sections": []}
