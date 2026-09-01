@@ -49,6 +49,32 @@ def _seed_caches(local_rows, screen_rows, tz="America/Los_Angeles", coords=(34.0
     return today
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def _cache_hit_only():
+    """Everything a seeded-cache test needs: the geocode answered locally, and
+    every other outbound hop rigged to fail the test by name.
+
+    These tests used to patch only the geocode, so a cache miss fell straight
+    through to the real fetchers — live Ticketmaster, TMDB and Haiku calls from
+    inside the suite, sixty seconds of network, and real concert rows showing
+    up in assertions expecting seeded ones. The miss itself was a clock bug (a
+    timezone-less profile reads the UTC day against a cache keyed on the LA
+    day), but the silent fallthrough is what made it cost minutes to see
+    instead of milliseconds: a raising mock turns the next key mismatch into
+    an immediate, named failure."""
+    boom = AssertionError("seeded cache missed — opening_snapshot computed a "
+                          "different key than _seed_caches wrote (check the "
+                          "profile timezone against the seed tz)")
+    with patch("weather._geocode", side_effect=lambda c: COORDS[c]), \
+         patch.object(opening, "_http_get_json", side_effect=boom), \
+         patch("datafeeds._search_raw", side_effect=boom), \
+         patch.object(opening, "client", MagicMock(**{"messages.create.side_effect": boom})):
+        yield
+
+
 def _resp(payload):
     import json
     r = MagicMock()
@@ -284,9 +310,17 @@ class TestLongLeadEvents:
             opening._events(34.02, -118.39, start_days=7,
                             end_days=opening.LONG_LEAD_DAYS, size=opening.LONG_LEAD_SIZE)
         url = http.call_args.args[0] if http.call_args.args else http.call_args.kwargs["url"]
-        from datetime import datetime, timedelta
-        far = (datetime.utcnow() + timedelta(days=opening.LONG_LEAD_DAYS - 1)).strftime("%Y-%m")
-        assert far in url
+        # Parse the endDateTime the code actually sent rather than string-
+        # matching a month computed on a second clock: the old check formatted
+        # `utcnow + LONG_LEAD_DAYS - 1` as "%Y-%m", which names a different
+        # month than the code's `utcnow + LONG_LEAD_DAYS` whenever the horizon
+        # lands on the 1st — about a dozen evenings a year, found on one.
+        from datetime import datetime
+        from urllib.parse import parse_qs, urlparse
+        end = datetime.strptime(parse_qs(urlparse(url).query)["endDateTime"][0],
+                                "%Y-%m-%dT%H:%M:%SZ")
+        days_out = (end - datetime.utcnow()).total_seconds() / 86400
+        assert opening.LONG_LEAD_DAYS - 1 <= days_out <= opening.LONG_LEAD_DAYS
 
 
 class TestExpiredRowsDropOut:
@@ -296,28 +330,34 @@ class TestExpiredRowsDropOut:
     the moment it has passed, without waiting for the weekly re-curation."""
 
     def test_a_past_dated_row_is_dropped_on_read(self):
-        from datetime import date, timedelta
-        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        # The rows, the cache keys and the reader's expiry all sit on ONE
+        # calendar — the LA day the seed uses. date.today() here is the
+        # machine's zone and a bare {"city": ...} profile reads the UTC day,
+        # which is how this test spent its evenings fetching real concerts.
+        from datetime import timedelta
+        from timeutil import local_today
+        today = local_today("America/Los_Angeles")
         _seed_caches([
             {"kind": "event", "title": "Already Happened", "subtitle": "", "when": "",
-             "url": None, "source": "", "date": yesterday},
+             "url": None, "source": "", "date": (today - timedelta(days=1)).isoformat()},
             {"kind": "local", "title": "Still Live", "subtitle": "", "when": "",
              "url": None, "source": "", "date": None},
         ], [])
-        with patch("weather._geocode", side_effect=lambda c: COORDS[c]):
-            rows = opening.opening_snapshot({"city": "Culver City"})
+        with _cache_hit_only():
+            rows = opening.opening_snapshot(dict(LA))
         titles = [r["title"] for r in rows]
         assert "Still Live" in titles
         assert "Already Happened" not in titles
 
     def test_todays_date_survives(self):
-        from datetime import date
+        from timeutil import local_today
+        today = local_today("America/Los_Angeles")
         _seed_caches([
             {"kind": "event", "title": "Tonight", "subtitle": "", "when": "",
-             "url": None, "source": "", "date": date.today().isoformat()},
+             "url": None, "source": "", "date": today.isoformat()},
         ], [])
-        with patch("weather._geocode", side_effect=lambda c: COORDS[c]):
-            rows = opening.opening_snapshot({"city": "Culver City"})
+        with _cache_hit_only():
+            rows = opening.opening_snapshot(dict(LA))
         assert [r["title"] for r in rows] == ["Tonight"]
 
     def test_curate_stores_a_valid_date_from_the_model(self):
@@ -479,12 +519,16 @@ class TestPerUserKinds:
                {"kind": "screen", "title": "All That", "subtitle": "", "when": "", "url": None, "source": ""}]
 
     def _snapshot(self, prefs):
-        opening._clear_caches()
         _seed_caches(self.POOL, self.SCREENS)
-        profile = {"city": "Culver City"}
+        # dict(LA), not a bare city: the profile's timezone is what makes
+        # opening_snapshot read the same LA day the seed keyed on. Without it
+        # the reader computes the UTC day, and from 5pm Pacific to midnight
+        # that is tomorrow — a cache miss, and (before _cache_hit_only) a live
+        # fetch whose real rows failed the kind assertions.
+        profile = dict(LA)
         if prefs is not None:
             profile["morning_prefs"] = prefs
-        with patch("weather._geocode", side_effect=lambda c: COORDS[c]):
+        with _cache_hit_only():
             return opening.opening_snapshot(profile)
 
     def test_a_cache_hit_costs_no_model_call(self):
@@ -497,7 +541,7 @@ class TestPerUserKinds:
              patch.object(opening, "client") as cl, \
              patch("datafeeds._search_raw") as tav, \
              patch.object(opening, "_http_get_json") as http:
-            rows = opening.opening_snapshot({"city": "Culver City"})
+            rows = opening.opening_snapshot(dict(LA))
         assert rows, "the cached rows must still come back"
         cl.messages.create.assert_not_called()
         tav.assert_not_called()
@@ -686,18 +730,16 @@ class TestSomethingFurtherOutGetsASlot:
         from timeutil import local_today
         today = local_today("America/Los_Angeles")
         _seed_caches(self._rows(today), [])
-        with patch("weather._geocode", side_effect=lambda c: COORDS[c]):
-            rows = opening.opening_snapshot({"city": "Culver City",
-                                             "timezone": "America/Los_Angeles"})
+        with _cache_hit_only():
+            rows = opening.opening_snapshot(dict(LA))
         assert "Kacey Musgraves" in [r["title"] for r in rows]
 
     def test_near_term_still_leads(self):
         from timeutil import local_today
         today = local_today("America/Los_Angeles")
         _seed_caches(self._rows(today), [])
-        with patch("weather._geocode", side_effect=lambda c: COORDS[c]):
-            rows = opening.opening_snapshot({"city": "Culver City",
-                                             "timezone": "America/Los_Angeles"})
+        with _cache_hit_only():
+            rows = opening.opening_snapshot(dict(LA))
         assert rows[0]["title"].startswith("Soon"), "advance notice must not lead"
 
     def test_no_far_candidate_means_no_slot_wasted(self):
@@ -705,9 +747,8 @@ class TestSomethingFurtherOutGetsASlot:
         today = local_today("America/Los_Angeles")
         near = [r for r in self._rows(today) if r["title"].startswith("Soon")]
         _seed_caches(near, [])
-        with patch("weather._geocode", side_effect=lambda c: COORDS[c]):
-            rows = opening.opening_snapshot({"city": "Culver City",
-                                             "timezone": "America/Los_Angeles"})
+        with _cache_hit_only():
+            rows = opening.opening_snapshot(dict(LA))
         # With no screens, local gets the whole MAX_ROWS allowance — the point
         # is that reserving a slot for a far row leaves no gap when there is
         # no far row to put in it.
