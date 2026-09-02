@@ -241,8 +241,19 @@ def render_dashboard(*, city: str, weather: dict | None, traffic: dict | None,
         note = "clear" if span < 0.34 else f"+{delay} min vs normal"
         d.text((right_x + _tw(d, mins, mf) + 16, content_top + 40), note,
                font=_mono(18), fill=tier_colour)
-        _meter(img, right_x, content_top + 88, right_w, traffic.get("ratio") or 1.0)
-        commute_bottom = content_top + 100
+        meter_y = content_top + 88
+        if traffic.get("depart_at"):
+            # The number is a forecast for their leave time; say which one.
+            # The 42pt figure runs to about +66, so the line sits at +72 and
+            # pushes the meter down by the same 10px; a live commute keeps the
+            # band exactly as it was.
+            from timeutil import friendly_hhmm
+            d.text((right_x, content_top + 72),
+                   f"{friendly_hhmm(traffic['depart_at'])} -> ~{friendly_hhmm(traffic.get('arrive_at'))}",
+                   font=_mono(15), fill=MUTED)
+            meter_y += 10
+        _meter(img, right_x, meter_y, right_w, traffic.get("ratio") or 1.0)
+        commute_bottom = meter_y + 12
         _hrule(d, right_x, right_x + right_w, commute_bottom + 20)
 
     # --- markets (right column, below commute) ------------------------------

@@ -12,6 +12,7 @@ morning briefing can silently skip the section — never surface a broken
 import os
 import concurrent.futures
 import urllib.parse
+from datetime import datetime, timedelta, timezone
 
 from llm import client, HAIKU_MODEL
 from netutil import _http_get_json
@@ -25,6 +26,14 @@ _NOTABLE_ICONS = {1, 6, 7, 8, 9, 14}  # accident, jam, lane closed, road closed,
 
 # City -> geocode result cache. Cities don't move; safe to keep for the process lifetime.
 _city_geo_cache: dict[str, dict] = {}
+
+# Free-form address -> (lat, lng). Same lifetime as the city cache and for the
+# same reason. This existed for cities only, so every 5-minute page refresh of a
+# legacy commute (addresses stored as strings, no coordinates) re-geocoded both
+# ends: three TomTom calls per snapshot where one would do. Successes only — a
+# cached None would make an address permanently unresolvable for the process
+# after one transient hiccup.
+_addr_geo_cache: dict[str, tuple[float, float]] = {}
 
 
 def _geocode_city(city: str) -> dict | None:
@@ -189,6 +198,9 @@ def _geocode_address(address: str) -> tuple[float, float] | None:
     """Geocode any free-form address (not just cities) to (lat, lng)."""
     if not address or not TOMTOM_API_KEY:
         return None
+    key = address.strip().lower()
+    if key in _addr_geo_cache:
+        return _addr_geo_cache[key]
     q = urllib.parse.quote(address)
     url = f"{_TOMTOM_BASE}/search/2/geocode/{q}.json?limit=1&key={TOMTOM_API_KEY}"
     data = _http_get_json(url, timeout=_TOMTOM_TIMEOUT)
@@ -198,6 +210,7 @@ def _geocode_address(address: str) -> tuple[float, float] | None:
     lat, lng = pos.get("lat"), pos.get("lon")
     if lat is None or lng is None:
         return None
+    _addr_geo_cache[key] = (lat, lng)
     return (lat, lng)
 
 
@@ -248,24 +261,56 @@ def get_travel_time(origin: str, destination: str) -> str:
     return f"{origin} → {destination}: " + "; ".join(parts) + "."
 
 
-def traffic_snapshot(origin: str, destination: str) -> dict | None:
-    """Structured commute data for the visual dashboard. None on any failure.
+def traffic_snapshot(origin: str, destination: str, *,
+                     depart_at: datetime | None = None,
+                     origin_ll=None, dest_ll=None,
+                     tz_name: str | None = None) -> dict | None:
+    """Structured commute data for the page, the card and the morning digest.
+    None on any failure.
 
     get_travel_time computes all of this and then formats it away. `ratio` is
     the number the meter renders: 1.0 is free-flowing, ~1.4 is a bad morning.
-    Additive — get_travel_time is untouched, so the text briefing can't
-    regress."""
+
+    `depart_at` is the moment the number is FOR. The morning job runs at the
+    user's morning time and the page refreshes whenever they tap, so without
+    it a user who leaves at 8:30 was told the 7:00 number. An aware datetime in
+    the future is passed to TomTom as `departAt`, which routes on historical
+    speed profiles for that departure; the result carries `predicted: True`
+    so every surface can say "at 8:30am" rather than presenting a forecast as
+    current traffic. Anything else (None, past, naive) routes live, as before.
+
+    `origin_ll`/`dest_ll` are coordinates resolved once when the commute was
+    saved (set_commute), so the read path — every page view — geocodes
+    nothing. A legacy commute stored as two strings still geocodes here.
+
+    The result never carries `origin` or `destination`: it is rendered on an
+    unauthenticated tokenized page, and those are someone's home and office."""
     if not TOMTOM_API_KEY or not origin or not destination:
         return None
     try:
-        orig = _geocode_address(origin)
-        dest = _geocode_address(destination)
+        orig = tuple(origin_ll) if origin_ll else _geocode_address(origin)
+        dest = tuple(dest_ll) if dest_ll else _geocode_address(destination)
         if not orig or not dest:
             return None
+        predicted = False
+        depart_param = ""
+        if depart_at is not None:
+            if depart_at.tzinfo is None:
+                # A naive time has no offset to send, and TomTom would read it
+                # as UTC — which is the five-hours-early reminder bug in a new
+                # coat. Route live rather than for the wrong moment.
+                print(f"traffic_snapshot: naive depart_at {depart_at!r} ignored")
+            elif depart_at > datetime.now(timezone.utc):
+                # Percent-encode the whole stamp: an offset east of UTC carries
+                # a "+", which decodes to a space in a query string and 400s.
+                depart_param = "&departAt=" + urllib.parse.quote(
+                    depart_at.isoformat(timespec="seconds"), safe="")
+                predicted = True
         locations = f"{orig[0]},{orig[1]}:{dest[0]},{dest[1]}"
         data = _http_get_json(
             f"{_TOMTOM_BASE}/routing/1/calculateRoute/{locations}/json"
-            f"?traffic=true&travelMode=car&computeTravelTimeFor=all&key={TOMTOM_API_KEY}",
+            f"?traffic=true&travelMode=car&computeTravelTimeFor=all&key={TOMTOM_API_KEY}"
+            f"{depart_param}",
             timeout=_TOMTOM_TIMEOUT,
         )
         if not data or not data.get("routes"):
@@ -276,13 +321,20 @@ def traffic_snapshot(origin: str, destination: str) -> dict | None:
             return None
         free = summary.get("noTrafficTravelTimeInSeconds") or live
         dist = summary.get("lengthInMeters")
-        return {
+        from timeutil import local_now
+        base = depart_at if predicted else local_now(tz_name)
+        out = {
             "live_min": round(live / 60),
             "free_min": round(free / 60),
             "delay_min": round((summary.get("trafficDelayInSeconds") or 0) / 60),
             "miles": round(dist / 1609.34, 1) if dist else None,
             "ratio": round(live / free, 3) if free else 1.0,
+            "predicted": predicted,
+            "arrive_at": (base + timedelta(seconds=live)).strftime("%H:%M"),
         }
+        if predicted:
+            out["depart_at"] = depart_at.strftime("%H:%M")
+        return out
     except Exception as e:
         print(f"traffic_snapshot failed ({origin!r} -> {destination!r}): {type(e).__name__}: {e}")
         return None

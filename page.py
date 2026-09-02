@@ -17,6 +17,8 @@ import os
 from datetime import datetime
 from urllib.parse import quote
 
+from timeutil import friendly_hhmm
+
 # A newspaper page, not a dashboard: flat paper white, ink-black type, thin
 # hairline rules instead of glass panels. Color is rationed to the two places
 # a reader actually needs it at a glance — the temperature and the commute
@@ -247,7 +249,8 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
                      else f"{where}".capitalize())
     bits = []
     if t.get("live_min"):
-        bits.append(f"{t['live_min']} min commute")
+        bits.append(f"{t['live_min']} min commute"
+                    + (f" at {friendly_hhmm(t['depart_at'])}" if t.get("depart_at") else ""))
     if prices:
         p0 = prices[0]
         bits.append(f"{p0.get('label')} {p0.get('pct_24h', 0):+.1f}%")
@@ -350,11 +353,21 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         delay = t.get("delay_min") or 0
         tier, span = _traffic_tier(t.get("ratio") or 1.0)
         note = "clear" if tier == "up" else f"+{delay} min vs normal"
+        # Which moment the number is for. Routed for their leave time it is a
+        # forecast for that departure; otherwise it is live. Times only —
+        # the origin and destination are someone's home and office, and this
+        # page has no auth beyond its token, so they never render here.
+        if t.get("depart_at"):
+            when = (f"leaves {e(friendly_hhmm(t['depart_at']))} &middot; "
+                    f"arrives ~{e(friendly_hhmm(t.get('arrive_at')))}")
+        else:
+            when = "right now"
         sections["commute"] = "".join(
             [f'<div class=card><div class=label>Commute'
              f'<span class=as>{e(_ago(fetched.get("traffic")))}</span></div>',
              f'<div class=big>{e(t.get("live_min", 0))} min '
              f'<span class="note {tier}">{e(note)}</span></div>',
+             f'<div class=src>{when}</div>',
              _gauge(t.get("ratio") or 1.0, tier, span), "</div>"])
 
     if prices:
