@@ -318,8 +318,8 @@ def _resolve_asset(asset: str) -> str:
     It passes company names — "SpaceX", "Nvidia" — and yfinance 404s on those.
     Worse than the failed lookup is what the model concluded from it: that the
     company must be private. Resolution goes through tickers.py so the tool and
-    the page's Markets section agree on what a name means, with the verified
-    Haiku pass as the fallback for names the map doesn't carry."""
+    the page's Markets section agree on what a name means, with Yahoo's own
+    search as the fallback for names the curated map doesn't carry."""
     from tickers import resolve_asset_name, resolve_company_ticker
     if not asset:
         return asset

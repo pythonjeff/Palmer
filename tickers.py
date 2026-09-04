@@ -55,8 +55,8 @@ INDEX_LABELS = {
 }
 
 # Names users actually type. Kept deliberately short — this is the common path,
-# not an exhaustive listing; anything missing falls through to the Haiku pass at
-# save time. Keys are matched on word boundaries against the lowercased topic.
+# not an exhaustive listing; anything missing falls through to Yahoo's search
+# at save time. Keys are matched on word boundaries against the lowercased topic.
 # Index names are unambiguously market references — "nasdaq" needs no further
 # qualification — so these resolve on their own.
 INDEX_TICKERS = {
@@ -264,8 +264,8 @@ def resolve_company_ticker(topic: str) -> str | None:
 
 
 def looks_like_price_topic(topic: str) -> bool:
-    """Whether a topic is asking for a price at all. Gates the save-time Haiku
-    call so ordinary news topics never pay for one."""
+    """Whether a topic is asking for a price at all. Gates the save-time symbol
+    lookup so ordinary news topics never pay for a round trip."""
     return any(w in (topic or "").lower() for w in _PRICE_WORDS)
 
 
