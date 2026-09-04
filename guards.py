@@ -260,3 +260,116 @@ DELIBERATION_CORRECTION = (
     "message TO them, in your own voice. If you are declining to do something, "
     "say so plainly as yourself; never explain the machinery behind it."
 )
+
+
+# ---------------------------------------------------------------------------
+# Claiming a limit Palmer does not have
+#
+# SYSTEM_PROMPT has forbidden this from the start — "Telling someone you can't
+# do something you have a tool for" is in the NEVER block, naming the incident:
+# Palmer told two people "flight search is one thing I can't pull directly"
+# while search_flights sat there working. There was no guard, because
+# redirects_elsewhere was assumed to cover it. It does not. Three of the four
+# real production violations in test_guards_and_flights.py are denials FIRST
+# and handoffs second — strip the brand name from any of them and nothing in
+# the codebase catches what is left:
+#
+#   "Flight prices are a bit outside what I can track directly."
+#   "Not something I can pull a live number on - that's not in my toolbox."
+#
+# Two tiers, for the reason leaks_deliberation has two: one signal alone is
+# not safe. And the precision discipline of redirects_elsewhere applies here
+# too — a false positive costs a redraft and, if it repeats, Palmer's ability
+# to say something true about a real limit.
+
+# Tier one: the app-inventory register, damning with no object at all.
+# A person with a genuine gap says "I can't send email". Nobody says "email
+# isn't in my toolbox" — that is an app reading out its own feature list, which
+# SYSTEM_PROMPT forbids on voice grounds before capability even comes into it.
+# So this needs no capability noun and cannot collide with an honest gap.
+_INVENTORY_NOUN = (r"(?:tool\s?box|tool\s?kit|tool\s?set|toolset|wheelhouse"
+                   r"|repertoire|skill\s?set|feature\s+set|capabilities|bag\s+of\s+tricks)")
+_INVENTORY = re.compile(
+    rf"\b(?:not|isn'?t|aren'?t|outside(?:\s+of)?|beyond|nothing)\s+"
+    rf"(?:\w+\s+){{0,3}}?(?:in\s+)?my\s+{_INVENTORY_NOUN}\b"
+    rf"|\bI\s+don'?t\s+have\s+(?:the\s+)?{_INVENTORY_NOUN}\b",
+    re.IGNORECASE)
+
+# Tier two, first half: a denial Palmer makes about HIMSELF.
+#
+# First person only, and that is load-bearing in two directions. Every tool's
+# own failure string addresses Palmer in the second person ("never say you
+# cannot do flights"), as does every correction in this file — anchoring on "I"
+# keeps the guard off Palmer's own scaffolding. It also keeps it off a third
+# party's limits ("the airline doesn't publish seat maps") with no separate
+# exclusion, which is the same structural reason those sentences survive
+# redirects_elsewhere.
+_SELF_DENIAL = re.compile(
+    r"\bI\s+(?:can'?t|cannot|don'?t|do\s+not)\s+"
+    r"(?:have|get|do|pull|check|track|watch|monitor|search|fetch|access|handle|support)\b"
+    r"|\bI\s+(?:am|'m)\s+(?:not\s+able|unable)\s+to\b"
+    r"|\bI\s+have\s+no\s+(?:way|access|feed)\b"
+    r"|\b(?:not|isn'?t|aren'?t)\s+something\s+I\s+(?:can|do)\b"
+    r"|\b(?:outside|beyond)\s+(?:of\s+)?what\s+I\s+(?:can|do)\b",
+    re.IGNORECASE)
+
+# Tier two, second half: a job Palmer demonstrably has a tool for, named the
+# way a DENIAL names it — as a KIND of lookup, not as one datum. "flight
+# prices" is a category; "your flight number" is a fact, and Palmer not having
+# that is not a denial. Hence no "number" here, and only the plural "flights".
+_CAPABILITY = re.compile(
+    r"\b(?:"
+    r"(?:flight|airfare|fare|hotel|stock|share|crypto|coin|product|grocery|news|sports?)"
+    r"\s+(?:search\w*|pric\w*|fares?|quotes?|data|feeds?|track\w*|watch\w*|alerts?|lookups?)"
+    r"|(?:live|real[-\s]?time|current)\s+(?:pric\w*|fares?|scores?|traffic|weather|data|feeds?)"
+    r"|flights|hotels|airfares?|weather|forecasts?|traffic|commutes?"
+    r"|drive\s+times?|travel\s+times?|scores?|reminders?"
+    r"|price\s+watch\w*|news\s+watch\w*"
+    r")\b",
+    re.IGNORECASE)
+
+# The SANCTIONED failure sentence. SYSTEM_PROMPT tells Palmer that when a tool
+# is genuinely down, the answer is "you can't pull that right now, offer to try
+# again" — so a denial wearing a transient marker is the shape we ASKED for,
+# not the shape being policed. Note the risk here runs the opposite way to
+# _RIVAL's: every term below can only SUPPRESS a match, so an over-broad entry
+# costs a miss, never a false positive.
+_TRANSIENT = re.compile(
+    r"\b(?:right\s+now|at\s+the\s+moment|this\s+(?:second|minute|morning|afternoon|evening)"
+    r"|just\s+now|currently|temporarily|for\s+the\s+moment|at\s+present|today|yet"
+    r"|try(?:ing)?\s+again|in\s+a\s+(?:bit|sec|minute|few))\b",
+    re.IGNORECASE)
+
+# Clause, not whole message. One real violation is damning twice over in two
+# halves, and per-clause transience means "I can't pull the fares right now,
+# and flight tracking isn't in my toolbox" still fires on the second half.
+_CLAUSE = re.compile(r"[.!?;\n]+|\s[-–—]+\s")
+
+
+def denies_capability(text: str) -> bool:
+    """True if the draft tells the user a capability Palmer HAS does not exist."""
+    if not text:
+        return False
+    body = _URL.sub(" ", text)
+    if _INVENTORY.search(body):
+        return True
+    for clause in _CLAUSE.split(body):
+        if not clause or _TRANSIENT.search(clause):
+            continue
+        if _SELF_DENIAL.search(clause) and _CAPABILITY.search(clause):
+            return True
+    return False
+
+
+DENIAL_CORRECTION = (
+    "\n\nYou just wrote: {draft!r}\n"
+    "That tells them something you can do doesn't exist. Check your tools before "
+    "you claim a limit: you can pull flights, hotels, weather, traffic and drive "
+    "times, crypto and stock prices, product prices, news and live scores, and you "
+    "can set reminders, price watches, flight watches and news watches. Write it "
+    "again — call the tool. If a lookup genuinely just failed, say plainly that you "
+    "couldn't pull it right now and offer to try again; that is a different sentence "
+    "from saying you don't do this at all. If you can do PART of what they asked, do "
+    "that part and name the gap. Never describe your own toolset, and don't name "
+    "another product."
+)

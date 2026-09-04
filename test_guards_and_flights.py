@@ -282,3 +282,152 @@ class TestTopicOverlapIsRaisedNotEnforced:
         import inspect, home
         src = inspect.getsource(home._fetch_headlines)
         assert "seen_urls" in src
+
+
+# Categorical denials. Palmer has a tool for every one of these.
+DENIALS = [
+    "Not something I can pull a live number on - that's not in my toolbox.",
+    "Flight prices are a bit outside what I can track directly.",
+    "I don't have a live flight pricing feed.",
+    "Flight search is one thing I can't pull directly.",
+    "I can't track hotel prices for you.",
+    "Live scores aren't something I can do.",
+    "I don't have access to real-time traffic.",
+    "Watching a fare over time is outside my capabilities.",
+    "I can't do weather, but I can help with other stuff.",
+]
+
+# A real gap, said the way a person says it. Palmer has no tool for any of these.
+HONEST_GAPS = [
+    "I can't send an email for you.",
+    "I can't book it - you'll have to do that part.",
+    "I can't see your calendar.",
+    "I don't have a way to pay for it.",
+]
+
+# Somebody else's limits. Reporting these is Palmer's job.
+THIRD_PARTY = [
+    "The airline doesn't publish seat maps until 24 hours out.",
+    "Ticketmaster hasn't posted prices for that show yet.",
+    "Their site doesn't have a live feed for injuries.",
+]
+
+# The sanctioned failure line — what SYSTEM_PROMPT tells Palmer to say.
+TRANSIENT = [
+    "I can't pull that right now - want me to try again in a bit?",
+    "Flight search didn't come back just now - want me to try again?",
+    "Couldn't pull the drive time this second, trying again in a few.",
+    "I can't get the weather at the moment. Try you again shortly.",
+]
+
+
+class TestTheCapabilityDenialGuard:
+    """redirects_elsewhere only fires when the denial is ACCOMPANIED by a
+    competitor. Strip the brand name from three of the four real violations
+    and nothing was left to catch them."""
+
+    def test_every_categorical_denial_is_caught(self):
+        for text in DENIALS:
+            assert guards.denies_capability(text), text
+
+    def test_three_of_the_four_real_violations_are_denials_on_their_own(self):
+        for text in REAL_VIOLATIONS[1:]:
+            assert guards.denies_capability(text), text
+
+    def test_a_tool_outage_belongs_to_the_redirect_guard_not_this_one(self):
+        """"Tool's down on my end right now" is the sentence we asked for; the
+        violation in it is the handoff that follows, which is already caught."""
+        assert not guards.denies_capability(REAL_VIOLATIONS[0])
+        assert guards.redirects_elsewhere(REAL_VIOLATIONS[0])
+
+    def test_an_honest_gap_survives(self):
+        """Palmer has no email tool. Saying so is honesty, not a false limit."""
+        for text in HONEST_GAPS:
+            assert not guards.denies_capability(text), text
+
+    def test_a_third_partys_limits_survive(self):
+        for text in THIRD_PARTY:
+            assert not guards.denies_capability(text), text
+
+    def test_a_transient_failure_survives(self):
+        for text in TRANSIENT:
+            assert not guards.denies_capability(text), text
+
+    def test_nothing_legitimate_is_caught(self):
+        for text in MUST_SURVIVE:
+            assert not guards.denies_capability(text), text
+
+    def test_the_whitelisted_line_is_excluded_twice_over(self):
+        """Belt and braces, pinned: it carries a transient marker AND names no
+        capability. A future edit to either half cannot silently start
+        blocking Palmer's sanctioned failure sentence."""
+        line = "I can't pull that right now - want me to try again in a bit?"
+        assert line in MUST_SURVIVE
+        assert guards._TRANSIENT.search(line)
+        assert not guards._CAPABILITY.search(line)
+
+    def test_the_inventory_tier_needs_no_object(self):
+        """Nobody with a real gap says "email isn't in my toolbox"."""
+        assert guards.denies_capability("that's not in my toolbox")
+        assert guards.denies_capability("Fares aren't really in my wheelhouse.")
+
+    def test_transience_is_judged_per_clause(self):
+        """One real violation is damning twice over in two halves."""
+        assert guards.denies_capability(
+            "I can't pull the fares right now, and flight tracking isn't in my toolbox.")
+
+    def test_a_url_cannot_trip_it(self):
+        assert not guards.denies_capability(
+            "https://example.com/i-dont-have-live-flight-data")
+
+    def test_empty_input_is_safe(self):
+        assert not guards.denies_capability("")
+        assert not guards.denies_capability(None)
+
+    def test_no_failure_string_in_the_codebase_trips_it(self):
+        """The tool failure strings are what the model paraphrases. If one of
+        them reads as a denial, the guard is policing a problem we wrote."""
+        import flights, hotels, serpapi, shopping, traffic, datafeeds
+        with patch.object(flights, "SERP_API_KEY", ""), \
+             patch.object(hotels, "SERP_API_KEY", ""), \
+             patch.object(serpapi, "API_KEY", ""):
+            outs = [flights.search_flights("LAX", "MXP", "2026-09-18"),
+                    hotels.search_hotels("Lisbon", "2026-09-18", "2026-09-20"),
+                    shopping.search_shopping("wool coat"),
+                    traffic.get_travel_time("", ""),
+                    agent._tool_error("search_flights", RuntimeError("x"))]
+        for o in outs:
+            assert not guards.denies_capability(o), o
+
+
+class TestTheDenialRedraft:
+    def test_a_denial_is_redrafted_once(self):
+        calls = []
+
+        def _create(**kw):
+            calls.append(kw)
+            return MagicMock(content=[MagicMock(text="pulling those fares now - one sec.")])
+
+        with patch.object(agent.client.messages, "create", side_effect=_create):
+            out, _ = agent._finalize(
+                "Flight search is one thing I can't pull directly.", "sys", [], None)
+        assert len(calls) == 1
+        assert out == "pulling those fares now - one sec."
+
+    def test_the_correction_names_what_palmer_can_do(self):
+        """A redraft that only says "don't" invites another refusal."""
+        for word in ("flights", "hotels", "weather", "traffic", "reminders"):
+            assert word in guards.DENIAL_CORRECTION
+
+    def test_the_correction_separates_transient_from_categorical(self):
+        assert "different sentence" in guards.DENIAL_CORRECTION
+
+    def test_the_correction_does_not_trade_one_guard_for_the_other(self):
+        assert "another product" in guards.DENIAL_CORRECTION
+
+    def test_a_clean_reply_costs_nothing(self):
+        calls = []
+        with patch.object(agent.client.messages, "create",
+                          side_effect=lambda **kw: calls.append(kw)):
+            out, _ = agent._finalize("90 today in Culver City, low 71.", "sys", [], None)
+        assert calls == []

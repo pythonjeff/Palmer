@@ -612,13 +612,23 @@ def _finalize(text: str, system: str, messages: list, gif_url):
     on a REPLY the user is waiting on an answer, and a block there means
     main.py's falsy-send path hands them FALLBACK_SMS instead. Redrafting keeps
     the answer; the send_sms block stays as the last resort behind it."""
-    from guards import (redirects_elsewhere, leaks_deliberation,
-                        REDIRECT_CORRECTION, DELIBERATION_CORRECTION)
+    from guards import (redirects_elsewhere, leaks_deliberation, denies_capability,
+                        REDIRECT_CORRECTION, DELIBERATION_CORRECTION, DENIAL_CORRECTION)
     reply = _sms_clean(text)
 
+    # Redirect first: two of the real violations fail both checks, and
+    # REDIRECT_CORRECTION already tells the model to check its tools, so the
+    # first redraft usually fixes the denial for free.
+    #
+    # denies_capability is deliberately NOT added to sms_util.send_sms. A
+    # deliberation block there is right, because the drafter was announcing it
+    # had decided not to send. A capability denial is a reply the user is
+    # waiting on, and blocking it hands them FALLBACK_SMS — worse than an
+    # imperfect answer. Redraft only.
     for failed, correction, label in (
         (redirects_elsewhere, REDIRECT_CORRECTION, "handed off to a competitor"),
         (leaks_deliberation, DELIBERATION_CORRECTION, "narrated its own filtering"),
+        (denies_capability, DENIAL_CORRECTION, "denied a capability it has"),
     ):
         if not failed(reply):
             continue
