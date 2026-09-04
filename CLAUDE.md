@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What Palmer is
 
-Palmer is a personal AI delivered entirely over SMS via Twilio. A FastAPI web dyno handles inbound SMS webhooks and runs all background jobs in-process via APScheduler. There is no separate worker.
+Palmer is a personal assistant delivered entirely over SMS via Twilio. A FastAPI web dyno handles inbound SMS webhooks and runs all background jobs in-process via APScheduler. There is no separate worker.
+
+It is a tool first and a voice second. Unprompted texts come from exactly three places — the morning update, the evening update, and watches the user set — and from nothing else. Three senders that texted on Palmer's own judgment (a live score poller, a daily "a friend would text this" news alert, and a check-in about something in the profile) were retired together in favour of the evening update; see "Unprompted texts" below before adding any sender.
 
 ## Running / commands
 
@@ -28,6 +30,12 @@ curl 'http://localhost:8000/preview?phone=+15551234567'
 
 # Trigger the morning job once (bypasses schedule; still respects per-user send window + per-day guard)
 python send_morning.py
+
+# Same for the evening update (a diff against this morning; sends nothing on a quiet day)
+python send_evening.py
+
+# Preview tonight's evening update without sending
+curl 'http://localhost:8000/preview?phone=+15551234567&evening=1'
 
 # Trigger reminder delivery once
 python send_reminders.py
@@ -69,6 +77,10 @@ userprofile.py  profile extract/consolidate + the two cross-send dedup gates
 agent.py        _build_system, get_reply, tool dispatch, save_assistant_turn
 ```
 
+The scheduled updates live beside it: `morning.py` (the morning text and the
+missing-city ask), `evening.py` (the evening diff), `sports.py` (the one
+scores read all three surfaces share).
+
 Dependencies run strictly downward: `llm`/`netutil`/`sources` ← `smstext`/`weather`/`datafeeds` ← `userprofile` ← `agent`. Each module imports standalone; keep it that way.
 
 `sources.py` imports nothing from Palmer at all — that is what lets `datafeeds` use it. The tier helpers used to live in `watches.py`, which `datafeeds` sits below, so filtering at the search call would have been a cycle.
@@ -83,12 +95,36 @@ Underscore prefixes still mean "internal to Palmer", not "private to this module
 ```
 send_due_reminders       every 1 min
 send_morning_messages    every 5 min   (each user has a local target time; per-day guard prevents double-sends)
+send_evening_messages    every 5 min   (same shape; default 18:00 local; a diff against the morning, nothing sent on a quiet day)
 run_watches              every 30 min
-run_alert_checks         every 60 min
 send_missing_data_asks   every 60 min  (asks users with no city so mornings can target them; DATA_ASK_DRY_RUN=1 to preview)
-run_followups            every 2 hr   (cron, NOT interval — see main.py; the per-user daily claim, not the tick, is what bounds cost)
 run_price_watches        00:00 + 16:00 UTC (cron, NOT interval — see below; SerpAPI Google Shopping + Amazon; baseline seeded at watch creation, alerts on target-hit or ANY move over $2 in either direction, then re-baselines)
+run_flight_watches       13:00 UTC
+run_forecast_audit       11:00 UTC     (logs forecasts, sends nothing)
 ```
+
+### Unprompted texts: two scheduled updates and user-set watches, nothing else
+`test_scheduler_config.py::TestNoUnpromptedSenderIsLeft` pins the job list.
+Three jobs used to text people on Palmer's own initiative and all three are
+gone: `scorewatch.py` (polled ESPN every two minutes during a game and texted
+on lead changes, late scores and the final), `alerts.py` (an hourly tick that
+searched the user's profile interests and texted when Haiku judged a story
+cleared a "friend would text this" bar), and `followup.py` (every two hours,
+picked an `ongoing_thread` and drafted a check-in about it). Each was rationed
+carefully and each was still Palmer deciding, alone, that a moment deserved an
+interruption — and a user could not turn any of them off without turning off
+the thing it rode on.
+
+What they carried now rides the two updates: a followed team's game is in the
+morning and the evening (see "Scores ride the two updates"), a story that
+broke on a tracked topic is a "new headline" in the evening diff, and a
+check-in about someone's life is simply not something Palmer does any more
+(`SYSTEM_PROMPT`'s NEVER list says so). Anything a user actually asks to be
+told about the moment it happens is a watch — `add_watch`, `add_price_watch`,
+`add_flight_watch` — which is a trigger THEY set, with a cooldown and a cap.
+
+Do not add an unprompted sender without a user-set trigger behind it. The
+distinction is not cadence, it is who decided the text should exist.
 
 **Materiality is a flat $2, in either direction.** `shopping.MOVE_MIN_ABS` is the whole rule: any move of more than $2 earns a text, on a $12 item and a $1,200 one alike. It is deliberately not proportional. Two earlier versions were, and both failed the same way — a flat 15% meant a $50 consumable needed a $7.65 move in one step, which groceries never make, so those watches could never fire at all; `max(5%, $2)` then held expensive items to a $10+ move, inverting the intent again. A percentage bar always encodes an assumption about what kind of product this is, and the watch list holds every kind.
 
@@ -124,8 +160,8 @@ Four things here are load-bearing:
   window dead.
 - **A failed send still re-arms.** The claim already consumed the occurrence, so
   bailing on a Twilio hiccup would end a standing reminder for good. This is the
-  opposite of the daily-guard jobs (morning, alerts, followups), where releasing
-  the claim is right because there the claim *is* the delivery record.
+  opposite of the daily-guard jobs (morning, evening), where releasing the
+  claim is right because there the claim *is* the delivery record.
 
 `save_reminder`'s duplicate guard is **same `due_at` (to the minute) AND similar
 text**, where similarity is a stopword-stripped token Jaccard — no model call,
@@ -148,17 +184,61 @@ every morning) is `update_morning_briefing`, not a reminder. `set_reminder` with
 something up to write the message, it belongs in the morning update.
 
 ### The morning update is basics plus a link, not a full briefing
-`morning._compose_morning` sends ONE message: a short Palmer-drafted text carrying the basics, then the user's Palmer Home URL. Every user gets the same shape — today's weather, the commute if they have an address on file, and 1-2 things newly open or worth catching nearby this week — so a user who never taps the link still gets those three every day. Anything beyond that (their tracked topics, prices, headlines) lives on the page only. It used to be a single one-line teaser ("here's a reason to tap"), and before that the full text briefing plus a second text carrying the link — both said less or said everything twice; this is the middle point.
+`morning._compose_morning` sends ONE message: a short Palmer-drafted text carrying the basics, then the user's Palmer Home URL. Every user gets the same shape — today's weather, the commute if they have an address on file, their team's last result and next game if they follow one, and 1-2 things newly open or worth catching nearby this week — so a user who never taps the link still gets those every day. Anything beyond that (their tracked topics, prices, headlines) lives on the page only. It used to be a single one-line teaser ("here's a reason to tap"), and before that the full text briefing plus a second text carrying the link — both said less or said everything twice; this is the middle point.
 
 Two properties are load-bearing:
 - **The URL is last and alone.** Message apps only draw the rich link preview when the message carries exactly one URL at a boundary, and that preview is most of the value. Nothing may follow it — not a period, not a sign-off.
 - **`carries_link` gates the status callback.** A link message is sent with `add_status_callback=False`, because the `/sms-status` shorten-and-retry would truncate the URL into garbage.
 
-`generate_morning_line` drafts the text on Sonnet through `_build_system` like every other user-facing message. It builds a REQUIRED list from what the payload actually has (weather is basically always there once a city is known; commute only when `traffic` is populated, which only happens when the profile has an address; opening only when `opening_snapshot` returned rows) and tells the model every item on that list must appear — with real specifics, not a vague gesture at the category — plus at most one more sentence about something else on the page if it's genuinely notable. Two rules are enforced in code rather than trusted to the prompt, because the model breaks both: `_strip_link_placeholder` removes "[link]"-style stand-ins and any invented URL, and `_NAMES_THE_LINK` triggers exactly one redraft when the line says "page"/"link"/"dashboard" — that phrasing turns a text from a friend into a push notification.
+`generate_morning_line` drafts the text on Sonnet through `_build_system` like every other user-facing message. It builds a REQUIRED list from what the payload actually has (weather is basically always there once a city is known; commute only when `traffic` is populated, which only happens when the profile has an address; their team only when `score_lines` has something, which needs a followed team with a game yesterday or today; opening only when `opening_snapshot` returned rows) and tells the model every item on that list must appear — with real specifics, not a vague gesture at the category — plus at most one more sentence about something else on the page if it's genuinely notable. Two rules are enforced in code rather than trusted to the prompt, because the model breaks both: `_strip_link_placeholder` removes "[link]"-style stand-ins and any invented URL, and `_NAMES_THE_LINK` triggers exactly one redraft when the line says "page"/"link"/"dashboard" — that phrasing turns a text from a friend into a push notification.
 
 Opening is no longer opt-in for this reason — `home._fetch_opening` fetches it by default for any user with a city (a user can still be excluded with `morning_prefs.opening = False`). It shipped off at first specifically so a bad metro's rows could be caught with `preview_opening.py` before anyone saw them; that review still matters, it just now happens after rollout instead of gating it.
 
 Every failure falls back to the full text briefing (`generate_morning`, still used by `/preview?full=1`): no APP_URL, an empty page, or a failed draft. A user never gets a link to nothing.
+
+**Neither text ends on a "personal touch".** The full briefing used to close with one — a check-in tied to an `ongoing_thread`, a question to chew on with coffee, a fun fact — and the prompt asked for it to "land like a best friend who thought of them". That line was the one part of the update about Palmer being a friend rather than about the day, and it is gone; the prompt now says to end on the last item and names the shapes it must not take. `generate_morning` reads neither `ongoing_threads` nor `life_context` any more. `test_morning_link.py::TestTheMorningIsNotAFriendCheckingIn` guards both paths.
+
+### The evening update is a diff against the morning
+`evening.py` sends the day's second text at the user's `evening_time` (default
+18:00 local, same 5-minute tick, catch-up window and per-day guard as the
+morning). It replaced the three retired senders above, and the property that
+makes it different from all of them is structural: it only ever says what
+CHANGED since the morning update, in a fixed order — scores, then markets,
+then news — and on a day when nothing changed it sends nothing.
+
+Three things are load-bearing:
+
+- **It is a diff, so it needs the morning's state.** `send_morning_messages`
+  calls `evening.record_day_open` on a *delivered* send, which stamps the page
+  payload with `day_open`: each ticker's price, the headline URLs, each game's
+  state and score, and the local date. `day_changes` compares against that,
+  never against the page's last view — a page the user refreshed at noon is not
+  what they were told at seven. A `day_open` from a different date is no
+  baseline at all, so markets and news are skipped; a game is the one exception,
+  because a final needs no baseline to be a result.
+- **A quiet day consumes the guard.** `_compose_evening` returns `None` and the
+  job leaves `evening_sent_date` claimed. Recomputing the same empty diff every
+  five minutes until midnight would be the same answer at a cost, and the quiet
+  is the point. Only a Twilio failure releases the claim. There is deliberately
+  no text-briefing fallback either: an evening with no page has no baseline, and
+  a diff against nothing is silence, not a second briefing.
+- **It costs nothing new.** It calls `home.ensure_fresh`, whose ordinary refresh
+  windows (prices 5 min, scores 10 min, headlines 6h) all lapse between a 7am
+  and a 6pm send anyway. The evening rides the refresh a page view would have
+  done; there is no second news pass.
+
+`MARKET_MOVE_MIN_PCT` (1.0) is the bar a ticker has to clear since its morning
+price, flat and small on purpose. `MAX_NEW_HEADLINES` caps the news lines at
+three; the page has the rest. The draft goes through `_build_system` on Sonnet
+with the change lines as its whole input and the plain lines as its fallback —
+same shape as `price_alert`. `EVENING_LINE_MAX` is shorter than the morning's
+because the link rides with it.
+
+Controls are deliberately not new tools: `update_morning_briefing`'s `enabled`
+pauses both updates (the evening is a diff against the morning, so it cannot
+outlive it), `evening_enabled` switches off only the evening, and
+`set_morning_time` takes `which="evening"`. A fourth verb for the same mental
+object would be a fifth thing to route wrong.
 
 **The forecast is named by the geocode that produced it, never by the profile.**
 `_payload_digest` labels the weather line with `weather["resolved"]` — the place
@@ -249,34 +329,6 @@ when that leaves most of the message standing: trimming "Ok. <thirty truncated
 words>" back to "Ok." throws away everything the reply was for, so there the
 fragment wins.
 
-### A check-in is about something the profile actually says
-`followup.py` fetches no data at all — it is pure model output conditioned on a
-profile string — so every guard has to be structural.
-
-**`_pick_thread` returns a string copied from the profile, never the model's own
-words.** It used to return whatever Haiku emitted and hand it straight to the
-drafter, so a confabulated thread was written up as though it were real: a
-specific-sounding question about something that never happened. It now
-echo-matches against `ongoing_threads` and fails closed, exactly as
-`userprofile.topic_already_covered` already did, and for the stated reason — an
-echo can be checked against the list, a paraphrase cannot.
-
-**`life_context` alone no longer triggers a check-in.** It is a paragraph about
-someone's life, not a thread with a follow-up, and handing that to a model asked
-to find something "worth a check-in today" is how one gets invented.
-
-**The draft prompt no longer asks for invented specificity.** "A statement that
-just shows you remembered" is an instruction to make something up; it now says to
-use only what the thread text and recent messages actually say, and to ask one
-short question when that is not enough.
-
-**Every bail path restores `followup_sent_date`, it does not null it.**
-`claim_daily_guard` overwrites the field with today, so nulling it on a bail
-erased the record of the last real send — and `_should_send_followup` measures
-the 3-to-14-day pacing gap against exactly that field. The gap is the thing
-standing between a check-in and a drumbeat. `followup_last_thread` then keeps the
-next pick from landing on the same thread twice running.
-
 ### Reactions (tapback.py)
 iMessage and Google Messages degrade reactions to plain text over SMS (`Liked "..."`), so they arrive as ordinary inbound messages. `main._handle_sms_inner` short-circuits on them before anything else runs:
 
@@ -286,7 +338,7 @@ iMessage and Google Messages degrade reactions to plain text over SMS (`Liked ".
 
 Silence is both the default and the failure default, so a Haiku outage degrades to silence rather than to unwanted texts. **Returning `True` from the reaction branch is load-bearing** — `_handle_sms` fires `FALLBACK_SMS` on a falsy return.
 
-Reactions then feed `communication_style`, `morning_prefs["avoid"]`, and a pacing factor that stretches followup gaps and lowers the alert cap. Each is behind a threshold so one stray tap can't reshape Palmer, and a dropped topic is announced once via `pending_preference_notice` rather than silently vanishing.
+Reactions then feed `communication_style`, `morning_prefs["avoid"]`, and a pacing factor that lowers the per-watch daily alert cap. Each is behind a threshold so one stray tap can't reshape Palmer, and a dropped topic is announced once via `pending_preference_notice` rather than silently vanishing.
 
 ### Shared modules — don't re-copy these
 - `serpapi.py` — SerpAPI key, base URL, timeout, and request transport. Both `shopping.py` and `amazon.py` use it. Each still parses its own engine's payload; only the transport is shared.
@@ -479,65 +531,52 @@ only when a screen row is actually present. **TMDB is free for non-commercial us
 only** — the same clause shape as Open-Meteo, and a question the day Palmer
 charges.
 
-### Live scores: the first thing in Palmer built to interrupt
-`sports.py` reads scores, `scorewatch.py` decides which moments deserve a text.
-That second half is the feature. A scoring feed is a pager by construction — an
-NFL game has six to ten scoring plays, and two followed teams on a Sunday is
-twenty texts in an afternoon — and every other proactive path in this codebase
-exists partly to ration sends. So three moments earn a text and nothing else
-does:
+### Scores ride the two updates, never a live text
+`sports.py` reads scores; nothing decides which moment deserves a text, because
+no moment does. Palmer used to poll ESPN every two minutes during a game and
+text on lead changes, late scores and the final — three texts a game, capped
+at four, silently baselined between. It was the first thing built to
+interrupt, and it is gone: a followed team now surfaces in exactly three
+places, all through one read, `sports.team_day(team, today)`:
 
-  * the lead changes hands,
-  * someone scores inside the last five minutes,
-  * the game ends.
+  * the **morning update** — yesterday's result and tonight's game;
+  * the **evening update** — how today's game went, or stands;
+  * the **Scores** section of the page — both, one row per team.
 
-Everything else updates the stored state **silently**, which is load-bearing:
-the comparison is against what the user was last TOLD, not the last poll, so a
-score arriving in the same tick as a lead change is one event rather than two,
-and a suppressed score does not make the next one look bigger than it was.
-`MAX_ALERTS_PER_GAME` is the backstop. Simulated over a full game, five scoring
-events produced three texts.
+`team_day` asks ESPN for two boards keyed on the READER's calendar day
+(`scoreboard(league, day=...)` maps to the `dates=YYYYMMDD` parameter — the
+bare NFL board carries the whole current week, which is what once made a
+Tuesday follow open with Sunday's final). Yesterday's game counts only if it
+finished; a team with nothing on either day yields no row, the same rule
+`shows.py` applies to a series between seasons. `home._fetch_scores` builds
+the rows (free, `STALE["scores"]` 10 min, cached per league and day so two
+users following the same league cost one fetch), `morning.score_lines` turns
+them into digest lines, and `evening._score_changes` diffs them.
+
+**`sports.result_line` states the game from the team's side** — "beat the
+Cubs 5-2", "down 2-3 vs the Cubs, Top 6th", "play the Cubs, 7:15 PM CT" — as
+source data with no adjectives. The drafter is told whose side the reader is
+on rather than left to infer it from "CIN 17, PHI 21", and it is told nothing
+it cannot know from a score and a clock.
 
 **The obvious ESPN endpoint does not work from Heroku.**
 `site.api.espn.com/.../scoreboard` — the one every guide recommends — returns
 **403 from the dyno**, verified in production, so it is ESPN blocking datacenter
 IPs rather than a local quirk. `site.web.api.espn.com` is the same shape,
-unblocked, and returns a whole league in one call. The core API
-(`sports.core.api`) also works but is reference-based: **seven** HTTP calls for
-one game's score. Free and undocumented is a deliberate starting position; the
-ESPN shape is confined to `sports.py` so a paid feed is a one-module swap.
-
-**"The closing stretch" is not one rule.** `_is_late` originally compared a
-countdown against five minutes, which is meaningless in two of the six leagues:
-baseball has innings and `clock` is always 0, and soccer's clock counts UP. Late
-alerts were therefore silently dead for MLB and MLS — including the sport a real
-user follows. It now asks two questions: are we in `FINAL_PERIOD` for this
-league (`>=`, so extra time counts), and *if the sport has a countdown*, is it
-nearly done.
-
-**The drafter is told whose side they are on and by how much.** Leaving it to
-infer "PHI" from `CIN 17, PHI 21` mostly worked and is the wrong thing to lean
-on — a buddy does not deduce who you support, and the margin is what sets the
-tone. It is also told, in as many words, that it can see the score and the clock
-and **nothing else**: given only a final score it was writing "that one had to be
-close the whole way", which it cannot know. Same failure as the weather
-over-claiming, wearing personality.
-
-**Polling is two-speed.** Checking every couple of minutes around the clock
-would be thousands of calls a day to learn nothing is happening; checking slowly
-during a game misses the moments. A league with something live is polled at
-`LIVE_POLL_SECONDS`, an idle one at `IDLE_POLL_SECONDS`, and the board is cached
-per league so two users following the same one cost a single fetch.
+unblocked, and returns a whole league in one call. Free and undocumented is a
+deliberate starting position; the ESPN shape is confined to `sports.py` so a
+paid feed is a one-module swap.
 
 **Team names are ambiguous in a way show titles are not.** `find_teams` returns
 a LIST — "Cardinals" is two teams in two sports, "Rangers" likewise — and the
-dispatch asks rather than picking, because guessing signs someone up for alerts
-about the wrong team in the wrong season. Verified live: "text me cardinals
-scores" gets *"Which Cardinals — baseball (St. Louis) or football (Arizona)?"*
+dispatch asks rather than picking, because guessing signs someone up for the
+wrong team in the wrong season. The `follow_team` tool result and its
+description both say in as many words that there are NO live texts during a
+game, so the model never promises "I'll text you when they score".
 
-`teams` on the profile is the resolved follow list. It is **not** `sports_teams`,
-which is the extractor's free-text description ("Cardinals fan, emotionally
-invested...") — good for Palmer's voice, useless for lookups.
+`followed_teams` on the profile is the resolved follow list. It is **not**
+`sports_teams`, which is the extractor's free-text description ("Cardinals fan,
+emotionally invested...") — good for Palmer's voice, useless for lookups.
 
 ### Followed shows are not discovery
 `shows.py` tracks series a user named, and the distinction from the `screen`
@@ -575,8 +614,8 @@ never guesses one and never sends them elsewhere to look it up.
 
 ### Section labels are one word
 Every card label on Palmer Home is a single word — currently `Commute`,
-`Markets`, `News`, `Watching`. New sections follow the rule; there is no second
-tier for "just this one".
+`Scores`, `Markets`, `News`, `Opening`, `Watching`. New sections follow the
+rule; there is no second tier for "just this one".
 
 It reads as a masthead rather than prose. "Today" and "Palmer is watching" used
 to sit beside "Commute" and "Markets", which made the column a mix of headings
@@ -750,15 +789,12 @@ Palmer's own operation, read back every turn as facts about a person.
 recording Palmer's performance in them is not an option.
 
 ### A daily guard means the READER's day
-`alerts.py` keyed its once-a-day guard on the UTC date while `_in_alert_window`
-gates on the **local** hour 13-21. For Pacific that window is 20:00Z-04:00Z, so
-the UTC day rolled over at 17:00 local — *inside* the window — and a user could
-take two "daily" alerts in one local day and none the next. `morning.py` and
-`followup.py` already keyed on `timeutil.local_today`; alerts now does too.
-
-`_daily_alert_hour`'s UTC date is deliberately left alone: it is only reached when
-the profile has no timezone, so there is no local day to key on, and it only needs
-to stay stable within a UTC day.
+The retired daily alert job keyed its once-a-day guard on the UTC date while its
+send window was the **local** hour 13-21. For Pacific that window is
+20:00Z-04:00Z, so the UTC day rolled over at 17:00 local — *inside* the window
+— and a user could take two "daily" alerts in one local day and none the next.
+Every remaining daily sender (`morning.py`, `evening.py`) keys its guard on
+`timeutil.local_today`, and a new one must too.
 
 **`morning._recent_assistant_texts` selects prior MORNINGS**, via
 `db.get_recent_messages_of_kind` and the `kind` column. It took the last four
@@ -1136,8 +1172,9 @@ end, try again" to someone who had asked for nothing. Proactive senders use
 reaches for `ensure_sms` again.
 
 `messages.kind` records which job sent an assistant message (`morning`,
-`followup`, `alert`, `watch`, `price`, `flight`, `reminder`, `reply`, `city_ask`).
-NULL means written before the column existed; readers must tolerate it.
+`evening`, `watch`, `price`, `flight`, `reminder`, `reply`, `city_ask`; older
+rows may carry `followup` and `alert` from the retired jobs). NULL means written
+before the column existed; readers must tolerate it.
 
 ### SMS send pipeline
 All outbound SMS goes through `sms_util.send_sms` / `ensure_sms`. It cleans text (`_sms_clean` strips markdown and non-SMS glyphs), splits on paragraph breaks over 1500 chars, and falls back through progressively shorter candidates (original → `shorten_message` → hard truncate → `FALLBACK_SMS`) so a user is never left with silence. Never call Twilio's `messages.create` directly from feature code; go through this module.
@@ -1213,10 +1250,10 @@ Measured across every message sent: 39 near-duplicate pairs for one user, 11 for
 another. They are not one bug.
 
 **Suppression** — an *unprompted* message repeating one already sent. One user
-got the identical followup twice, verbatim; another got "Here you go - <link>"
-three times word for word. `_is_duplicate_subject` should have caught the first
-and did not: its window is 6h, the followup job runs every 4h, and the subject
-stayed live for days. It now runs a free lexical pass first
+got the identical check-in twice, verbatim (from the since-retired follow-up
+job); another got "Here you go - <link>" three times word for word.
+`_is_duplicate_subject` should have caught the first and did not: its window
+was 6h, that job ran every 4h, and the subject stayed live for days. It now runs a free lexical pass first
 (`guards.near_duplicate`, stopword-stripped Jaccard, `VERBATIM_WINDOW_HOURS` 72)
 before spending a Haiku call. Cheap enough to look back three days, which is the
 point — the semantic check never could.
@@ -1281,6 +1318,8 @@ claim about the reader's preferences. `"said"` is deliberately not one of those
 intent verbs. `test_repetition.py` holds both directions, including the four
 real replies the loose version blocked.
 
-## Voice / prompt rules (see `SYSTEM_PROMPT` in `agent.py`)
+## Voice / prompt rules (see `SYSTEM_PROMPT` in `prompts.py`)
 
-Palmer has a specific voice: dry, observational, plain-text SMS (no markdown, no bullets except the one numbered onboarding list). If you touch the system prompt or write new drafting prompts (Haiku personalizations, morning drafts, followups), keep to the same rules — no "Great question", no summarizing user words back, no ending every message with a question, and **never redirect the user to competing apps** (Google Maps, Waze, ChatGPT, etc.).
+Palmer is a tool with a voice, not a friend with tools. The prompt leads with the answer, keeps the personality in precision and the occasional dry observation, and forbids the friend moves outright: no reading subtext, no noticing patterns in someone's life out loud, no checking in unprompted ("how did the interview go"), no closing question for its own sake. The prompt used to carry a READ THE SUBTEXT section and a "personal touch" at the end of every morning; both were removed deliberately when the unprompted senders were, and they should not creep back in through a drafting prompt.
+
+The mechanics stay: plain-text SMS (no markdown, no bullets except the one numbered onboarding list), no "Great question", no summarizing user words back, and **never redirect the user to competing apps** (Google Maps, Waze, ChatGPT, etc.). If you write a new drafting prompt (a morning or evening draft, a reminder, a price alert), it goes through `_build_system` and keeps to the same rules.

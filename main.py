@@ -12,8 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from agent import get_reply, save_assistant_turn
 from smstext import shorten_message
 from morning import generate_morning, send_morning_messages, send_missing_data_asks
-from alerts import run_alert_checks
-from followup import run_followups
+from evening import send_evening_messages
 from db import get_profile, upsert_profile, save_message, get_history, HISTORY_LIMIT
 from send_reminders import send_due_reminders
 from watches import run_watches
@@ -47,34 +46,24 @@ _scheduler = BackgroundScheduler()
 # unpinned grid means local runs and tests silently disagree with prod, and
 # a TZ config var would rotate the whole schedule with nothing looking wrong.
 _scheduler.add_job(send_due_reminders, "interval", minutes=1)
+# The two scheduled updates. Each user has a local target time for each, and a
+# per-day guard on the profile makes extra ticks harmless. The evening one is
+# a diff against the morning (see evening.py) and sends nothing on a day when
+# nothing changed — the quiet is the point.
 _scheduler.add_job(send_morning_messages, "interval", minutes=5)
+_scheduler.add_job(send_evening_messages, "interval", minutes=5)
 _scheduler.add_job(run_watches, "interval", minutes=30)
 
-# Gated to 13:00-21:00 in the USER's timezone, at most one alert per user per
-# day. Hourly-on-the-hour gives every user ~9 attempts inside their own window.
-# Cron also repairs a latent trap in the no-timezone fallback path, which tests
-# `utcnow().hour == <assigned hour>` — an exact match that a drifting interval
-# grid can skip past entirely, silently costing that user every daily alert.
-_scheduler.add_job(run_alert_checks, "cron", minute=0,
-                   timezone="Etc/UTC", misfire_grace_time=1800)
+# There is deliberately no other unprompted sender on a clock here. Three used
+# to be: a live score poller (every 2 min), a "friend would text this" daily
+# news alert (hourly), and a check-in about something in the profile (every
+# 2h). All three were removed together — what they carried now rides the two
+# updates above, and anything a user actually asked to be told about goes
+# through a watch. Do not add one back without a user-set trigger behind it.
 
-# :30 rather than :00 so this and run_alert_checks don't land in the same second
-# — both fan out over every profile and call a model, on one dyno.
+# :30 so this does not share a second with the hourly reminder tick.
 _scheduler.add_job(send_missing_data_asks, "cron", minute=30,
                    timezone="Etc/UTC", misfire_grace_time=1800)
-
-# Every 2 hours, NOT at hand-picked UTC hours. _should_send_followup gates on a
-# 13:00-19:00 window in each user's own timezone, and users already span two
-# zones — a */2 grid keeps landing inside every such window as more timezones
-# are added, where fixed hours would silently stop covering someone.
-#
-# This was "interval, hours=4" against a 6h window: 1.5 ticks of margin, and
-# the phase reset on top meant that on a day with several deploys the job could
-# skip entirely. A quiet tick logs nothing, so that failed invisibly.
-# Cost is flat — 12 ticks/day of one get_all_profiles() query each; the Haiku
-# and Sonnet calls sit behind the per-user daily claim, not behind the tick.
-_scheduler.add_job(run_followups, "cron", hour="*/2",
-                   timezone="Etc/UTC", misfire_grace_time=3600)
 # SerpAPI: 12h cadence keeps the starter plan (5000 searches/mo) comfortable
 # while leaving headroom for Amazon watches (dual-source: Google Shopping +
 # amazon_product engine both go through this same tick).
@@ -135,13 +124,6 @@ _scheduler.add_job(
     misfire_grace_time=3600,
 )
 
-# Live score alerts. INTERVAL, not cron, and it is the one job where that is
-# right: a game is a window rather than a clock time, so this has to tick often
-# enough to catch a lead change and cheaply enough to run all day. sports.py
-# does the rationing — an idle league is polled every 15 minutes and a live one
-# every ~2, so most ticks make no HTTP call at all.
-from scorewatch import run_score_alerts
-_scheduler.add_job(run_score_alerts, "interval", minutes=2, misfire_grace_time=60)
 if _SCHEDULER_ENABLED:
     _scheduler.start()
 else:
@@ -446,12 +428,18 @@ async def home_page(token: str):
 
 
 @app.get("/preview")
-async def preview_morning(phone: str, full: bool = False):
+async def preview_morning(phone: str, full: bool = False, evening: bool = False):
     """What this user's morning would actually look like.
 
-    Defaults to the real thing — weather, commute, and 1-2 opening highlights
-    plus their page link. Pass full=1 for the long-form text briefing, which
-    is now only the fallback for when the page can't be built."""
+    Defaults to the real thing — weather, commute, their team, and 1-2 opening
+    highlights plus their page link. Pass full=1 for the long-form text
+    briefing, which is now only the fallback for when the page can't be built.
+    Pass evening=1 for tonight's update — the diff against this morning, or
+    "(nothing changed)" when there is nothing to send."""
+    if evening:
+        from evening import _compose_evening
+        message, _ = _compose_evening(phone)
+        return PlainTextResponse(message or "(nothing changed since this morning — no evening update would be sent)")
     if full:
         return PlainTextResponse(generate_morning(phone))
     from morning import _compose_morning

@@ -293,3 +293,58 @@ class TestPrompt:
         body = self._prompt()["messages"][0]["content"].lower()
         for word in ("link", "page", "dashboard", "click"):
             assert word in body, f"the prompt must explicitly ban {word!r}"
+
+
+class TestTheirTeamInTheMorning:
+    """A followed team's game rides in the morning update rather than in live
+    texts during the game. The digest carries it from the team's side, and the
+    REQUIRED list makes the drafter say it."""
+
+    GAME_LAST = {"id": "1", "league": "mlb", "state": "post", "detail": "Final",
+                 "home": {"abbrev": "STL", "name": "St. Louis Cardinals", "score": 5},
+                 "away": {"abbrev": "CHC", "name": "Chicago Cubs", "score": 2}}
+    GAME_TODAY = {"id": "2", "league": "mlb", "state": "pre", "detail": "7:15 PM CT",
+                  "home": {"abbrev": "STL", "name": "St. Louis Cardinals", "score": 0},
+                  "away": {"abbrev": "CHC", "name": "Chicago Cubs", "score": 0}}
+    ROW = {"team": "St. Louis Cardinals", "abbrev": "STL", "league": "mlb",
+           "last": GAME_LAST, "today": GAME_TODAY}
+
+    def test_the_digest_states_result_and_next_game_from_their_side(self):
+        d = morning._payload_digest(dict(PAYLOAD, scores=[self.ROW]))
+        assert "Their team (St. Louis Cardinals): yesterday beat Chicago Cubs 5-2; today play Chicago Cubs, 7:15 PM CT" in d
+
+    def test_a_row_with_only_a_result_says_only_that(self):
+        lines = morning.score_lines({"scores": [dict(self.ROW, today=None)]})
+        assert lines == ["Their team (St. Louis Cardinals): yesterday beat Chicago Cubs 5-2"]
+
+    def test_no_followed_team_adds_nothing(self):
+        assert morning.score_lines(PAYLOAD) == []
+        assert "Their team" not in morning._payload_digest(PAYLOAD)
+
+    def test_the_team_is_required_when_present(self):
+        body = _draft_returning("Cards won 5-2 last night, back at it at 7:15.",
+                                 payload=dict(PAYLOAD, scores=[self.ROW]))[1][0]["messages"][0]["content"]
+        assert "their team" in body and "so every one of them must appear" in body
+
+    def test_the_team_is_not_required_without_a_game(self):
+        body = _draft_returning("Cool and clear.", payload=PAYLOAD)[1][0]["messages"][0]["content"]
+        assert "their team" not in body
+
+
+class TestTheMorningIsNotAFriendCheckingIn:
+    """The full text briefing used to close on a "personal touch" — a check-in
+    tied to an ongoing thread, a question to chew on, a fun fact. That was the
+    one line about Palmer being a friend rather than about the day."""
+
+    def test_the_text_briefing_no_longer_asks_for_a_personal_touch(self):
+        import inspect
+        src = inspect.getsource(morning.generate_morning)
+        assert "personal touch" not in src.lower().replace('"personal touch"', "")
+        assert "fun fact" in src and "No sign-off, no check-in question, no fun fact" in src
+        assert 'profile.get("ongoing_threads")' not in src
+        assert 'profile.get("life_context")' not in src
+
+    def test_the_line_prompt_never_asks_for_one_either(self):
+        body = _draft_returning("Cool 71 and clear.")[1][0]["messages"][0]["content"].lower()
+        assert "check-in" not in body and "fun fact" not in body
+        assert "do not end with a question" in body

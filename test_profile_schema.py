@@ -35,9 +35,9 @@ class TestAllowList:
                       "commute", "communication_style", "reactions",
                       "reactions_folded_count", "conversation_topics",
                       "pending_morning_suggestion", "pending_preference_notice",
-                      "alert_sent_date", "followup_sent_date", "intro_sent",
-                      "interest_genres", "ongoing_threads", "life_context",
-                      "onboarding_ask_sent"):
+                      "evening_time", "evening_enabled", "evening_sent_date",
+                      "intro_sent", "ongoing_threads", "life_context",
+                      "onboarding_ask_sent", "followed_teams"):
             assert field in userprofile.PROFILE_FIELDS, field
 
 
@@ -282,7 +282,7 @@ class TestNoFieldIsAlsoAnAlias:
     mapped it to `sports_teams`. `_normalize_profile` runs on every inbound
     message, so `follow_team` stored a follow list, Palmer confirmed it, and the
     next message migrated it into `sports_teams` and wrote `teams: None` —
-    the follow silently gone, score alerts dead, and `_all_interests` then
+    the follow silently gone, its games out of the updates, and the interest collector then
     raising AttributeError on a dict from a call site outside a try.
     """
 

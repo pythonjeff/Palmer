@@ -293,15 +293,10 @@ def generate_morning(phone: str) -> str:
         raise ValueError("no morning data available — user has no city and no topics")
     data = "\n\n".join(sections)
 
-    threads = [t for t in (profile.get("ongoing_threads") or []) if t][:3]
-    life_ctx = (profile.get("life_context") or "").strip()
-    context_lines = []
-    if threads:
-        context_lines.append(f"Open threads: {', '.join(threads)}")
-    if life_ctx:
-        context_lines.append(f"Life context: {life_ctx}")
-    context_block = ("\n\n" + "\n".join(context_lines)) if context_lines else ""
-
+    # No ongoing_threads or life_context here any more. They fed a closing
+    # "personal touch" — a check-in question, a fun fact — which was the one
+    # line of the briefing that was about Palmer being a friend rather than
+    # about the day. The update is the data; the conversation is for talking.
     recent_msgs = _recent_assistant_texts(phone, n=4)
     if recent_msgs:
         joined = "\n---\n".join(recent_msgs)
@@ -328,7 +323,7 @@ def generate_morning(phone: str) -> str:
 
     prompt = f"""Today is {today}. Write this person's morning text using only the data below.
 
-{data}{context_block}{recent_block}
+{data}{recent_block}
 
 Rules:
 - Each story is tagged with its source domain in brackets. Use that to judge weight — a wire service or major outlet outranks an aggregator — and to attribute when it matters ("Reuters says..."). Never print the bracket tag itself.
@@ -340,16 +335,11 @@ Rules:
   2. The topics, most consequential first — a real development outranks a routine update. Skip any that came back thin.
   3. The ADJACENT item, if the data has one — one sentence, placed after the topics. Lead into it so it doesn't read as a non sequitur ("unrelated, but -" or "one other thing -").
      This one is optional and you are the last check on it. Drop it entirely if it would push you over length, or if it turns out to be a non-event: an incident that resolved with nobody hurt, a scheduled game, a recall, a celebrity item. If you can't say what CHANGED, leave it out. A briefing that ends a line early is better than one padded with a story nobody needed.
-  4. The personal touch, last, on its own.
   Keep the layout fixed. Vary the WORDING of the opening line instead — the first sentence should not start the same way as yesterday's, even though it is still about the weather.
 - One or two sentences per topic. Whole message under 1000 characters.
-- Give each distinct subject (weather, traffic, each topic, the personal touch) its own line — a blank line between them — so it reads as separate, scannable items rather than one run-on paragraph. Still plain text, no bullet characters or numbering.
+- Give each distinct subject (weather, traffic, each topic) its own line — a blank line between them — so it reads as separate, scannable items rather than one run-on paragraph. Still plain text, no bullet characters or numbering.
 - Never label a line with its subject. Write "Cards lost 5-4 in Cincinnati" — never "Cardinals - lost 5-4", never "Weather:", never a header of any kind. Each line should read like a sentence a friend typed, not a field in a report.
-{avoid_rule}- End with ONE personal touch — a single sentence in Palmer's voice that shows you actually thought about THEM today. Rotate the type so it's genuinely different from your recent mornings above:
-  * a real check-in tied to something specific in their profile (an ongoing thread, someone they've mentioned, a decision they're weighing, their job, their kids/partner/pet)
-  * a curious or thought-provoking question they'd enjoy chewing on with coffee — tied to their world when possible
-  * a brief fun fact connected to their city, team, work, or one of their interests
-Just one. Never all three. Never generic ("how's your week going" is banned). It has to land like a best friend who thought of them, not a bot doing a bit.
+{avoid_rule}- End on the last item. No sign-off, no check-in question, no fun fact, no "have a good one" — the update is the information, and a closing line that is about them rather than about the day reads as a bot doing a bit.
 - Palmer's voice — no bullet points, no headers, no "good morning". Just the message.
 - Plain ASCII text only. No emoji, no special characters, no dashes longer than a hyphen."""
 
@@ -373,8 +363,8 @@ def _local_now(tz_name: str) -> datetime:
 
 def _local_today(tz_name: str | None) -> date_type:
     """The user's local calendar date; falls back to server date if tz is missing/bad.
-    Thin wrapper over timeutil.local_today so existing imports (followup.py)
-    keep working while the canonical helper lives in one place."""
+    Thin wrapper over timeutil.local_today so existing imports keep working
+    while the canonical helper lives in one place."""
     from timeutil import local_today
     return local_today(tz_name)
 
@@ -397,6 +387,26 @@ def _in_send_window(now_local: datetime, morning_time: str | None,
     h, m = _parse_morning_time(morning_time or DEFAULT_MORNING_TIME)
     target = now_local.replace(hour=h, minute=m, second=0, microsecond=0)
     return target <= now_local < target + timedelta(minutes=catchup_minutes)
+
+
+def score_lines(payload: dict) -> list[str]:
+    """Plain lines about each followed team, or [] when nothing is on.
+
+    Shared by the morning digest and the page-side evening diff so the two
+    updates describe a game in the same words."""
+    from sports import result_line
+    out = []
+    for row in (payload.get("scores") or []):
+        team = {"abbrev": row.get("abbrev"), "name": row.get("team")}
+        name = row.get("team") or "Their team"
+        bits = []
+        if row.get("last"):
+            bits.append(f"yesterday {result_line(row['last'], team)}")
+        if row.get("today"):
+            bits.append(f"today {result_line(row['today'], team)}")
+        if bits:
+            out.append(f"Their team ({name}): " + "; ".join(bits))
+    return out
 
 
 def _payload_digest(payload: dict) -> str:
@@ -436,6 +446,12 @@ def _payload_digest(payload: dict) -> str:
         delay = t.get("delay_min") or 0
         lines.append(f"Commute: {t['live_min']} min"
                      + (f", {delay} min slower than normal" if delay >= 2 else ", normal"))
+    # Their team, from the same rows the page's Scores section renders. Two
+    # facts at most per team — yesterday's result and today's game — stated
+    # from the team's side so the drafter is never left to infer whose side
+    # the reader is on from "CIN 17, PHI 21".
+    for line in score_lines(payload):
+        lines.append(line)
     for p in (payload.get("prices") or [])[:3]:
         lines.append(f"{p.get('label')}: {p.get('pct_24h', 0):+.1f}% in 24h")
     for h in (payload.get("headlines") or [])[:4]:
@@ -486,8 +502,9 @@ def generate_morning_line(phone: str, payload: dict) -> str:
     """The short text that rides with the morning link.
 
     Every user gets the same shape: today's weather, the commute if they have
-    an address on file, and 1-2 things newly open or worth catching nearby
-    this week — then the link. Anything else they track (a price move, a
+    an address on file, their team's last result and next game if they follow
+    one, and 1-2 things newly open or worth catching nearby this week — then
+    the link. Anything else they track (a price move, a
     headline) is an optional bonus on top when it's genuinely notable, never
     a substitute for those three — the page is where the rest of what they
     asked to track lives.
@@ -507,6 +524,8 @@ def generate_morning_line(phone: str, payload: dict) -> str:
         required.append("today's weather")
     if (payload.get("traffic") or {}).get("live_min"):
         required.append("the commute")
+    if score_lines(payload):
+        required.append("their team — yesterday's result and/or today's game, with the score or the time")
     if payload.get("opening"):
         required.append("1-2 things newly open or worth catching near them this week, named specifically")
     required_block = (
@@ -588,8 +607,9 @@ Rules:
 
 
 def _compose_morning(phone: str) -> tuple[str, bool]:
-    """The morning message: weather, commute if they have one, 1-2 opening
-    highlights, then the link to their page.
+    """The morning message: weather, commute if they have one, their team's
+    game if they follow one, 1-2 opening highlights, then the link to their
+    page.
 
     The full briefing used to be the message and the link followed as a second
     text. It is one message now because the page IS the briefing — sending both
@@ -675,6 +695,14 @@ def send_morning_messages():
                 if send_sms(phone, message, add_status_callback=not carries_link):
                     save_message(phone, "assistant", message, kind="morning")
                     print(f"Morning sent to {phone}: {message[:100]}")
+                    # The evening update is a diff against THIS moment — what
+                    # they were told this morning, not whatever the page held
+                    # at its last view. Recorded only on a delivered send.
+                    try:
+                        from evening import record_day_open
+                        record_day_open(phone, today_local)
+                    except Exception as e:
+                        print(f"record_day_open failed for {phone}: {type(e).__name__}: {e}")
                 else:
                     upsert_profile(phone, {"morning_sent_date": None})  # release claim, retry next tick
                     print(f"Morning send rejected by Twilio for {phone} — will retry next tick")

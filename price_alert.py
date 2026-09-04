@@ -78,7 +78,7 @@ def draft_price_alert(product_name: str, current: dict, watch: dict, reason: str
         lead = "Tell them their price watch just hit. "
     prompt = (
         f"{lead}One short line, no opener, no ceremony. "
-        "Don't say 'alert' or 'notification' — you're a friend, not an app. "
+        "Don't say 'alert' or 'notification' — you're a person, not an app. "
         f"{url_rule}No emoji, no markdown, no bullets. Under {MAX_CHARS} characters.\n\n{ctx}"
     )
 

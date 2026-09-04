@@ -4,8 +4,8 @@ Four senders got this wrong in two different ways, and both produce the same
 symptom the user sees: Palmer referring to a message that never arrived, or
 repeating one that did.
 
-alerts.py and watches.py called send_sms and ignored the result, then saved
-unconditionally. send_sms returns False on a Twilio failure AND on a
+watches.py (and the since-retired alerts job) called send_sms and ignored the
+result, then saved unconditionally. send_sms returns False on a Twilio failure AND on a
 leaks_deliberation block, so history accumulated messages nobody received —
 and _build_system feeds history straight back to the model.
 
@@ -48,41 +48,6 @@ class TestTheKindColumn:
         db.init_db()
         db.save_message(PHONE, "assistant", "x", kind="alert")
         assert len(db.get_history(PHONE)) == 1
-
-
-class TestAlertsRecordOnlyWhatWentOut:
-    def _run(self, tmp_path, monkeypatch, sent: bool):
-        _fresh(tmp_path, monkeypatch)
-        import alerts
-        db.upsert_profile(PHONE, {"morning_onboarded": True, "interests": ["chess"],
-                                  "timezone": "America/Chicago"})
-        with patch.object(alerts, "get_all_profiles",
-                          return_value=[(PHONE, db.get_profile(PHONE))]), \
-             patch.object(alerts, "_in_alert_window", return_value=True), \
-             patch.object(alerts, "_get_alert_queries", return_value=["chess"]), \
-             patch.object(alerts, "_search_raw", return_value=[
-                 {"url": "https://reuters.com/a", "title": "t", "content": "c"},
-                 {"url": "https://apnews.com/b", "title": "t2", "content": "c2"}]), \
-             patch.object(alerts, "corroborated", return_value=True), \
-             patch.object(alerts, "_resolve_interest_genres", return_value={}), \
-             patch.object(alerts, "_check_significance", return_value=(9, "big news")), \
-             patch.object(alerts, "_draft_alert", return_value="big news happened"), \
-             patch.object(alerts, "_is_duplicate_subject", return_value=False), \
-             patch.object(alerts, "_user_already_covered", return_value=False), \
-             patch("sms_util.send_sms", return_value=sent):
-            alerts.run_alert_checks()
-        return [m for m in db.get_history(PHONE) if m["role"] == "assistant"]
-
-    def test_a_delivered_alert_is_recorded(self, tmp_path, monkeypatch):
-        assert len(self._run(tmp_path, monkeypatch, sent=True)) == 1
-
-    def test_a_failed_alert_is_not_recorded(self, tmp_path, monkeypatch):
-        # The phantom: history claimed Palmer said something it never said.
-        assert self._run(tmp_path, monkeypatch, sent=False) == []
-
-    def test_a_failed_alert_releases_the_daily_guard(self, tmp_path, monkeypatch):
-        self._run(tmp_path, monkeypatch, sent=False)
-        assert db.get_profile(PHONE).get("alert_sent_date") is None
 
 
 class TestPriceAlertsReachHistory:
@@ -132,7 +97,7 @@ class TestProactiveSendersNeverShipTheFallbackString:
         price check texted 'something went sideways on my end, try again' to
         someone who had asked for nothing."""
         import pathlib
-        proactive = ["alerts.py", "watches.py", "followup.py", "morning.py",
+        proactive = ["watches.py", "morning.py", "evening.py",
                      "shopping.py", "flightwatch.py", "send_reminders.py"]
         for name in proactive:
             src = pathlib.Path(name).read_text()
