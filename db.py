@@ -500,14 +500,54 @@ def save_reminder(phone: str, text: str, due_at: str, recurrence: str | None = N
     conn.close()
 
 
+def get_pending_reminders(phone: str) -> list[dict]:
+    """Reminders not yet sent, soonest first.
+
+    Nothing could read these. Watches and price watches are both surfaced to
+    the model in _build_system, and reminders — the one thing the user
+    explicitly asked to happen at a named time — were the table it could not
+    see. So "what am I supposed to do today" had nothing to answer from, and
+    "cancel my 4pm one" was a guess against twenty messages of history."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT id, text, due_at, recurrence FROM reminders "
+        f"WHERE phone = {PH} AND sent = 0 ORDER BY due_at ASC",
+        (phone,),
+    )
+    rows = [{"id": r["id"], "text": r["text"], "due_at": r["due_at"],
+             "recurrence": r["recurrence"]} for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+
 def cancel_reminders(phone: str, text_match: str = None) -> int:
+    """How many were cancelled. See cancel_reminders_named for which."""
+    return len(cancel_reminders_named(phone, text_match))
+
+
+def cancel_reminders_named(phone: str, text_match: str = None) -> list[str]:
+    """Cancel and return the TEXTS that went.
+
+    A bare count told the user four reminders were cancelled and left them to
+    work out which four — on a tool whose no-argument form deletes every
+    pending reminder they have, and whose text_match is a substring, so
+    "call" takes "call mom" and "call the vet" together."""
     conn = _conn()
     cur = conn.cursor()
     # recurrence = NULL as well as sent = 1: marking it sent alone would be
     # undone by the next re-arm, and it is also what makes a cancel that lands
     # between claim and re-arm stick (see rearm_reminder).
+    # Read the texts first, on the same connection, before the update lands.
     if text_match:
         pattern = f"%{text_match.lower().strip()}%"
+        cur.execute(
+            f"SELECT text FROM reminders WHERE phone = {PH} AND LOWER(text) LIKE {PH} "
+            f"AND sent = 0", (phone, pattern))
+    else:
+        cur.execute(f"SELECT text FROM reminders WHERE phone = {PH} AND sent = 0", (phone,))
+    cancelled = [r["text"] for r in cur.fetchall()]
+    if text_match:
         cur.execute(
             f"UPDATE reminders SET sent = 1, recurrence = NULL "
             f"WHERE phone = {PH} AND LOWER(text) LIKE {PH} AND sent = 0",
@@ -519,10 +559,9 @@ def cancel_reminders(phone: str, text_match: str = None) -> int:
             f"WHERE phone = {PH} AND sent = 0",
             (phone,),
         )
-    count = cur.rowcount
     conn.commit()
     conn.close()
-    return count
+    return cancelled
 
 
 def normalize_due_at_rows() -> int:
@@ -726,9 +765,15 @@ def claim_watch_alert(watch_id: int, cooldown_hours: float) -> bool:
 
 
 def update_watch_alerted(watch_id: int, summary: str, recent_summaries: list[str],
-                          url: str | None = None, domain: str | None = None):
+                          url: str | None = None, domain: str | None = None,
+                          today: str | None = None):
+    """`today` is the READER's date. The daily counter it increments is read
+    back by watches._daily_ok, and both used to key on the dyno's UTC day —
+    so the cap window rolled at 17:00 Pacific, mid-evening, and a user could
+    take the whole allowance across one local evening and be capped by lunch
+    the next day. Same defect alerts.py was fixed for."""
     now = datetime.now(timezone.utc).isoformat()
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = today or datetime.now(timezone.utc).date().isoformat()
     conn = _conn()
     cur = conn.cursor()
     cur.execute(
@@ -965,7 +1010,8 @@ def release_price_watch_claim(watch_id: int):
     conn.close()
 
 
-def update_price_watch_alerted(watch_id: int, price: float, url: str, merchant: str, summary: str):
+def update_price_watch_alerted(watch_id: int, price: float, url: str, merchant: str,
+                               summary: str, today: str | None = None):
     """Record a fired alert. Also RE-BASELINES to the alerted price: the user has
     now been told about this level, so the next alert must clear the drop bar
     again from here rather than re-reporting the same discount forever. Without
@@ -976,7 +1022,8 @@ def update_price_watch_alerted(watch_id: int, price: float, url: str, merchant: 
     repeat. _is_duplicate_subject cannot cover it — its window is 6h and the
     price-watch cadence is 12h."""
     now = datetime.now(timezone.utc).isoformat()
-    today = datetime.now(timezone.utc).date().isoformat()
+    # The reader's day — see update_watch_alerted.
+    today = today or datetime.now(timezone.utc).date().isoformat()
     conn = _conn()
     cur = conn.cursor()
     cur.execute(

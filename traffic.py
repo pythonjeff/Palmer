@@ -115,12 +115,23 @@ def get_city_traffic(city: str) -> str | None:
 
     Always produces a line when the API responds (even 'roads are clear') so the
     morning briefing has a consistent section. Returns None only when we truly
-    have nothing to say (missing key/city, geocode fail, API error)."""
-    if not city or not TOMTOM_API_KEY:
-        return None
+    have nothing to say (missing key/city, geocode fail, API error).
+
+    morning.py wants exactly this — a line or nothing. The tool dispatch wants
+    to know WHY nothing, because "I don't know that city" and "TomTom just fell
+    over" call for different replies, and a bare None cannot tell them apart."""
+    return city_traffic(city)[0]
+
+
+def city_traffic(city: str) -> tuple[str | None, str]:
+    """(line, reason). reason is 'ok', 'no_key', 'no_city', 'unknown_city' or 'failed'."""
+    if not city:
+        return None, "no_city"
+    if not TOMTOM_API_KEY:
+        return None, "no_key"
     geo = _geocode_city(city)
     if not geo:
-        return None
+        return None, "unknown_city"
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
         flow_f = ex.submit(_get_flow, geo["lat"], geo["lng"])
@@ -130,7 +141,7 @@ def get_city_traffic(city: str) -> str | None:
             incidents = inc_f.result(timeout=_TOMTOM_TIMEOUT + 2)
         except Exception as e:
             print(f"Traffic fetch failed for {city!r}: {e}")
-            return None
+            return None, "failed"
 
     # Congestion ratio: current/freeflow. <0.7 = notably slow, <0.85 = mild.
     flow_state = "unknown"
@@ -179,10 +190,10 @@ Rules:
             messages=[{"role": "user", "content": prompt}],
         )
         text = (response.content[0].text or "").strip()
-        return text or None
+        return (text, "ok") if text else (None, "failed")
     except Exception as e:
         print(f"Traffic summarization failed for {city!r}: {e}")
-        return None
+        return None, "failed"
 
 
 def _geocode_address(address: str) -> tuple[float, float] | None:

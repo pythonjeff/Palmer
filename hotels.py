@@ -80,6 +80,16 @@ def _serpapi_hotels_search(
     return data.get("properties") or []
 
 
+def _no_hotels(location: str, check_in_date: str, check_out_date: str) -> str:
+    """Nothing came back. Says which, and what to do — never that Palmer can't."""
+    return (
+        f"No hotels came back for {location} {check_in_date} to {check_out_date}. "
+        f"That is an empty result, not a broken tool — you DO have hotel search. "
+        f"Ask them to confirm the place and dates, or offer to widen the price cap "
+        f"or try nearby dates. Do not send them to another site."
+    )
+
+
 def search_hotels(
     location: str, check_in_date: str, check_out_date: str,
     max_price: float | None = None, min_rating: float | None = None,
@@ -100,7 +110,9 @@ def search_hotels(
                 "another site.")
     props = _serpapi_hotels_search(location, check_in_date, check_out_date, max_price, min_rating)
     if not props:
-        return f"No hotels found in {location} {check_in_date} to {check_out_date}."
+        # The sibling branch in flights.py got this treatment and this one did
+        # not, in the same shape of file, for the same tool result.
+        return _no_hotels(location, check_in_date, check_out_date)
     lines = []
     for prop in props:
         line = _summarize(prop)
@@ -109,5 +121,5 @@ def search_hotels(
         if len(lines) >= limit:
             break
     if not lines:
-        return f"No hotels found in {location} {check_in_date} to {check_out_date}."
+        return _no_hotels(location, check_in_date, check_out_date)
     return "\n".join(lines)

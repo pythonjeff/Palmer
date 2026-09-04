@@ -133,13 +133,20 @@ def _ago(ts: float | None, now: float | None = None) -> str:
 
 
 def _local_day(tz_name: str | None) -> str:
-    from timeutil import local_now
+    """Their day, or nothing at all.
+
+    This used to fall back to datetime.utcnow() and print it unlabelled as
+    theirs — which is exactly what clock_block was rewritten to stop doing.
+    A user west of UTC with no zone on file saw tomorrow's date on their own
+    page from 5pm. The subhead drops an empty string, so the honest form here
+    is simply to say nothing."""
+    from timeutil import valid_zone, local_now
+    if not valid_zone(tz_name):
+        return ""
     try:
-        if tz_name:
-            return local_now(tz_name).strftime("%A, %B %d")
+        return local_now(tz_name).strftime("%A, %B %d")
     except Exception:
-        pass
-    return datetime.utcnow().strftime("%A, %B %d")
+        return ""
 
 
 def _price_link(p: dict) -> str:

@@ -57,7 +57,11 @@ def _draft(phone: str, game: dict, team: dict, reason: str) -> str:
                     "behind by" if mine < theirs else "level, tied at")
         margin = abs(mine - theirs) or mine
         resp = client.messages.create(
-            model=SONNET_MODEL, max_tokens=90, system=_build_system(phone),
+            # include_recent, like every other Sonnet drafter. Without it this
+            # path — the one most likely to send several texts in one hour —
+            # had no way to see it had just said something similar.
+            model=SONNET_MODEL, max_tokens=90,
+            system=_build_system(phone, include_recent=True),
             messages=[{"role": "user", "content":
                        f"""Their team is {team['name']}, playing {game[other]['name']}. {cue.capitalize()}.
 

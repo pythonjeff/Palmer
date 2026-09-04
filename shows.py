@@ -62,20 +62,54 @@ def _clear_cache() -> None:
         _episode_cache.clear()
 
 
-def resolve_show(name: str) -> dict | None:
-    """{"id", "name"} for a show title, or None.
+def find_shows(name: str, limit: int = 3) -> list[dict]:
+    """Series matching a title, best first, as {"id", "name", "year", "country"}.
+
+    A LIST, for the same reason sports.find_teams returns one. That module's
+    comment says naming a team is ambiguous "in a way that naming a TV show is
+    not" — which is true of Reacher and false of The Office, Shameless, Skins
+    and Ghosts, each of which is two different series. Taking results[0] there
+    meant Palmer confirmed a pick as though the user had made it.
 
     Runs once when a user follows something — the write path — never on read,
     the same terms as `tickers.resolve_company_ticker` and
     `agent._city_from_weather_topic`."""
     if not name or not _key():
-        return None
+        return []
     data = _get("/search/tv", query=name)
     results = (data or {}).get("results") or []
-    if not results:
-        return None
-    top = results[0]
-    return {"id": top.get("id"), "name": top.get("name")}
+    out = []
+    for r in results[:limit]:
+        first = (r.get("first_air_date") or "")[:4]
+        countries = r.get("origin_country") or []
+        out.append({"id": r.get("id"), "name": r.get("name"),
+                    "year": first, "country": countries[0] if countries else ""})
+    return out
+
+
+def describe_show(show: dict) -> str:
+    """"The Office (2005, US)" — enough for a person to tell two apart."""
+    bits = ", ".join(x for x in (show.get("year"), show.get("country")) if x)
+    return f"{show.get('name')} ({bits})" if bits else str(show.get("name"))
+
+
+def ambiguous_shows(found: list[dict]) -> list[dict]:
+    """The matches worth asking about: same title, different series.
+
+    A different title is not a question — "Reacher" also matching "Reacher:
+    Behind the Scenes" is the search doing its job, not two things the user
+    might have meant."""
+    if len(found) < 2:
+        return []
+    top = (found[0].get("name") or "").strip().lower()
+    same = [f for f in found if (f.get("name") or "").strip().lower() == top]
+    return same if len(same) > 1 else []
+
+
+def resolve_show(name: str) -> dict | None:
+    """{"id", "name"} for a show title, or None. The single-answer form."""
+    found = find_shows(name, limit=1)
+    return {"id": found[0]["id"], "name": found[0]["name"]} if found else None
 
 
 def next_episode(show_id: int, today: date | None = None) -> dict | None:

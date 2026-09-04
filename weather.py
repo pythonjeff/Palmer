@@ -3,6 +3,7 @@ import re
 from datetime import datetime, timedelta, timezone, date as _date
 
 from netutil import _http_get_json_retry
+from timeutil import resolve_day_delta
 
 
 _WMO_DESCRIPTIONS = {
@@ -35,26 +36,67 @@ def _is_us_coords(lat: float, lon: float) -> bool:
 # Cities don't move — cache geocode results for the dyno's lifetime so the
 # flakier geocoding endpoint is hit at most once per city.
 _geocode_cache: dict[str, tuple[float, float, str]] = {}
+# The runners-up from the same call, for the write paths that want to ask.
+_geocode_alts: dict[str, list[str]] = {}
+
+
+def _label(r: dict, fallback: str = "") -> str:
+    name = r.get("name", fallback)
+    admin = r.get("admin1", "")
+    country = r.get("country", "")
+    out = f"{name}, {admin}" if admin else name
+    return f"{out}, {country}" if country and country != "United States" else out
+
 
 def _geocode(location: str) -> tuple[float, float, str]:
     key = location.strip().lower()
     if key in _geocode_cache:
         return _geocode_cache[key]
+    # count=5 rather than 1. Same call, same cost — but taking results[0] with
+    # no idea what else matched is how Springfield, Portland, Columbus and
+    # Cambridge resolve silently to whichever the geocoder ranked first. The
+    # extra rows are kept for the write paths; the read path is unchanged and
+    # still takes the top hit.
     data = _http_get_json_retry(
         "https://geocoding-api.open-meteo.com/v1/search",
-        params={"name": location, "count": 1, "language": "en", "format": "json"},
+        params={"name": location, "count": 5, "language": "en", "format": "json"},
         timeout=8,
     )
     results = data.get("results")
     if not results:
         raise ValueError(f"Location not found: {location}")
     r = results[0]
-    name = r.get("name", location)
-    admin = r.get("admin1", "")
-    resolved = f"{name}, {admin}" if admin else name
+    resolved = _label(r, location)
     coords = (r["latitude"], r["longitude"], resolved)
     _geocode_cache[key] = coords
+    seen, alts = {resolved}, []
+    for other in results[1:]:
+        lab = _label(other, location)
+        # Only a genuinely different PLACE counts. Two rows for the same city
+        # under different spellings are not a question worth asking.
+        if lab not in seen and (other.get("name") or "").lower() == (r.get("name") or "").lower():
+            seen.add(lab)
+            alts.append(lab)
+    _geocode_alts[key] = alts
     return coords
+
+
+def geocode_candidates(location: str) -> list[str]:
+    """Other real places sharing this name, best match first, or [].
+
+    Write paths only — this runs when a user PINS a location, never on the
+    read path that fires on every page view. Same terms as resolve_show and
+    _normalize_price_topic."""
+    key = (location or "").strip().lower()
+    if key not in _geocode_alts:
+        try:
+            _geocode(location)
+        except Exception:
+            return []
+    alts = _geocode_alts.get(key) or []
+    if not alts:
+        return []
+    return [_geocode_cache[key][2]] + alts
 
 
 # Cap on secondary weather locations a user can pin to their Home page,
@@ -78,45 +120,23 @@ def resolve_weather_location(location: str) -> str | None:
         return None
 
 
-def _resolve_day_delta(when: str, when_lower: str, tz: str | None = None) -> int | None:
-    """Convert 'tomorrow' / weekday name / 'YYYY-MM-DD' into a day offset from
-    the user's local today. Falls back to server UTC if tz is missing.
-    Returns None if the input doesn't look like a future-date reference."""
-    from timeutil import local_today
-    today = local_today(tz)
-    wd = today.weekday()
-    # Raw distance to the next occurrence of each weekday, where 0 means today.
-    base = {
-        "monday": (0 - wd) % 7,
-        "tuesday": (1 - wd) % 7,
-        "wednesday": (2 - wd) % 7,
-        "thursday": (3 - wd) % 7,
-        "friday": (4 - wd) % 7,
-        "saturday": (5 - wd) % 7,
-        "sunday": (6 - wd) % 7,
-        "weekend": (5 - wd) % 7,
-    }
-    if "tomorrow" in when_lower:
-        return 1
-    # "next friday" is the Friday AFTER this coming one. Without this the two
-    # were indistinguishable, so someone planning a week out silently got this
-    # week's forecast under next week's name.
-    #
-    # The two rules have to compose, which is why this is not a flat +7 on top
-    # of the table: a bare weekday naming TODAY resolves to a week out (asking
-    # "how's Friday" on a Friday means the next one — see
-    # test_timeutil.TestResolveDayDeltaHonorsTz), so adding 7 to that would put
-    # "next friday" a fortnight away.
-    explicit_next = bool(re.search(
-        r"\bnext\s+(?:week|weekend|mon|tue|wed|thu|fri|sat|sun)", when_lower))
-    for k, v in base.items():
-        if k in when_lower:
-            return v + 7 if explicit_next else (v or 7)
-    try:
-        target = datetime.strptime(when.strip(), "%Y-%m-%d").date()
-        return (target - today).days
-    except Exception:
-        return None
+def ambiguous_location(location: str) -> list[str]:
+    """The real places this name could mean, when there is more than one.
+
+    The docstring above has always said "None means the model should ask
+    rather than guess" — but None only ever came back when NOTHING matched.
+    When several places matched, the top hit was taken silently and confirmed
+    to the user as though they had named it. Teams have been asked about since
+    find_teams shipped; places never were, and "Springfield" is worse than
+    "Cardinals"."""
+    if not location:
+        return []
+    # A string that already carries a qualifier is not the ambiguous case.
+    if "," in location:
+        return []
+    found = geocode_candidates(location)
+    return found if len(found) > 1 else []
+
 
 
 # Grid cells don't move either. /points is a pure coordinate -> grid lookup, so
@@ -281,7 +301,7 @@ def _nws_report(lat: float, lon: float, resolved: str, when: str, when_lower: st
         return f"{resolved} today:{hilo} {desc}{tail}".strip()
 
     # Future date
-    delta = _resolve_day_delta(when, when_lower, tz=tz)
+    delta = resolve_day_delta(when, when_lower, tz=tz)
     if delta is None:
         # Unrecognised input used to silently become TOMORROW, so an unparseable
         # phrase was answered confidently for the wrong day. Today is the modal
@@ -603,7 +623,7 @@ def _openmeteo_report(lat: float, lon: float, resolved: str, when: str, when_low
         )
 
     # Future date
-    delta = _resolve_day_delta(when, when_lower, tz=tz)
+    delta = resolve_day_delta(when, when_lower, tz=tz)
     if delta is None:
         print(f"weather: couldn't read {when!r} as a day, answering for today")
         delta = 0

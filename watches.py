@@ -2,8 +2,9 @@ import urllib.request
 import urllib.error
 from datetime import datetime, timezone, timedelta, date as _date
 
-from llm import client, HAIKU_MODEL
-from smstext import _sms_clean
+from agent import _build_system, base_system
+from llm import client, HAIKU_MODEL, SONNET_MODEL
+from smstext import _sms_clean, URL_RE
 from datafeeds import _search_raw
 from sources import source_tier, canonical_domain, corroborated
 from userprofile import _is_duplicate_subject, _user_already_covered
@@ -15,13 +16,18 @@ from rubrics import classify_genre, rubric_for
 
 DAILY_ALERT_MAX = 4
 
-def _daily_ok(watch: dict, cap: int = DAILY_ALERT_MAX) -> bool:
-    """True if this watch is under the daily alert cap (UTC date).
+def _daily_ok(watch: dict, cap: int = DAILY_ALERT_MAX, today: str | None = None) -> bool:
+    """True if this watch is under the daily alert cap, on the READER's day.
+
+    It keyed on the dyno's UTC date, which rolls at 17:00 Pacific — mid-evening
+    — so the allowance reset in the middle of a user's evening and could be
+    spent again before their own day was over. alerts.py had the same defect
+    and was fixed; this is the same fix, and the write side (db's
+    update_watch_alerted) takes the same date so the two agree.
 
     `cap` is lowered for users whose reactions say Palmer is texting too much —
-    see tapback.pacing_factor. Defaults to DAILY_ALERT_MAX so existing callers
-    and tests are unaffected."""
-    today = _date.today().isoformat()
+    see tapback.pacing_factor. Defaults keep existing callers unaffected."""
+    today = today or _date.today().isoformat()
     if watch.get("daily_alert_date") != today:
         return True  # new day, count resets
     return watch.get("daily_alert_count", 0) < cap
@@ -165,12 +171,75 @@ def _best_result(results: list[dict]) -> dict | None:
 
 
 def _format_alert(result: dict) -> str:
-    """Format a raw search result as a headline + link SMS."""
+    """The raw facts of an alert: headline, then link. Not what gets sent.
+
+    Used for the dedup gates and for the drafting fallback. Deduping on the
+    facts rather than on the drafted line is deliberate — the subject is the
+    news, not Palmer's phrasing, and a drafted line is a lossy paraphrase of
+    it. It also keeps a Sonnet call from running behind every candidate the
+    gates then throw away, which matters at a 30-minute cadence across every
+    watch on the system."""
     title = (result.get("title") or "").strip()
     url = (result.get("url") or "").strip()
     if title and url:
         return _sms_clean(f"{title}\n{url}")
     return _sms_clean(title or url)
+
+
+# The line has to leave room for a URL after it.
+ALERT_MAX_CHARS = 200
+
+
+def _draft_alert(phone: str, watch: dict, top: dict, fallback: str) -> str:
+    """The alert in Palmer's voice, with the link last and alone.
+
+    This was the one user-facing message in the system with no Palmer in it —
+    a bare `title\nurl`, no system prompt, no calibration, against the rule
+    that anything the user reads is drafted through _build_system. Its sibling
+    alerts.py has always done this; the two paths simply diverged.
+
+    Never raises. Every failure falls back to the raw headline, which is what
+    production sent before this existed — the same discipline as
+    morning._compose_morning, where a failed draft still delivers something."""
+    url = (top.get("url") or "").strip()
+    try:
+        system = _build_system(phone, include_recent=True)
+    except Exception as e:
+        # Not "no system prompt": that would drop the voice, the calibration
+        # AND every NEVER rule from a message still going out. Same call
+        # price_alert.py makes.
+        print(f"_draft_alert: _build_system failed for {phone}: {e}")
+        system = base_system()
+    try:
+        domain = canonical_domain(url) or "unknown source"
+        resp = client.messages.create(
+            model=SONNET_MODEL,
+            max_tokens=120,
+            system=system,
+            messages=[{"role": "user", "content": (
+                f"They asked you to watch this: {watch.get('description') or 'a story'}.\n"
+                f"It just moved. Here is the story, and it is ALL you have:\n\n"
+                f"[{domain}] {top.get('title') or ''}\n{(top.get('content') or '')[:400]}\n\n"
+                "Write ONE short text telling them, like you saw it and thought of them. "
+                "Lead with what happened. No opener, no ceremony.\n"
+                "You can see the headline and the snippet above and NOTHING else — do not "
+                "add background, consequence or history you were not given, and do not "
+                "invent a detail.\n"
+                "Don't say 'alert', 'update' or 'watch' — you're a friend, not an app.\n"
+                "Do NOT write a URL; the link is added after your line.\n"
+                f"No emoji, no markdown, plain text, under {ALERT_MAX_CHARS} characters."
+            )}],
+        )
+        line = _sms_clean((resp.content[0].text or "").strip())
+    except Exception as e:
+        print(f"_draft_alert: drafting failed for watch {watch.get('id')}: {e}")
+        return fallback
+    # A model-invented URL cannot ride along beside the real one: a message
+    # carrying two links draws no preview, and the wrong one may not resolve.
+    line = URL_RE.sub("", line).strip()
+    if not line:
+        return fallback
+    return _sms_clean(f"{line}\n{url}") if url else _sms_clean(line)
 
 
 def run_watches():
@@ -185,10 +254,15 @@ def run_watches():
     # connection per call and this loop covers every watch for every user, so
     # doing it inline cost N connections a tick for N watches.
     from tapback import pacing_factor
+    from timeutil import local_today
     caps = {}
+    days = {}
     for phone in {w["phone"] for w in watches}:
         try:
-            caps[phone] = max(1, round(DAILY_ALERT_MAX / pacing_factor(get_profile(phone))))
+            profile = get_profile(phone)
+            caps[phone] = max(1, round(DAILY_ALERT_MAX / pacing_factor(profile)))
+            # The reader's day rides along on the read that was already happening.
+            days[phone] = local_today(profile.get("timezone")).isoformat()
         except Exception:
             caps[phone] = DAILY_ALERT_MAX
 
@@ -204,7 +278,8 @@ def run_watches():
 
             # Daily cap per watch. Normally DAILY_ALERT_MAX; lower for users whose
             # reactions say Palmer is texting too much (see tapback.pacing_factor).
-            if not _daily_ok(watch, caps.get(watch["phone"], DAILY_ALERT_MAX)):
+            today = days.get(watch["phone"])
+            if not _daily_ok(watch, caps.get(watch["phone"], DAILY_ALERT_MAX), today):
                 continue
 
             # Collect raw results across all queries, deduped by URL
@@ -262,22 +337,33 @@ def run_watches():
                 print(f"Watch {watch['id']}: already claimed by another process, skipping")
                 continue
 
+            # Drafted LAST — after both dedup gates and after the claim — so a
+            # Sonnet call is only spent on an alert that is actually going out.
+            body = _draft_alert(watch["phone"], watch, top, fallback=alert)
+
             # A failed send must not become history. The watch claim above stays
             # spent either way: it is a rate limit, not a delivery record, so
             # burning one cooldown is far safer than retrying every tick against
             # a body the guard will block identically each time. (The inverse of
             # the reminder rule, where the claim IS the delivery record.)
-            if not send_sms(watch["phone"], alert):
+            #
+            # No add_status_callback here on purpose: send_sms sees the URL and
+            # turns the callback off itself, so a new sender inherits the rule
+            # instead of having to remember it.
+            if not send_sms(watch["phone"], body):
                 print(f"Watch {watch['id']}: send failed, not recording it as sent")
                 continue
-            save_message(watch["phone"], "assistant", alert, kind="watch")
+            # Save what was SENT. History is fed back to the model, and
+            # _is_duplicate_subject reads it — both have to see the real message.
+            save_message(watch["phone"], "assistant", body, kind="watch")
 
             # Use title for dedup context (shorter than full alert with URL)
             title = (top.get("title") or alert)[:120]
             recent = (watch["recent_summaries"] + [title])[-3:]
             alert_url = top.get("url") or None
             alert_domain = canonical_domain(alert_url) if alert_url else None
-            update_watch_alerted(watch["id"], title, recent, url=alert_url, domain=alert_domain)
+            update_watch_alerted(watch["id"], title, recent, url=alert_url,
+                                 domain=alert_domain, today=today)
             # Fold the alert into the rolling story state so the next tick's
             # scorer sees 'the user already knows this — reply YES only if
             # advancing.' Failure is silent — the alert already went out.

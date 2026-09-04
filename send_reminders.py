@@ -86,6 +86,14 @@ def send_due_reminders():
                 nxt = next_occurrence(base, r["recurrence"], profile.get("timezone")) if base else None
                 if nxt and rearm_reminder(r["id"], nxt.isoformat()):
                     print(f"Reminder {r['id']} re-armed ({r['recurrence']}) for {nxt.isoformat()}")
+                elif nxt is None:
+                    # next_occurrence returns None for a recurrence outside
+                    # RECURRENCES, and this branch used to be silent — so a
+                    # standing reminder just stopped, with nothing in the log
+                    # and the user still expecting it. The write path refuses
+                    # these now; this catches a row written before it did.
+                    print(f"Reminder {r['id']}: recurrence {r['recurrence']!r} is not one "
+                          f"I can advance, so it will not repeat again")
         except Exception as e:
             print(f"Failed reminder {r['id']} to {r['phone']}: {e}")
 

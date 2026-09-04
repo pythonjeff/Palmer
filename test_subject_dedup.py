@@ -86,11 +86,14 @@ class TestWatchesSubjectDedup:
              patch("watches._best_result", return_value=_RAW_RESULTS[0]), \
              patch("watches._is_duplicate_subject", return_value=False), \
              patch("watches.claim_watch_alert", return_value=True), \
+             patch("watches._draft_alert", return_value="Hurts is out. https://example.com/a"), \
              patch("watches.update_watch_alerted") as mock_update, \
              patch("sms_util.send_sms") as mock_send:
             watches.run_watches()
         mock_send.assert_called_once()
         mock_update.assert_called_once()
+        # What goes out is the drafted line, not the raw headline.
+        assert mock_send.call_args[0][1] == "Hurts is out. https://example.com/a"
 
     def test_alert_persists_the_fired_url_and_domain(self):
         """The 'Watching' page section links a watch to the article
@@ -102,6 +105,7 @@ class TestWatchesSubjectDedup:
              patch("watches._best_result", return_value=_RAW_RESULTS[0]), \
              patch("watches._is_duplicate_subject", return_value=False), \
              patch("watches.claim_watch_alert", return_value=True), \
+             patch("watches._draft_alert", return_value="drafted line https://example.com/a"), \
              patch("watches.update_watch_alerted") as mock_update, \
              patch("sms_util.send_sms"):
             watches.run_watches()
