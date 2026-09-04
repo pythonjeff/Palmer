@@ -3,6 +3,7 @@ import re
 from datetime import datetime, timedelta, timezone, date as _date
 
 from netutil import _http_get_json_retry
+from timeutil import resolve_day_delta
 
 
 _WMO_DESCRIPTIONS = {
@@ -77,46 +78,6 @@ def resolve_weather_location(location: str) -> str | None:
     except Exception:
         return None
 
-
-def _resolve_day_delta(when: str, when_lower: str, tz: str | None = None) -> int | None:
-    """Convert 'tomorrow' / weekday name / 'YYYY-MM-DD' into a day offset from
-    the user's local today. Falls back to server UTC if tz is missing.
-    Returns None if the input doesn't look like a future-date reference."""
-    from timeutil import local_today
-    today = local_today(tz)
-    wd = today.weekday()
-    # Raw distance to the next occurrence of each weekday, where 0 means today.
-    base = {
-        "monday": (0 - wd) % 7,
-        "tuesday": (1 - wd) % 7,
-        "wednesday": (2 - wd) % 7,
-        "thursday": (3 - wd) % 7,
-        "friday": (4 - wd) % 7,
-        "saturday": (5 - wd) % 7,
-        "sunday": (6 - wd) % 7,
-        "weekend": (5 - wd) % 7,
-    }
-    if "tomorrow" in when_lower:
-        return 1
-    # "next friday" is the Friday AFTER this coming one. Without this the two
-    # were indistinguishable, so someone planning a week out silently got this
-    # week's forecast under next week's name.
-    #
-    # The two rules have to compose, which is why this is not a flat +7 on top
-    # of the table: a bare weekday naming TODAY resolves to a week out (asking
-    # "how's Friday" on a Friday means the next one — see
-    # test_timeutil.TestResolveDayDeltaHonorsTz), so adding 7 to that would put
-    # "next friday" a fortnight away.
-    explicit_next = bool(re.search(
-        r"\bnext\s+(?:week|weekend|mon|tue|wed|thu|fri|sat|sun)", when_lower))
-    for k, v in base.items():
-        if k in when_lower:
-            return v + 7 if explicit_next else (v or 7)
-    try:
-        target = datetime.strptime(when.strip(), "%Y-%m-%d").date()
-        return (target - today).days
-    except Exception:
-        return None
 
 
 # Grid cells don't move either. /points is a pure coordinate -> grid lookup, so
@@ -281,7 +242,7 @@ def _nws_report(lat: float, lon: float, resolved: str, when: str, when_lower: st
         return f"{resolved} today:{hilo} {desc}{tail}".strip()
 
     # Future date
-    delta = _resolve_day_delta(when, when_lower, tz=tz)
+    delta = resolve_day_delta(when, when_lower, tz=tz)
     if delta is None:
         # Unrecognised input used to silently become TOMORROW, so an unparseable
         # phrase was answered confidently for the wrong day. Today is the modal
@@ -603,7 +564,7 @@ def _openmeteo_report(lat: float, lon: float, resolved: str, when: str, when_low
         )
 
     # Future date
-    delta = _resolve_day_delta(when, when_lower, tz=tz)
+    delta = resolve_day_delta(when, when_lower, tz=tz)
     if delta is None:
         print(f"weather: couldn't read {when!r} as a day, answering for today")
         delta = 0

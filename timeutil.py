@@ -10,6 +10,7 @@ one source of truth for what "today" means for a given profile.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, date, timezone
 
 
@@ -51,6 +52,29 @@ def valid_zone(tz_name: str | None) -> str | None:
         return None
 
 
+# Today plus a full week. The extra day is not padding: it makes the weekday
+# that IS today appear twice, which is the only way the convention this repo
+# already uses — a bare weekday naming today means the one a week out — has a
+# date to point at instead of being derived.
+_DATE_RUN_DAYS = 8
+
+
+def _date_run(start) -> str:
+    """The next _DATE_RUN_DAYS days as `Sat 2026-09-05` entries.
+
+    Full ISO on every entry, deliberately. The point is that the model can lift
+    a date straight into due_at rather than rebuilding one from "Friday,
+    September 04, 2026" — and reassembling is the arithmetic being removed. It
+    also survives a year boundary, which an abbreviated form does not."""
+    from datetime import timedelta
+    out = []
+    for i in range(_DATE_RUN_DAYS):
+        d = start + timedelta(days=i)
+        label = {0: " (today)", 1: " (tomorrow)"}.get(i, "")
+        out.append(f"{d.strftime('%a')} {d.isoformat()}{label}")
+    return ", ".join(out)
+
+
 def clock_block(tz_name: str | None, now: datetime | None = None) -> str:
     """What time it is *where the user is*, for the system prompt.
 
@@ -80,6 +104,8 @@ def clock_block(tz_name: str | None, now: datetime | None = None) -> str:
             "RIGHT NOW\n"
             f"You don't know this person's timezone. The server clock is "
             f"{server.strftime('%H:%M')} UTC on {server.strftime('%A, %B %d, %Y')}.\n"
+            f"Server dates, if a weekday gets named: {_date_run(server.date())}. "
+            "Their own day may be either side of these.\n"
             "Do not state or assume a local date or hour for them. If a time matters, "
             "name the zone you're assuming so they can correct you."
         )
@@ -94,9 +120,50 @@ def clock_block(tz_name: str | None, now: datetime | None = None) -> str:
         f"For this person \"today\" means {local.strftime('%A %B %d')} and \"tomorrow\" "
         f"means {tomorrow.strftime('%A %B %d')}. Always mean their day, never the "
         f"server's.\n"
+        f"Their dates, to read off rather than count: {_date_run(local.date())}.\n"
         f"(Server clock, for your reference only: {server.strftime('%H:%M')} UTC on "
         f"{server.strftime('%A, %B %d')}.)"
     )
+
+
+def resolve_day_delta(when: str, when_lower: str, tz: str | None = None) -> int | None:
+    """Convert 'tomorrow' / weekday name / 'YYYY-MM-DD' into a day offset from
+    the user's local today. Falls back to server UTC if tz is missing.
+    Returns None if the input doesn't look like a future-date reference."""
+    today = local_today(tz)
+    wd = today.weekday()
+    # Raw distance to the next occurrence of each weekday, where 0 means today.
+    base = {
+        "monday": (0 - wd) % 7,
+        "tuesday": (1 - wd) % 7,
+        "wednesday": (2 - wd) % 7,
+        "thursday": (3 - wd) % 7,
+        "friday": (4 - wd) % 7,
+        "saturday": (5 - wd) % 7,
+        "sunday": (6 - wd) % 7,
+        "weekend": (5 - wd) % 7,
+    }
+    if "tomorrow" in when_lower:
+        return 1
+    # "next friday" is the Friday AFTER this coming one. Without this the two
+    # were indistinguishable, so someone planning a week out silently got this
+    # week's forecast under next week's name.
+    #
+    # The two rules have to compose, which is why this is not a flat +7 on top
+    # of the table: a bare weekday naming TODAY resolves to a week out (asking
+    # "how's Friday" on a Friday means the next one — see
+    # test_timeutil.TestResolveDayDeltaHonorsTz), so adding 7 to that would put
+    # "next friday" a fortnight away.
+    explicit_next = bool(re.search(
+        r"\bnext\s+(?:week|weekend|mon|tue|wed|thu|fri|sat|sun)", when_lower))
+    for k, v in base.items():
+        if k in when_lower:
+            return v + 7 if explicit_next else (v or 7)
+    try:
+        target = datetime.strptime(when.strip(), "%Y-%m-%d").date()
+        return (target - today).days
+    except Exception:
+        return None
 
 
 # Reminder recurrence. Deliberately a small closed set — these are the shapes

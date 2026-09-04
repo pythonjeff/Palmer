@@ -15,13 +15,18 @@ from rubrics import classify_genre, rubric_for
 
 DAILY_ALERT_MAX = 4
 
-def _daily_ok(watch: dict, cap: int = DAILY_ALERT_MAX) -> bool:
-    """True if this watch is under the daily alert cap (UTC date).
+def _daily_ok(watch: dict, cap: int = DAILY_ALERT_MAX, today: str | None = None) -> bool:
+    """True if this watch is under the daily alert cap, on the READER's day.
+
+    It keyed on the dyno's UTC date, which rolls at 17:00 Pacific — mid-evening
+    — so the allowance reset in the middle of a user's evening and could be
+    spent again before their own day was over. alerts.py had the same defect
+    and was fixed; this is the same fix, and the write side (db's
+    update_watch_alerted) takes the same date so the two agree.
 
     `cap` is lowered for users whose reactions say Palmer is texting too much —
-    see tapback.pacing_factor. Defaults to DAILY_ALERT_MAX so existing callers
-    and tests are unaffected."""
-    today = _date.today().isoformat()
+    see tapback.pacing_factor. Defaults keep existing callers unaffected."""
+    today = today or _date.today().isoformat()
     if watch.get("daily_alert_date") != today:
         return True  # new day, count resets
     return watch.get("daily_alert_count", 0) < cap
@@ -185,10 +190,15 @@ def run_watches():
     # connection per call and this loop covers every watch for every user, so
     # doing it inline cost N connections a tick for N watches.
     from tapback import pacing_factor
+    from timeutil import local_today
     caps = {}
+    days = {}
     for phone in {w["phone"] for w in watches}:
         try:
-            caps[phone] = max(1, round(DAILY_ALERT_MAX / pacing_factor(get_profile(phone))))
+            profile = get_profile(phone)
+            caps[phone] = max(1, round(DAILY_ALERT_MAX / pacing_factor(profile)))
+            # The reader's day rides along on the read that was already happening.
+            days[phone] = local_today(profile.get("timezone")).isoformat()
         except Exception:
             caps[phone] = DAILY_ALERT_MAX
 
@@ -204,7 +214,8 @@ def run_watches():
 
             # Daily cap per watch. Normally DAILY_ALERT_MAX; lower for users whose
             # reactions say Palmer is texting too much (see tapback.pacing_factor).
-            if not _daily_ok(watch, caps.get(watch["phone"], DAILY_ALERT_MAX)):
+            today = days.get(watch["phone"])
+            if not _daily_ok(watch, caps.get(watch["phone"], DAILY_ALERT_MAX), today):
                 continue
 
             # Collect raw results across all queries, deduped by URL
@@ -277,7 +288,8 @@ def run_watches():
             recent = (watch["recent_summaries"] + [title])[-3:]
             alert_url = top.get("url") or None
             alert_domain = canonical_domain(alert_url) if alert_url else None
-            update_watch_alerted(watch["id"], title, recent, url=alert_url, domain=alert_domain)
+            update_watch_alerted(watch["id"], title, recent, url=alert_url,
+                                 domain=alert_domain, today=today)
             # Fold the alert into the rolling story state so the next tick's
             # scorer sees 'the user already knows this — reply YES only if
             # advancing.' Failure is silent — the alert already went out.

@@ -122,8 +122,14 @@ def _prompt_safe_profile(profile: dict) -> dict:
     # Volatile facts are dropped once stale and dated once they are a few days
     # old, so the model stops reading "Based in LA" and "active fire emergency"
     # as things that are true right now.
+    # On the READER's calendar. _stamp_volatile writes field_dates with
+    # local_today, and this defaulted to date.today() — the dyno's UTC day — so
+    # the two ends of one subtraction used different calendars. After 17:00
+    # Pacific a fact asserted minutes ago came back to the model as
+    # days_old: 1, and a volatile field was dropped a day before its life ran out.
+    from timeutil import local_today
     from userprofile import fresh_profile_for_prompt
-    safe = fresh_profile_for_prompt(profile)
+    safe = fresh_profile_for_prompt(profile, local_today((profile or {}).get("timezone")))
     topics = safe.get("morning_topics")
     if topics:
         from morning import _is_directive

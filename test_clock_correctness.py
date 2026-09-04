@@ -32,9 +32,16 @@ class TestTheMarketDayIsNewYorks:
 
 
 class TestWeatherDayResolution:
+    """The convention lives in timeutil now, not weather.
+
+    It is generic date reasoning, and leaving it in the weather module was
+    how the reminder path — the one place the model computes a date itself —
+    ended up with no answer for "next friday" at all, while weather had a
+    considered one."""
+
     def _delta(self, when, on):
         with patch.object(timeutil, "local_today", return_value=on):
-            return weather._resolve_day_delta(when, when.lower())
+            return timeutil.resolve_day_delta(when, when.lower())
 
     FRIDAY = date(2026, 8, 28)
     WEDNESDAY = date(2026, 8, 26)

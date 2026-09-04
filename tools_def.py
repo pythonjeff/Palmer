@@ -69,7 +69,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "text": {"type": "string", "description": "What to remind the user about"},
-                "due_at": {"type": "string", "description": "ISO 8601 UTC datetime for the FIRST (or only) send, e.g. 2026-07-21T20:00:00Z"},
+                "due_at": {"type": "string", "description": "ISO 8601 UTC datetime for the FIRST (or only) send, e.g. 2026-07-21T20:00:00Z. If they named a weekday or a relative day, take its date from the dated list in the RIGHT NOW block rather than counting days yourself."},
                 "recurrence": {
                     "type": "string",
                     "enum": ["daily", "weekdays", "weekly"],

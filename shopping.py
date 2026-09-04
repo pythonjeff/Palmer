@@ -365,11 +365,12 @@ def _should_alert(watch: dict, current_price: float) -> str:
     return ""
 
 
-def _daily_ok(watch: dict) -> bool:
-    """True if this price watch is still under the per-day alert cap (UTC date).
-    Mirrors watches._daily_ok — same rationale, different table."""
+def _daily_ok(watch: dict, today: str | None = None) -> bool:
+    """True if this price watch is still under the per-day alert cap, on the
+    READER's day. Mirrors watches._daily_ok — same rationale, same fix: a cap
+    keyed on the dyno's UTC date resets mid-evening for anyone west of it."""
     from datetime import date as _date
-    today = _date.today().isoformat()
+    today = today or _date.today().isoformat()
     if watch.get("daily_alert_date") != today:
         return True
     return (watch.get("daily_alert_count") or 0) < PRICE_DAILY_ALERT_MAX
@@ -396,11 +397,22 @@ def run_price_watches():
     import amazon
 
     watches = get_active_price_watches()
+    # One batched read for every profile, not one per watch — _conn() opens a
+    # fresh connection per call, so the inline version is N+1 per tick.
+    days = {}
+    try:
+        from db import get_all_profiles
+        from timeutil import local_today
+        days = {phone: local_today((profile or {}).get("timezone")).isoformat()
+                for phone, profile in get_all_profiles()}
+    except Exception as e:
+        print(f"run_price_watches: could not read local days, falling back to UTC: {e}")
     for w in watches:
         try:
+            today = days.get(w["phone"])
             if not _cooldown_ok(w):
                 continue
-            if not _daily_ok(w):
+            if not _daily_ok(w, today):
                 print(f"Price watch {w['id']}: at daily cap ({PRICE_DAILY_ALERT_MAX}), skipping")
                 continue
             if w.get("source") == "amazon":
@@ -436,7 +448,8 @@ def run_price_watches():
             # again" to someone who had asked for nothing.
             if send_sms(w["phone"], body):
                 update_price_watch_alerted(
-                    w["id"], current["price"], current["url"], current["merchant"], body
+                    w["id"], current["price"], current["url"], current["merchant"], body,
+                    today=today,
                 )
                 # Price alerts were never written to history at all, so the model
                 # had no idea it had just sent one — a user replying "how much?"

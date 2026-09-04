@@ -59,7 +59,7 @@ class TestResolveDayDeltaHonorsTz:
     Friday' should get delta=1 (tomorrow), not delta=8 (next Friday)."""
 
     def test_friday_at_thursday_night_local_is_tomorrow(self):
-        from weather import _resolve_day_delta
+        from timeutil import resolve_day_delta
         # Freeze both timeutil.local_today and weather._date.today so the module
         # under test sees a consistent 'now'.
         with patch("timeutil.datetime") as mock_dt:
@@ -70,11 +70,11 @@ class TestResolveDayDeltaHonorsTz:
             mock_dt.now.side_effect = _now
 
             # UTC-only path (no tz): 'friday' seen from Friday should give 7 (next friday)
-            assert _resolve_day_delta("friday", "friday", tz=None) == 7
+            assert resolve_day_delta("friday", "friday", tz=None) == 7
             # With user tz PDT (still Thursday locally): 'friday' should give 1 (tomorrow)
-            assert _resolve_day_delta("friday", "friday", tz="America/Los_Angeles") == 1
+            assert resolve_day_delta("friday", "friday", tz="America/Los_Angeles") == 1
 
     def test_tomorrow_always_one_day_out(self):
-        from weather import _resolve_day_delta
-        assert _resolve_day_delta("tomorrow", "tomorrow", tz="America/Chicago") == 1
-        assert _resolve_day_delta("tomorrow", "tomorrow", tz=None) == 1
+        from timeutil import resolve_day_delta
+        assert resolve_day_delta("tomorrow", "tomorrow", tz="America/Chicago") == 1
+        assert resolve_day_delta("tomorrow", "tomorrow", tz=None) == 1

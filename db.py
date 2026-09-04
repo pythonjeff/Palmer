@@ -726,9 +726,15 @@ def claim_watch_alert(watch_id: int, cooldown_hours: float) -> bool:
 
 
 def update_watch_alerted(watch_id: int, summary: str, recent_summaries: list[str],
-                          url: str | None = None, domain: str | None = None):
+                          url: str | None = None, domain: str | None = None,
+                          today: str | None = None):
+    """`today` is the READER's date. The daily counter it increments is read
+    back by watches._daily_ok, and both used to key on the dyno's UTC day —
+    so the cap window rolled at 17:00 Pacific, mid-evening, and a user could
+    take the whole allowance across one local evening and be capped by lunch
+    the next day. Same defect alerts.py was fixed for."""
     now = datetime.now(timezone.utc).isoformat()
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = today or datetime.now(timezone.utc).date().isoformat()
     conn = _conn()
     cur = conn.cursor()
     cur.execute(
@@ -965,7 +971,8 @@ def release_price_watch_claim(watch_id: int):
     conn.close()
 
 
-def update_price_watch_alerted(watch_id: int, price: float, url: str, merchant: str, summary: str):
+def update_price_watch_alerted(watch_id: int, price: float, url: str, merchant: str,
+                               summary: str, today: str | None = None):
     """Record a fired alert. Also RE-BASELINES to the alerted price: the user has
     now been told about this level, so the next alert must clear the drop bar
     again from here rather than re-reporting the same discount forever. Without
@@ -976,7 +983,8 @@ def update_price_watch_alerted(watch_id: int, price: float, url: str, merchant: 
     repeat. _is_duplicate_subject cannot cover it — its window is 6h and the
     price-watch cadence is 12h."""
     now = datetime.now(timezone.utc).isoformat()
-    today = datetime.now(timezone.utc).date().isoformat()
+    # The reader's day — see update_watch_alerted.
+    today = today or datetime.now(timezone.utc).date().isoformat()
     conn = _conn()
     cur = conn.cursor()
     cur.execute(

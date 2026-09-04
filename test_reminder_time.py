@@ -10,7 +10,7 @@ Tuesday. The model was not making a mistake; it was told the wrong day.
 These tests hold both halves of the fix: the prompt states the user's own day,
 and the server vets what comes back rather than trusting the string.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 from unittest.mock import patch
 
 import pytest
@@ -218,3 +218,77 @@ class TestStoredRowsAreCanonical:
         conn.close()
         db.normalize_due_at_rows()
         assert db.claim_due_reminders() == []
+
+
+class TestTheWeekIsATableToReadNotArithmetic:
+    """clock_block named "today" and "tomorrow" and emitted no ISO date at all,
+    so anything past tomorrow — "next Friday", "the 15th", "a week Tuesday" —
+    was the model rebuilding a date from the prose "Friday, September 04,
+    2026" and counting forward in its head. That is the one computation on the
+    reminder path nothing checks: _normalize_due_at catches an unreadable
+    string, a past time and a date over a year out, but a plausible wrong
+    Friday sails through and reads correctly in the confirmation.
+    """
+
+    def _block(self):
+        return timeutil.clock_block("America/Los_Angeles", now=ROLLOVER)
+
+    def test_todays_iso_date_is_there_to_be_copied(self):
+        assert "Sun 2026-08-30 (today)" in self._block()
+
+    def test_the_whole_week_is_dated(self):
+        out = self._block()
+        for day in ("Mon 2026-08-31", "Fri 2026-09-04", "Sat 2026-09-05"):
+            assert day in out
+
+    def test_the_run_is_anchored_on_their_day_not_the_servers(self):
+        """The server has already rolled to Monday the 31st."""
+        out = self._block()
+        assert out.index("Sun 2026-08-30") < out.index("Mon 2026-08-31")
+        assert "Mon 2026-08-30" not in out
+
+    def test_todays_weekday_appears_twice(self):
+        """A bare weekday naming today means the one a week out — that rule
+        needs a second Sunday in the list to point at."""
+        out = self._block()
+        assert out.count("2026-08-30") == 1 and "Sun 2026-09-06" in out
+
+    def test_the_no_zone_form_labels_them_as_the_servers(self):
+        out = timeutil.clock_block(None, now=ROLLOVER)
+        assert "Server dates" in out
+        assert "Their local time" not in out
+        # The refusal is still the last word, which is the whole point of the branch.
+        assert "Do not state or assume a local date" in out
+
+    def test_the_block_stays_small(self):
+        """It ships on every single turn, so its size is a property worth
+        holding, not a comment."""
+        assert len(self._block()) < 650
+
+
+class TestOneAnswerForWhatNextFridayMeans:
+    def test_the_convention_lives_in_timeutil(self):
+        """It was in weather.py, so the only path where the MODEL computes a
+        date — reminders — had no answer for "next friday" while the weather
+        path had a considered one. The same user could get both in one thread."""
+        from timeutil import resolve_day_delta
+        assert not hasattr(__import__("weather"), "_resolve_day_delta")
+        with patch.object(timeutil, "local_today", return_value=date(2026, 8, 26)):
+            assert resolve_day_delta("friday", "friday") == 2        # this Friday
+            assert resolve_day_delta("next friday", "next friday") == 9
+
+    def test_the_prompt_states_it_where_the_model_computes_the_date(self):
+        block = agent.SYSTEM_PROMPT.split("REMINDERS")[1].split("MORNING BRIEFING")[0]
+        assert "AFTER this coming one" in block
+        assert "read the date off" in block
+
+    def test_the_prompt_says_what_to_do_with_an_unsupported_repeat(self):
+        """The write path refuses it; the model needs to know what to offer."""
+        block = agent.SYSTEM_PROMPT.split("REMINDERS")[1].split("MORNING BRIEFING")[0]
+        assert "every other Tuesday" in block
+        assert "won't repeat" in block
+
+    def test_the_due_at_field_points_at_the_block(self):
+        from tools_def import TOOLS
+        schema = next(t for t in TOOLS if t["name"] == "set_reminder")
+        assert "RIGHT NOW" in schema["input_schema"]["properties"]["due_at"]["description"]
