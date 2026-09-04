@@ -102,16 +102,39 @@ def _search(query: str, days: int = 7, require_date: bool = False,
             results = kept
         results = sources.rank(results)
         if not results:
-            return "No results found."
+            # A dead-end string here is how "I can't find news on that" becomes
+            # "just Google it". The search RAN and came back empty, which is
+            # information — and it is the common case, not the rare one: the
+            # 12-hour recency gate plus the source floor mean a good fraction
+            # of topics return nothing on a given day. Say what to do with it.
+            return (
+                f"The news search ran for {query!r} and came back with nothing that "
+                f"cleared the recency and source bar. That is an empty result, not a "
+                f"broken tool — you DO have news search. If the query was narrow or "
+                f"oddly worded, try one more angle; otherwise tell them plainly you "
+                f"couldn't find anything current on it and do NOT send them to another "
+                f"site to look."
+            )
         return "\n\n".join(
             f"[{sources.canonical_domain(r.get('url', '')) or 'unknown source'}] {r['title']}\n"
             f"Published: {r.get('published_date', 'unknown')}\n{r['content']}"
             for r in results[:5]
         )
     except concurrent.futures.TimeoutError:
-        return "Search timed out."
+        return (
+            f"The news search for {query!r} timed out this once. You DO have news "
+            f"search — say plainly you couldn't pull it right now and offer to try "
+            f"again, or answer the rest of what they asked. Do not name another site."
+        )
     except Exception as e:
-        return f"Search failed: {e}"
+        # The exception text is deliberately reduced to its type. The underlying
+        # error carries the full request URL, and that URL carries the API key.
+        print(f"_search failed for {query!r}: {type(e).__name__}: {e}")
+        return (
+            f"The news search for {query!r} errored this once ({type(e).__name__}). "
+            f"You DO have news search — say plainly you couldn't pull it right now "
+            f"and offer to try again. Do not invent a result and do not name another site."
+        )
 
 def price_snapshot(asset: str, label: str | None = None) -> dict | None:
     """Structured price data for the visual dashboard, including a short series
@@ -212,14 +235,25 @@ def _get_price(asset: str) -> str:
             resp.raise_for_status()
             data = resp.json().get(coin_id, {})
             if not data:
-                return f"No price data found for {asset}."
+                return (
+                    f"No price came back for {asset!r}. You DO have crypto prices — "
+                    f"this one name didn't resolve. Ask them to confirm which coin they "
+                    f"mean, or try the ticker instead of the name. Do not guess a number "
+                    f"and do not send them to another site."
+                )
             price = data["usd"]
             c24 = data.get("usd_24h_change") or 0
             c7d = data.get("usd_7d_change") or 0
             price_str = f"${price:,.2f}" if price < 1000 else f"${price:,.0f}"
             return f"{asset.title()}: {price_str} ({_fmt_pct(c24)} past 24h, {_fmt_pct(c7d)} past 7 days)"
         except Exception as e:
-            return f"Crypto price lookup failed: {e}"
+            print(f"crypto price lookup failed for {asset!r}: {type(e).__name__}: {e}")
+            return (
+                f"The crypto price lookup for {asset!r} errored this once "
+                f"({type(e).__name__}). You DO have crypto prices — say plainly you "
+                f"couldn't pull it right now and offer to try again. Do not guess a "
+                f"number and do not name another site."
+            )
 
     # Stock path via yfinance
     try:
@@ -232,7 +266,15 @@ def _get_price(asset: str) -> str:
 
         current = fi.last_price
         if current is None or current == 0:
-            return f"Couldn't find price data for '{asset}'. Check the ticker symbol."
+            # "Check the ticker symbol" reads as an instruction to a developer,
+            # and the model relayed it to the user as one. Say who should do what.
+            return (
+                f"No live price came back for {asset!r}. You DO have stock prices — "
+                f"that symbol didn't resolve. If they gave a company name, try the "
+                f"ticker; if you already used a ticker, ask them which company they "
+                f"mean. Never conclude from this that the company is private, delisted "
+                f"or hasn't listed — a failed lookup is not evidence of that."
+            )
 
         # Determine what trading day this data is actually from, on the
         # EXCHANGE's calendar. This used to be _date.today() — the dyno's UTC
@@ -265,9 +307,19 @@ def _get_price(asset: str) -> str:
         return f"{asset.upper()}: ${current:.2f} ({_fmt_pct(c24)} on {day_label}{c7d_str}{market_note})"
 
     except concurrent.futures.TimeoutError:
-        return f"Stock lookup timed out for '{asset}'."
+        return (
+            f"The stock lookup for {asset!r} timed out this once. You DO have stock "
+            f"prices — say plainly you couldn't pull it right now and offer to try "
+            f"again. Do not guess a number and do not name another site."
+        )
     except Exception as e:
-        return f"Stock lookup failed for '{asset}': {e}"
+        print(f"stock lookup failed for {asset!r}: {type(e).__name__}: {e}")
+        return (
+            f"The stock lookup for {asset!r} errored this once ({type(e).__name__}). "
+            f"You DO have stock prices — say plainly you couldn't pull it right now "
+            f"and offer to try again. Do not guess a number, do not name another site, "
+            f"and never conclude the company is private or delisted from a failed lookup."
+        )
 
 _SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 

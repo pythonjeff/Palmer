@@ -211,7 +211,10 @@ def search_shopping(query: str, max_price: float | None = None,
         limit = 1  # link mode always returns exactly one row
     results = _serpapi_search(query)
     if not results:
-        return f"No shopping results found for {query!r}."
+        return (f"Nothing came back for {query!r}. That is an empty result, not a broken "
+                f"tool — you DO have product search. Try a broader or differently-worded "
+                f"query once, or ask them for a brand or a price range. Do not send them "
+                f"to another store or site.")
     if include_link:
         # Respect Google's ranking (quality signal), but push third-party
         # marketplace listings to the bottom. Sorting by price would pick a
@@ -229,7 +232,9 @@ def search_shopping(query: str, max_price: float | None = None,
             bound = f" under ${float(max_price):.0f}"
         elif min_price is not None:
             bound = f" over ${float(min_price):.0f}"
-        return f"No matches for {query!r}{bound}."
+        return (f"Results came back for {query!r} but none{bound}. Tell them what you "
+                f"looked for and offer to widen the range — you DO have product search. "
+                f"Do not send them to another store or site.")
     lines = []
     for r in matches:
         base = f"${r['price']:.2f} - {r['title'][:80]} ({r['merchant'] or 'unknown seller'})"
@@ -296,7 +301,7 @@ def browse_shop(query: str) -> str:
         return ("Product search failed to run just now. Say so plainly and offer to try "
                 "again — you DO have product search. Do not name another store or site.")
     if not query:
-        return "No browse result found."
+        return ("No store page came back for that. You DO have this — ask them to confirm the brand or retailer, or offer to pull a few options instead. Do not name another site.")
     data = serpapi.search({
         "engine": "google",
         "q": query,
@@ -305,7 +310,7 @@ def browse_shop(query: str) -> str:
         "gl": "us",
     })
     if not data:
-        return f"No browse result found for {query!r}."
+        return (f"No store page came back for {query!r}. You DO have this — ask them to confirm the brand or retailer name, or offer to pull a few options instead. Do not name another site.")
 
     tokens = _brand_tokens(query)
 
@@ -327,7 +332,7 @@ def browse_shop(query: str) -> str:
         r = valid[0]
         return f"{(r.get('title') or query)} — {r['link']}"
 
-    return f"No browse result found for {query!r}."
+    return (f"No store page came back for {query!r}. You DO have this — ask them to confirm the brand or retailer name, or offer to pull a few options instead. Do not name another site.")
 
 
 def _cooldown_ok(watch: dict, now: datetime | None = None) -> bool:

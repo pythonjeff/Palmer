@@ -16,6 +16,7 @@ All offline.
 from unittest.mock import patch, MagicMock
 
 import db
+import agent
 import guards
 
 
@@ -135,14 +136,53 @@ class TestFailureStringsDoNotDisclaimCapability:
         assert not guards.redirects_elsewhere(out)
 
     def test_no_failure_string_names_a_competitor(self):
-        import flights, hotels, shopping, traffic
+        import flights, hotels, serpapi, shopping, traffic
+        # shopping gates on serpapi.API_KEY, not a local constant — patching the
+        # wrong one lets the test out to the live network.
         with patch.object(flights, "SERP_API_KEY", ""), \
-             patch.object(hotels, "SERP_API_KEY", ""):
+             patch.object(hotels, "SERP_API_KEY", ""), \
+             patch.object(serpapi, "API_KEY", ""):
             outs = [flights.search_flights("LAX", "MXP", "2026-09-18"),
                     hotels.search_hotels("Lisbon", "2026-09-18", "2026-09-20"),
+                    shopping.search_shopping("wool coat"),
                     traffic.get_travel_time("", "")]
         for o in outs:
             assert not guards.redirects_elsewhere(o), o
+
+    def test_an_empty_result_is_not_a_broken_tool(self):
+        """The commonest failure string in the system was "No results found."
+
+        A bare dead end is what the drafting model turns into "I can't find
+        news on that", and from there into a competitor. `_search` returns
+        empty often and by design — the recency window and the source floor
+        throw most of a page away — so this is the string that has to be right.
+        """
+        import datafeeds
+        fake = MagicMock()
+        fake.search.return_value = {"results": []}
+        with patch.object(datafeeds, "_tavily", fake):
+            empty_search = datafeeds._search("something nobody wrote about")
+        outs = [empty_search, agent._tool_error("web_search", RuntimeError("boom"))]
+        for o in outs:
+            assert not guards.redirects_elsewhere(o), o
+            assert "DO have" in o or "not a missing capability" in o, o
+
+    def test_a_failed_price_lookup_does_not_teach_the_model_the_company_is_private(self):
+        """The failed lookup used to confirm the model's own stale prior, and
+        Palmer told a user SpaceX was private while SPCX was trading."""
+        import datafeeds
+        ticker = MagicMock()
+        ticker.fast_info.last_price = None
+        with patch("yfinance.Ticker", return_value=ticker):
+            out = datafeeds._get_price("NOTATICKER")
+        assert "private" in out and "not evidence" in out
+        assert not guards.redirects_elsewhere(out)
+
+    def test_a_city_palmer_cannot_place_is_asked_about_not_disclaimed(self):
+        import traffic
+        with patch.object(traffic, "_geocode_city", return_value=None):
+            line, why = traffic.city_traffic("Nowheresville")
+        assert line is None and why == "unknown_city"
 
 
 class TestFlightWatches:

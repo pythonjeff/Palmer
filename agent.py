@@ -10,6 +10,7 @@ system prompt for every user-facing message (see CLAUDE.md "One voice").
 import json
 import re
 import threading
+import traceback
 from datetime import datetime, timedelta, timezone
 
 from db import (
@@ -466,6 +467,42 @@ def _normalize_due_at(phone: str, raw: str) -> tuple[str | None, str, str | None
     return canonical, label, None
 
 
+def _tool_error(name: str, exc: Exception) -> str:
+    """What the model is told when a tool raises.
+
+    Nothing wrapped the dispatch chain, so a raise from anywhere in it escaped
+    `get_reply` entirely, `main.py` answered the falsy reply with FALLBACK_SMS,
+    and every tool result already gathered that turn went with it. That is the
+    same failure TOOL_ITERATION_CAP was fixed for — a turn dying on machinery
+    rather than on anything the user did — and it was never fixed for exceptions.
+
+    Deliberately NOT the raw exception text. `netutil._http_get_json_retry`
+    re-raises the underlying urllib error on its last attempt, and that message
+    carries the full request URL — which for SerpAPI carries the API key.
+    `netutil` already logs `url.split("?")[0]` for exactly this reason. Argument
+    errors are our own strings, carry no secrets, and are the only ones the model
+    can actually act on, so those pass through and nothing else does.
+
+    The wording is load-bearing in three directions. "Not a missing capability"
+    stops this string doing what `flights.py`'s old bare "unavailable" did — get
+    paraphrased into a refusal, then into a competitor. "Do not invent" covers
+    the other way it can go wrong. And the phrasing it hands the model is
+    transient ("couldn't pull this one right now"), which is the sanctioned
+    failure line in SYSTEM_PROMPT rather than a claim about what Palmer is."""
+    detail = (f"{type(exc).__name__}: {exc}"[:160]
+              if isinstance(exc, (KeyError, ValueError, TypeError))
+              else type(exc).__name__)
+    return (
+        f"{name} errored this turn ({detail}). This is a fault on my side, not a "
+        f"missing capability — the tool exists and normally works. Do NOT tell them "
+        f"you can't do this, do NOT name another app or site, and do NOT invent or "
+        f"guess the result. If that reads like a bad argument, fix it and call "
+        f"{name} once more. Otherwise answer the rest of what they asked and say "
+        f"plainly, in your own voice, that you couldn't pull this one right now and "
+        f"will try again."
+    )
+
+
 # One more than the six it was, because the ceiling was reachable in ordinary
 # use: adding three tickers and asking for the commute is five calls before the
 # model has said anything. Kept low deliberately — this bounds a live reply.
@@ -603,10 +640,15 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
             # end_turn with no text — unlikely but guard anyway
             raise RuntimeError(f"stop_reason={response.stop_reason} but no text block in response")
 
-        tool_results = []
-        for b in response.content:
-            if b.type != "tool_use":
-                continue
+        def _dispatch(b):
+            """Run one tool_use block and return its result string.
+
+            Every branch lives in here for one reason: so the caller can put a
+            single try/except around the lot. Nested rather than module-level
+            because it is still `get_reply`'s body either way, and a dozen tests
+            read `inspect.getsource(get_reply)` to assert a branch says what it
+            should. `nonlocal` is for send_gif, the one branch that writes back."""
+            nonlocal gif_url
             if b.name == "web_search":
                 result = _search(b.input["query"])
             elif b.name == "get_weather":
@@ -662,6 +704,29 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 result = f"GIF queued: {gif_url}" if gif_url else "No GIF found for that query."
             elif b.name == "set_reminder":
                 recurrence = b.input.get("recurrence")
+                # A JSON-schema enum is guidance to the model, not a constraint
+                # the API enforces, and nothing downstream checked either:
+                # save_reminder stores whatever string arrives, the dispatch
+                # confirmed "It repeats (monthly)", and then next_occurrence
+                # returned None for anything outside RECURRENCES so the row was
+                # never re-armed. The user was told it repeats and got exactly
+                # one text — the precise outcome SYSTEM_PROMPT and the tool
+                # description both promise will never happen. Refuse on the
+                # write path, where the model can still fix it this turn.
+                from timeutil import RECURRENCES
+                if recurrence:
+                    # Normalize the same way next_occurrence does, so what is
+                    # stored is what the send path will accept.
+                    recurrence = recurrence.strip().lower()
+                    if recurrence not in RECURRENCES:
+                        return (
+                            f"Didn't save that reminder — {b.input.get('recurrence')!r} isn't a "
+                            f"repeat I can keep. The ones that work are: {', '.join(RECURRENCES)}. "
+                            f"Either call set_reminder again with the nearest one that honestly "
+                            f"matches what they asked for and say plainly what you set, or, if "
+                            f"none of them does, set it as a one-time reminder and tell them it "
+                            f"won't repeat — so they aren't left believing it's still running."
+                        )
                 due_utc, when_local, err = _normalize_due_at(phone_number, b.input["due_at"])
                 if err:
                     # Nothing saved. Hand the model the problem rather than a
@@ -1093,11 +1158,42 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 from traffic import get_travel_time
                 result = get_travel_time(b.input["origin"], b.input["destination"])
             elif b.name == "get_city_traffic":
-                from traffic import get_city_traffic
-                line = get_city_traffic(b.input["city"])
-                result = line if line else f"No live traffic data available for {b.input['city']!r} right now."
+                from traffic import city_traffic
+                asked_city = b.input["city"]
+                line, why = city_traffic(asked_city)
+                if line:
+                    result = line
+                elif why == "unknown_city":
+                    result = (f"Couldn't find a city matching {asked_city!r}. Ask them to "
+                              f"confirm it (state or country if it's ambiguous) — do not "
+                              f"guess conditions and do not name a maps app.")
+                else:
+                    # A bare "no data available" was all this said, so a
+                    # transient outage and an unknown city read identically to
+                    # the model and both got paraphrased the same way.
+                    result = (f"Traffic didn't come back for {asked_city!r} just now. You DO "
+                              f"have live traffic — say plainly you couldn't pull it this "
+                              f"second and offer to try again. Do not guess conditions and "
+                              f"do not name a maps app.")
             else:
                 result = "Unknown tool."
+            return result
+
+        tool_results = []
+        for b in response.content:
+            if b.type != "tool_use":
+                continue
+            try:
+                result = _dispatch(b)
+            except Exception as e:
+                # A bug still has to look like a bug here: full type, message
+                # and stack. Only the model's copy is redacted (see _tool_error).
+                print(f"TOOL {b.name} raised: {type(e).__name__}: {e}")
+                traceback.print_exc()
+                result = _tool_error(b.name, e)
+            # Every tool_use block must come back with a matching tool_result or
+            # the next messages.create rejects the turn — which is why the except
+            # wraps one block rather than the whole loop.
             tool_results.append({"type": "tool_result", "tool_use_id": b.id, "content": result})
 
         if not tool_results:
