@@ -248,6 +248,44 @@ def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = 
             f"disappear without them knowing why."
         )
 
+    # Reminders were the one table-backed thing the model could not see. Watches
+    # and price watches are both listed below; a reminder — the thing the user
+    # explicitly asked to happen at a named time — was invisible, so "what have
+    # I got on" had nothing to answer from and "cancel my 4pm one" was a guess
+    # against twenty messages of history, against a tool that deletes.
+    try:
+        from db import get_pending_reminders
+        from timeutil import valid_zone, _zone
+        pending = get_pending_reminders(phone)
+    except Exception as e:
+        print(f"_build_system: could not read reminders for {phone}: {e}")
+        pending = []
+    if pending:
+        tz = valid_zone((profile or {}).get("timezone"))
+        lines = []
+        for r in pending[:10]:
+            when = r["due_at"]
+            try:
+                dt = datetime.fromisoformat(when)
+                if tz:
+                    dt = dt.astimezone(_zone(tz))
+                # Their clock, never UTC — the same rule the set_reminder
+                # confirmation follows, for the same reason.
+                when = dt.strftime("%A, %B %d at %-I:%M %p").replace(" 0", " ")
+            except Exception:
+                pass
+            repeat = f", repeats {r['recurrence']}" if r.get("recurrence") else ""
+            lines.append(f"- {r['text']} — {when}{repeat}")
+        system += (
+            "\n\nReminders they have set (their local time, not yours to convert):\n"
+            + "\n".join(lines)
+            + "\n\nThis is what is actually pending — it beats anything you remember from "
+            "the thread. If they ask what they have on, read from this. Before cancelling, "
+            "check it against what they said: cancel_reminders with no text_match takes "
+            "ALL of these, and a text_match is a substring, so a short one takes more than "
+            "they probably meant. If more than one matches, ask which."
+        )
+
     watches = get_user_watches(phone)
     if watches:
         watch_lines = "\n".join(
@@ -662,16 +700,26 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
             elif b.name == "get_price":
                 result = _get_price(_resolve_asset(b.input["asset"]))
             elif b.name == "add_weather_location":
-                from weather import resolve_weather_location, WEATHER_LOCATIONS_MAX
+                from weather import (resolve_weather_location, ambiguous_location,
+                                     WEATHER_LOCATIONS_MAX)
                 profile = get_profile(phone_number)
                 current = list(profile.get("weather_locations") or [])
                 asked = (b.input.get("location") or "").strip()
                 # Resolve on the WRITE path, once — never on read, which runs
                 # on every page view. Same terms as resolve_show/_normalize_price_topic.
                 resolved = resolve_weather_location(asked)
+                choices = ambiguous_location(asked)
                 if not resolved:
                     result = (f"Couldn't find a location matching {asked!r}. Ask them to "
                               f"confirm the city and state — do not guess one.")
+                elif choices:
+                    # Same posture as find_teams: several real places share this
+                    # name, so pinning one silently signs them up for the wrong
+                    # city's forecast on their own page.
+                    result = (f"{asked!r} matches more than one place: {', '.join(choices)}. "
+                              f"Ask which they mean in one short line, then call "
+                              f"add_weather_location again with the fuller name. Do NOT "
+                              f"pick one yourself.")
                 elif resolved.lower() == (profile.get("city") or "").lower():
                     result = f"{resolved} is already their primary city."
                 elif any(loc.lower() == resolved.lower() for loc in current):
@@ -910,8 +958,20 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 else:
                     result = f"Invalid time {b.input.get('time')!r} — must be 24-hour HH:MM, e.g. 07:00."
             elif b.name == "cancel_reminders":
-                count = cancel_reminders(phone_number, b.input.get("text_match"))
-                result = f"Cancelled {count} reminder(s)."
+                from db import cancel_reminders_named
+                match = b.input.get("text_match")
+                gone = cancel_reminders_named(phone_number, match)
+                if not gone:
+                    result = ("Nothing pending matched that, so nothing was cancelled. "
+                              "Tell them plainly rather than confirming a cancellation.")
+                else:
+                    listed = "; ".join(gone[:5])
+                    # Name what went. text_match is a substring, so "call" takes
+                    # "call mom" and "call the vet" together, and a bare count
+                    # left the user to work out which ones they had lost.
+                    result = (f"Cancelled {len(gone)}: {listed}. Say which ones went — "
+                              f"not just how many — so they can tell you if you took "
+                              f"one they wanted.")
             elif b.name == "add_watch":
                 watch_id = save_watch(phone_number, b.input["description"], b.input["queries"], b.input.get("cooldown_hours", 4))
                 result = f"Watch set (id={watch_id}). I'll check every 30 minutes and only text if something major breaks."
@@ -994,16 +1054,27 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     result = (f"{matches[0]['name']}: {describe(game)}" if game
                               else f"{matches[0]['name']} have no game today.")
             elif b.name == "follow_show":
-                from shows import resolve_show, FOLLOW_MAX
+                from shows import find_shows, ambiguous_shows, describe_show, FOLLOW_MAX
                 profile = get_profile(phone_number)
                 current = list(profile.get("shows") or [])
                 asked = (b.input.get("name") or "").strip()
                 # Resolve on the WRITE path, once — never on read, which runs on
                 # every page view. Same terms as _normalize_price_topic.
-                found = resolve_show(asked)
+                matches = find_shows(asked)
+                choices = ambiguous_shows(matches)
+                found = matches[0] if matches else None
                 if not found:
                     result = (f"No series matches {asked!r}. Ask them to confirm the title — "
                               f"do not guess one, and do not send them elsewhere to look it up.")
+                elif choices:
+                    # Same posture as find_teams. The Office, Shameless, Skins
+                    # and Ghosts are each two series, and following the wrong
+                    # one is silent until the episode rows are for a show they
+                    # don't watch.
+                    listed = " or ".join(describe_show(c) for c in choices)
+                    result = (f"{asked!r} matches more than one series: {listed}. Ask which "
+                              f"they mean in one short line, then call follow_show again with "
+                              f"the year or country in the title. Do NOT pick one yourself.")
                 elif any(sh.get("id") == found["id"] for sh in current):
                     result = f"They already follow {found['name']}."
                 elif len(current) >= FOLLOW_MAX:
@@ -1085,9 +1156,19 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 current = shopping.check_price(product_name)
                 if current:
                     set_price_watch_baseline(watch_id, current["price"], current["url"], current["merchant"])
+                    # Name the LISTING that was matched, not the words they
+                    # typed. The match is picked by a model with no confidence
+                    # floor, so "AirPods" can baseline on Gen 2, Gen 4 or Pro —
+                    # and echoing their own phrasing back made a wrong pick
+                    # invisible until an alert arrived about the wrong thing.
+                    # The Amazon path already does this; this one did not.
+                    matched = (current.get("title") or "").strip()
                     result = (
                         f"Price watch set (id={watch_id}) for {product_name}. "
-                        f"Currently ${current['price']:.2f} at {current['merchant'] or 'a store I found'}. "
+                        f"It matched: {matched or product_name} — "
+                        f"${current['price']:.2f} at {current['merchant'] or 'a store I found'}. "
+                        f"Name what it matched in your reply, in your own voice, so they can "
+                        f"correct you if it's the wrong version. "
                         f"I'll check every 12 hours and text if it hits{target_str}."
                     )
                 else:

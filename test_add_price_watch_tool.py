@@ -56,3 +56,25 @@ class TestBaselineSeededAtCreation:
         save.assert_called_once()
         set_baseline.assert_not_called()
         assert "couldn't pin down a confident match" in result.lower()
+
+
+class TestTheWatchNamesWhatItMatched:
+    """add_amazon_watch echoes the resolved listing; this path echoed the
+    user's own words back. The match is picked by a model with no confidence
+    floor, so "AirPods" can baseline on Gen 2, Gen 4 or Pro — and a wrong pick
+    stayed invisible until an alert arrived about the wrong product."""
+
+    def test_the_matched_title_is_in_the_tool_result(self):
+        import inspect, agent
+        block = inspect.getsource(agent.get_reply).split('"add_price_watch"')[1] \
+                                                  .split("elif b.name")[0]
+        assert 'current.get("title")' in block
+        assert "It matched:" in block
+
+    def test_the_model_is_told_to_say_it_out_loud(self):
+        """A resolved thing named only in the tool result is still invisible
+        to the person who can correct it."""
+        import inspect, agent
+        block = inspect.getsource(agent.get_reply).split('"add_price_watch"')[1] \
+                                                  .split("elif b.name")[0]
+        assert "correct you" in block

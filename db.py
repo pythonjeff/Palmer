@@ -500,14 +500,54 @@ def save_reminder(phone: str, text: str, due_at: str, recurrence: str | None = N
     conn.close()
 
 
+def get_pending_reminders(phone: str) -> list[dict]:
+    """Reminders not yet sent, soonest first.
+
+    Nothing could read these. Watches and price watches are both surfaced to
+    the model in _build_system, and reminders — the one thing the user
+    explicitly asked to happen at a named time — were the table it could not
+    see. So "what am I supposed to do today" had nothing to answer from, and
+    "cancel my 4pm one" was a guess against twenty messages of history."""
+    conn = _conn()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT id, text, due_at, recurrence FROM reminders "
+        f"WHERE phone = {PH} AND sent = 0 ORDER BY due_at ASC",
+        (phone,),
+    )
+    rows = [{"id": r["id"], "text": r["text"], "due_at": r["due_at"],
+             "recurrence": r["recurrence"]} for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+
 def cancel_reminders(phone: str, text_match: str = None) -> int:
+    """How many were cancelled. See cancel_reminders_named for which."""
+    return len(cancel_reminders_named(phone, text_match))
+
+
+def cancel_reminders_named(phone: str, text_match: str = None) -> list[str]:
+    """Cancel and return the TEXTS that went.
+
+    A bare count told the user four reminders were cancelled and left them to
+    work out which four — on a tool whose no-argument form deletes every
+    pending reminder they have, and whose text_match is a substring, so
+    "call" takes "call mom" and "call the vet" together."""
     conn = _conn()
     cur = conn.cursor()
     # recurrence = NULL as well as sent = 1: marking it sent alone would be
     # undone by the next re-arm, and it is also what makes a cancel that lands
     # between claim and re-arm stick (see rearm_reminder).
+    # Read the texts first, on the same connection, before the update lands.
     if text_match:
         pattern = f"%{text_match.lower().strip()}%"
+        cur.execute(
+            f"SELECT text FROM reminders WHERE phone = {PH} AND LOWER(text) LIKE {PH} "
+            f"AND sent = 0", (phone, pattern))
+    else:
+        cur.execute(f"SELECT text FROM reminders WHERE phone = {PH} AND sent = 0", (phone,))
+    cancelled = [r["text"] for r in cur.fetchall()]
+    if text_match:
         cur.execute(
             f"UPDATE reminders SET sent = 1, recurrence = NULL "
             f"WHERE phone = {PH} AND LOWER(text) LIKE {PH} AND sent = 0",
@@ -519,10 +559,9 @@ def cancel_reminders(phone: str, text_match: str = None) -> int:
             f"WHERE phone = {PH} AND sent = 0",
             (phone,),
         )
-    count = cur.rowcount
     conn.commit()
     conn.close()
-    return count
+    return cancelled
 
 
 def normalize_due_at_rows() -> int:
