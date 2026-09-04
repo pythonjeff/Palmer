@@ -2,8 +2,9 @@ import urllib.request
 import urllib.error
 from datetime import datetime, timezone, timedelta, date as _date
 
-from llm import client, HAIKU_MODEL
-from smstext import _sms_clean
+from agent import _build_system, base_system
+from llm import client, HAIKU_MODEL, SONNET_MODEL
+from smstext import _sms_clean, URL_RE
 from datafeeds import _search_raw
 from sources import source_tier, canonical_domain, corroborated
 from userprofile import _is_duplicate_subject, _user_already_covered
@@ -170,12 +171,75 @@ def _best_result(results: list[dict]) -> dict | None:
 
 
 def _format_alert(result: dict) -> str:
-    """Format a raw search result as a headline + link SMS."""
+    """The raw facts of an alert: headline, then link. Not what gets sent.
+
+    Used for the dedup gates and for the drafting fallback. Deduping on the
+    facts rather than on the drafted line is deliberate — the subject is the
+    news, not Palmer's phrasing, and a drafted line is a lossy paraphrase of
+    it. It also keeps a Sonnet call from running behind every candidate the
+    gates then throw away, which matters at a 30-minute cadence across every
+    watch on the system."""
     title = (result.get("title") or "").strip()
     url = (result.get("url") or "").strip()
     if title and url:
         return _sms_clean(f"{title}\n{url}")
     return _sms_clean(title or url)
+
+
+# The line has to leave room for a URL after it.
+ALERT_MAX_CHARS = 200
+
+
+def _draft_alert(phone: str, watch: dict, top: dict, fallback: str) -> str:
+    """The alert in Palmer's voice, with the link last and alone.
+
+    This was the one user-facing message in the system with no Palmer in it —
+    a bare `title\nurl`, no system prompt, no calibration, against the rule
+    that anything the user reads is drafted through _build_system. Its sibling
+    alerts.py has always done this; the two paths simply diverged.
+
+    Never raises. Every failure falls back to the raw headline, which is what
+    production sent before this existed — the same discipline as
+    morning._compose_morning, where a failed draft still delivers something."""
+    url = (top.get("url") or "").strip()
+    try:
+        system = _build_system(phone, include_recent=True)
+    except Exception as e:
+        # Not "no system prompt": that would drop the voice, the calibration
+        # AND every NEVER rule from a message still going out. Same call
+        # price_alert.py makes.
+        print(f"_draft_alert: _build_system failed for {phone}: {e}")
+        system = base_system()
+    try:
+        domain = canonical_domain(url) or "unknown source"
+        resp = client.messages.create(
+            model=SONNET_MODEL,
+            max_tokens=120,
+            system=system,
+            messages=[{"role": "user", "content": (
+                f"They asked you to watch this: {watch.get('description') or 'a story'}.\n"
+                f"It just moved. Here is the story, and it is ALL you have:\n\n"
+                f"[{domain}] {top.get('title') or ''}\n{(top.get('content') or '')[:400]}\n\n"
+                "Write ONE short text telling them, like you saw it and thought of them. "
+                "Lead with what happened. No opener, no ceremony.\n"
+                "You can see the headline and the snippet above and NOTHING else — do not "
+                "add background, consequence or history you were not given, and do not "
+                "invent a detail.\n"
+                "Don't say 'alert', 'update' or 'watch' — you're a friend, not an app.\n"
+                "Do NOT write a URL; the link is added after your line.\n"
+                f"No emoji, no markdown, plain text, under {ALERT_MAX_CHARS} characters."
+            )}],
+        )
+        line = _sms_clean((resp.content[0].text or "").strip())
+    except Exception as e:
+        print(f"_draft_alert: drafting failed for watch {watch.get('id')}: {e}")
+        return fallback
+    # A model-invented URL cannot ride along beside the real one: a message
+    # carrying two links draws no preview, and the wrong one may not resolve.
+    line = URL_RE.sub("", line).strip()
+    if not line:
+        return fallback
+    return _sms_clean(f"{line}\n{url}") if url else _sms_clean(line)
 
 
 def run_watches():
@@ -273,15 +337,25 @@ def run_watches():
                 print(f"Watch {watch['id']}: already claimed by another process, skipping")
                 continue
 
+            # Drafted LAST — after both dedup gates and after the claim — so a
+            # Sonnet call is only spent on an alert that is actually going out.
+            body = _draft_alert(watch["phone"], watch, top, fallback=alert)
+
             # A failed send must not become history. The watch claim above stays
             # spent either way: it is a rate limit, not a delivery record, so
             # burning one cooldown is far safer than retrying every tick against
             # a body the guard will block identically each time. (The inverse of
             # the reminder rule, where the claim IS the delivery record.)
-            if not send_sms(watch["phone"], alert):
+            #
+            # No add_status_callback here on purpose: send_sms sees the URL and
+            # turns the callback off itself, so a new sender inherits the rule
+            # instead of having to remember it.
+            if not send_sms(watch["phone"], body):
                 print(f"Watch {watch['id']}: send failed, not recording it as sent")
                 continue
-            save_message(watch["phone"], "assistant", alert, kind="watch")
+            # Save what was SENT. History is fed back to the model, and
+            # _is_duplicate_subject reads it — both have to see the real message.
+            save_message(watch["phone"], "assistant", body, kind="watch")
 
             # Use title for dedup context (shorter than full alert with URL)
             title = (top.get("title") or alert)[:120]
