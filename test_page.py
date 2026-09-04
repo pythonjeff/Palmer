@@ -340,3 +340,39 @@ class TestArrangeAffordance:
     def test_absent_without_a_number(self):
         with patch.dict(os.environ, {}, clear=True):
             assert "Want this arranged differently?" not in _render(name="Jeff")
+
+
+class TestScoresSection:
+    """One row per followed team: yesterday's result and today's game, from
+    the same payload rows the morning and evening texts are drafted from."""
+
+    ROW = {"team": "St. Louis Cardinals", "abbrev": "STL", "league": "mlb",
+           "last": {"id": "1", "state": "post", "detail": "Final",
+                    "home": {"abbrev": "STL", "name": "St. Louis Cardinals", "score": 5},
+                    "away": {"abbrev": "CHC", "name": "Chicago Cubs", "score": 2}},
+           "today": {"id": "2", "state": "pre", "detail": "7:15 PM CT",
+                     "home": {"abbrev": "STL", "name": "St. Louis Cardinals", "score": 0},
+                     "away": {"abbrev": "CHC", "name": "Chicago Cubs", "score": 0}}}
+
+    def _html(self, **over):
+        payload = {"city": "Kirkwood, MO", "scores": [self.ROW]}
+        payload.update(over)
+        return page.render(payload, token="t", image_url="i", page_url="p")
+
+    def test_it_renders_both_lines_from_the_teams_side(self):
+        html = self._html()
+        assert ">Scores<" in html
+        assert "beat Chicago Cubs 5-2" in html
+        assert "play Chicago Cubs, 7:15 PM CT" in html
+
+    def test_no_rows_no_section(self):
+        assert ">Scores<" not in self._html(scores=[])
+
+    def test_it_is_arrangeable_by_the_words_people_use(self):
+        for word in ("scores", "sports", "games", "my team"):
+            assert page.SECTION_WORDS[word] == "scores"
+        assert "scores" in page.DEFAULT_SECTION_ORDER
+
+    def test_it_can_be_hidden(self):
+        html = self._html(page_prefs={"hidden_sections": ["scores"], "section_order": []})
+        assert ">Scores<" not in html

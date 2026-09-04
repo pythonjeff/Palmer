@@ -180,7 +180,7 @@ CHIP_TEXT_MAX = 40
 # and the footer are deliberately not in the list: they are the page's
 # identity, not cards. "weather" is the extra-locations card — the hero always
 # shows the primary city.
-DEFAULT_SECTION_ORDER = ("weather", "commute", "markets", "news", "opening", "watching")
+DEFAULT_SECTION_ORDER = ("weather", "commute", "scores", "markets", "news", "opening", "watching")
 
 # The words users actually reach for, folded to canonical section names.
 # Same contract as opening.KIND_WORDS: an unknown word is surfaced by the
@@ -191,6 +191,8 @@ DEFAULT_SECTION_ORDER = ("weather", "commute", "markets", "news", "opening", "wa
 SECTION_WORDS = {
     "weather": "weather", "weather locations": "weather", "temps": "weather",
     "commute": "commute", "traffic": "commute", "drive": "commute",
+    "scores": "scores", "score": "scores", "sports": "scores", "games": "scores",
+    "teams": "scores", "my team": "scores",
     "markets": "markets", "market": "markets", "stocks": "markets",
     "prices": "markets", "tickers": "markets", "crypto": "markets",
     "news": "news", "headlines": "news", "stories": "news",
@@ -356,6 +358,30 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
              f'<div class=big>{e(t.get("live_min", 0))} min '
              f'<span class="note {tier}">{e(note)}</span></div>',
              _gauge(t.get("ratio") or 1.0, tier, span), "</div>"])
+
+    scores = payload.get("scores") or []
+    if scores:
+        # Yesterday's result and today's game, one row per followed team. The
+        # same rows the morning and evening texts are drafted from; a team
+        # with nothing on either day is simply absent (home._fetch_scores).
+        from sports import result_line
+        sec = ['<div class=card><div class=label>Scores'
+               f'<span class=as>{e(_ago(fetched.get("scores")))}</span></div>']
+        for row in scores:
+            team = {"abbrev": row.get("abbrev"), "name": row.get("team")}
+            lines = []
+            if row.get("today"):
+                lines.append(("Today", result_line(row["today"], team)))
+            if row.get("last"):
+                lines.append(("Yesterday", result_line(row["last"], team)))
+            inner = f'<div><div class=tick style="font-weight:700">{e(row.get("team") or "")}</div>'
+            for when, text in lines:
+                inner += f'<div class=src>{e(when)} &middot; {e(text)}</div>'
+            inner += "</div>"
+            sec.append(f'<div class=row style="display:flex;padding:14px 0;'
+                       f'border-top:1px solid var(--rule)">{inner}</div>')
+        sec.append("</div>")
+        sections["scores"] = "".join(sec)
 
     if prices:
         sec = ['<div class=card><div class=label>Markets'

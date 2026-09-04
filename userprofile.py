@@ -28,18 +28,17 @@ PROFILE_FIELDS = frozenset({
     "follow_up", "ongoing_threads", "communication_style", "commute",
     # briefing / scheduling config
     "morning_topics", "morning_time", "morning_enabled", "morning_onboarded",
-    "morning_prefs", "morning_sent_date", "interest_genres", "home_token",
+    "morning_prefs", "morning_sent_date", "home_token",
+    "evening_time", "evening_enabled", "evening_sent_date",
     "shows", "followed_teams", "weather_locations",
     # bookkeeping the jobs and handlers read
     "intro_sent", "conversation_topics", "reactions", "reactions_folded_count",
     "pending_morning_suggestion", "pending_preference_notice",
-    "alert_sent_date", "followup_sent_date", "city_ask_sent_date",
-    "onboarding_ask_sent",
-    # Which thread the last check-in was about, so the next one moves on, and
-    # the message count at the last consolidation, so it does not re-run every
-    # turn. Both bookkeeping, NOT extraction fields — deliberately absent from
-    # EXTRACT_PROMPT's schema so Haiku never writes them.
-    "followup_last_thread", "consolidated_at_count",
+    "city_ask_sent_date", "onboarding_ask_sent",
+    # The message count at the last consolidation, so it does not re-run every
+    # turn. Bookkeeping, NOT an extraction field — deliberately absent from
+    # EXTRACT_PROMPT's schema so Haiku never writes it.
+    "consolidated_at_count",
     "field_dates",
 })
 
@@ -126,21 +125,6 @@ def _normalize_profile(phone: str, profile: dict) -> dict:
         upsert_profile(phone, migrations)
         return {**profile, **migrations}
     return profile
-
-def _all_interests(profile: dict) -> list[str]:
-    """Collect all interest signals — morning_topics, sports_teams, interests — deduplicated."""
-    seen_lower: set[str] = set()
-    result = []
-    for key in ["morning_topics", "sports_teams", "interests"]:
-        val = profile.get(key)
-        if not val:
-            continue
-        items = val if isinstance(val, list) else [str(val)]
-        for item in items:
-            if item.lower() not in seen_lower:
-                seen_lower.add(item.lower())
-                result.append(item)
-    return result
 
 def _derive_timezone(city: str) -> str | None:
     """Return an IANA timezone string for a city, or None if it can't be determined."""
@@ -488,17 +472,18 @@ VERBATIM_WINDOW_HOURS = 72
 def _is_duplicate_subject(phone: str, new_text: str, window_hours: float = 6) -> bool:
     """True if new_text covers the same subject as something already sent to this
     phone in the last window_hours — catches cross-job topical redundancy (e.g. a
-    watch alert and a followup both about the same story within the same afternoon)
-    that per-job cooldowns can't see, since each job only checks its own history.
+    watch alert and a price alert both about the same story within the same
+    afternoon) that per-job cooldowns can't see, since each job only checks its
+    own history.
     Fails open (False) on any error so a broken check never blocks a real send."""
     from datetime import datetime, timezone, timedelta
     from db import get_recent_assistant_messages
 
     # A verbatim repeat needs no model and no six-hour window. One user got the
-    # identical followup twice — "yo how'd practice look today? hurts moving
-    # like they said?" — because the followup job runs every four hours, its
-    # subject stayed live for days, and this check only ever looked back six.
-    # The lexical pass is free, so it looks back much further.
+    # identical check-in twice — "yo how'd practice look today? hurts moving
+    # like they said?" — because the (since retired) follow-up job ran every
+    # four hours, its subject stayed live for days, and this check only ever
+    # looked back six. The lexical pass is free, so it looks back much further.
     from guards import near_duplicate
     wide_cutoff = (datetime.now(timezone.utc)
                    - timedelta(hours=max(window_hours, VERBATIM_WINDOW_HOURS))).isoformat()

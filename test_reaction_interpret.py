@@ -226,28 +226,12 @@ class TestPacingFactor:
         recovered = tapback.pacing_factor({"reactions": _neg("crypto", 1)})
         assert recovered < heavy
 
-    def test_followup_gap_stretches(self):
-        import followup
-        from datetime import datetime, timedelta
-        base = {"morning_onboarded": True, "timezone": "America/Chicago",
-                "ongoing_threads": ["job offer"]}
-        two_days_ago = (datetime.now() - timedelta(days=2)).date().isoformat()
-
-        with patch.object(followup, "_local_now",
-                          return_value=datetime.now().replace(hour=15)):
-            calm = dict(base, followup_sent_date=two_days_ago, reactions=[])
-            noisy = dict(base, followup_sent_date=two_days_ago, reactions=_neg("checkins", 4))
-            # 2 days < 3-day base gap either way, but the noisy user's gap is longer still
-            assert followup._should_send_followup(calm) is False
-            assert followup._should_send_followup(noisy) is False
-
-        four_days_ago = (datetime.now() - timedelta(days=4)).date().isoformat()
-        with patch.object(followup, "_local_now",
-                          return_value=datetime.now().replace(hour=15)):
-            calm = dict(base, followup_sent_date=four_days_ago, reactions=[])
-            noisy = dict(base, followup_sent_date=four_days_ago, reactions=_neg("checkins", 4))
-            assert followup._should_send_followup(calm) is True, "normal user is due at 4 days"
-            assert followup._should_send_followup(noisy) is False, "backed-off user is not"
+    def test_the_watch_cap_shrinks_for_a_backed_off_user(self):
+        """The one remaining consumer: watches.py lowers DAILY_ALERT_MAX by the
+        factor. (The follow-up job, which stretched its gap by it, is gone.)"""
+        import watches
+        noisy = {"reactions": _neg("checkins", 4)}
+        assert round(watches.DAILY_ALERT_MAX / tapback.pacing_factor(noisy)) < watches.DAILY_ALERT_MAX
 
 
 class TestPreferenceLearning:

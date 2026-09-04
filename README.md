@@ -1,6 +1,6 @@
 # Palmer
 
-**The AI that texts like a friend who actually pays attention.**
+**A personal assistant that works entirely over text — and only texts you on a schedule you set.**
 
 Palmer is a personal AI delivered entirely over SMS. No app to download, no interface to learn — just text it. It knows who you are, remembers what you care about, and reaches out when something worth knowing happens.
 
@@ -9,10 +9,13 @@ Palmer is a personal AI delivered entirely over SMS. No app to download, no inte
 ## What Palmer does
 
 ### Knows you
-Every exchange teaches Palmer something new. Your city, your job, your teams, your interests — it builds a picture of you and uses it the way a real friend would: casually, in context, without citation. The longer you text, the sharper it gets.
+Every exchange teaches Palmer something it can use. Your city, your commute, your teams, what you track — it keeps that on file and uses it to do the job without asking twice: weather for where you are, drive times from your address, your team's game in your updates. It does not recite it back and it does not bring your life up on its own.
 
 ### Sends your morning
-Each morning Palmer texts you a short, personalized briefing on what you actually care about — weather, local traffic, markets, sports, news. Not a newsletter. One text, just the things that matter, from today.
+Each morning Palmer texts you the basics — weather, your commute, your team's game, what's opening nearby — and a link to your page with the markets and news you follow. Not a newsletter. One text, just the things that matter, from today.
+
+### Evening update
+At 6pm, a second short text with only what changed since the morning: how the game went, tickers that moved, new headlines on your topics. On a day when nothing changed, nothing is sent.
 
 ### Watches for things
 Tell Palmer to watch for something — a geopolitical event, a company move, an athlete's health update, anything — and it runs that in the background. When it hits, you get a text. No feed to check.
@@ -20,11 +23,8 @@ Tell Palmer to watch for something — a geopolitical event, a company move, an 
 ### Sets reminders
 Natural-language reminders that arrive when you need them. "Remind me Friday morning to prep for the meeting." Done.
 
-### Sends alerts
-When something massive breaks in an area you care about, Palmer texts you before you'd think to check. Score threshold is high — it texts when it's actually worth knowing, not for every update.
-
-### Follows up
-If you mentioned an interview, a doctor's visit, a rough week — Palmer notices. It circles back a day or two later to ask how it went. Not scripted check-ins; it picks the thread worth pulling on.
+### Stays quiet otherwise
+Palmer never texts on its own initiative. Unprompted messages come from exactly three places: the two scheduled updates, and watches you set. No live score pings, no "saw this and thought of you", no checking in on how the interview went.
 
 ### Sees photos
 Send Palmer a picture and it'll actually respond to what's in it — a menu, a whiteboard, a receipt, a dog. It's using vision, not guessing from a filename.
@@ -39,7 +39,7 @@ Tell Palmer to pause the morning texts, drop a topic, forget a fact about you, o
 
 ## Personality
 
-Palmer is dry, quick, and observant. It's not an assistant and it's not a brand — it's a voice. It reads subtext, matches your energy, calls out patterns, and knows when to drop a GIF. Built on Claude, it converses like a person, not a product.
+Palmer is dry, quick, and direct. It leads with the answer, has opinions, doesn't pad and doesn't flatter. It sounds like a person rather than a product, but it is a tool first: the personality lives in precision and the occasional dry observation, not in making conversation. Built on Claude.
 
 ---
 
@@ -58,7 +58,7 @@ Palmer is dry, quick, and observant. It's not an assistant and it's not a brand 
 | Crypto prices | CoinGecko |
 | Stock prices | yfinance |
 | GIFs | Giphy |
-| Background jobs | APScheduler (reminders 1m · mornings 5m · watches 30m · alerts 60m · missing-data asks 60m · follow-ups 4h · price watches 6h) |
+| Background jobs | APScheduler (reminders 1m · mornings 5m · evenings 5m · watches 30m · missing-data asks 60m · price watches 2×/day · flight watches 1×/day) |
 | Database | Heroku Postgres |
 
 ---
@@ -142,7 +142,7 @@ GET /preview?phone=+15551234567         # generate morning briefing without send
 - Watches run every 30 minutes via APScheduler but only alert on major breaking developments — dated results from the last 12 hours, a strict criticality gate, a HEAD reachability check so a dead top link falls through to the next result, per-watch cooldown (default 4 hours), and dedup against the last alerted event.
 - Traffic uses TomTom. Morning briefings auto-include a short city snapshot (`get_city_traffic`): geocode → parallel Traffic Flow + Traffic Incidents in a city bounding box → Haiku drafts one natural line, or skips silently on failure. On demand, users can ask for city conditions or point-to-point drive times (`get_travel_time`, live traffic vs. free-flow). Landmark destinations (White House, Fenway, LAX) get resolved to street addresses by Sonnet before geocoding — TomTom's geocoder is a mapping API, not a search engine, and mis-ranks landmark names.
 - Price watches use SerpAPI Google Shopping (`shopping.py`): user texts "watch these sneakers under $80" → `add_price_watch` tool saves to `price_watches` → `run_price_watches` job runs every 6h. Each tick: SerpAPI Google Shopping query on the product name, Haiku picks the cheapest genuine match from the top candidates (guards against firing on unrelated accessories/refurbs), first successful check establishes a baseline silently, subsequent checks alert when the target is hit or the price drops ≥ 15% from baseline. Cooldown defaults to 12h. Fails silently on any SerpAPI error — never surfaces "shopping tool failed" to the user.
-- Proactive outbound is scheduled: **mornings** at each user's local time (5-min tick, catch-up window, per-day guard), **breaking-news alerts** every 60 min (score ≥ 8, 1–9pm local send window), **follow-ups** every 4h (Haiku picks one ongoing thread, Sonnet drafts, 1–7pm window, 3-day gap guard), and **missing-data asks** every 60 min for users onboarded without a city so mornings can target them (7-day cooldown, US-daytime UTC window; `DATA_ASK_DRY_RUN=1` to preview).
+- Proactive outbound is scheduled: **mornings** at each user's local time (5-min tick, catch-up window, per-day guard), **evenings** the same way (default 6pm local; a diff against the morning — scores, market moves over 1%, new headlines — and no text on a quiet day), and **missing-data asks** every 60 min for users onboarded without a city so mornings can target them (7-day cooldown, US-daytime UTC window; `DATA_ASK_DRY_RUN=1` to preview). There is no other unprompted sender: the live score poller, the daily "breaking news" alert and the profile check-in were all retired in favour of the evening update.
 - Reminder delivery uses `FOR UPDATE SKIP LOCKED` on Postgres — safe for multiple scheduler ticks, no double-sends.
 - Twilio webhook signatures (HMAC-SHA1) validated on every inbound request. All DB queries parameterized and scoped to phone number.
 - Tool routing is hard: `get_weather` → NWS/Open-Meteo only, `get_price` → CoinGecko/yfinance only, traffic tools → TomTom only, product price watches → SerpAPI only, web search → Tavily news mode. No overlap, no hallucinated data.

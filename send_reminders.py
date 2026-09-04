@@ -26,7 +26,7 @@ def _personalize_reminder(phone: str, text: str, profile: dict) -> str:
 Reminder: {text}
 
 Rules:
-- Sound like a friend, not an app. "hey, didn't you have that interview today?" not "Reminder: interview"
+- Sound like a person, not an app. "didn't you have that interview today?" not "Reminder: interview". Plain and direct — this is the nudge they asked for, not a conversation opener.
 - If the context is stressful or significant, dial in — don't be breezy about a medical appointment
 - Under 120 characters. Plain text only, no emoji.
 - Just the message, nothing else."""}],

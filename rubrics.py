@@ -4,11 +4,12 @@ The rubrics are where Palmer's taste lives. They enumerate — in plain prose,
 the way a real friend would think about it — what actually deserves a text
 about a given kind of topic, and what nobody would bother sending.
 
-Both watches.py (user-created news watches) and alerts.py (unprompted daily
-push from profile interests) call classify_genre() once per topic and then
-splice rubric_for(genre) into their Haiku scoring prompt. First classification
-is cached in-process; watches.py additionally persists it to the row so
-subsequent process starts don't re-pay the cost.
+watches.py (user-created news watches) calls classify_genre() once per topic
+and then splices rubric_for(genre) into its Haiku scoring prompt. First
+classification is cached in-process; watches.py additionally persists it to
+the row so subsequent process starts don't re-pay the cost. (An unprompted
+daily alert job used to share these; it was retired in favour of the evening
+update, which is a diff rather than a judgment call.)
 """
 from __future__ import annotations
 
@@ -156,7 +157,7 @@ def classify_genre(topic: str) -> str:
 
     Result is memoized in-process on the trimmed-lowercased topic so repeats
     are free within a dyno's lifetime. Callers that want persistence across
-    restarts (watches.py, alerts.py) also stash the value in the DB / profile.
+    restarts (watches.py) also stash the value in the DB row.
 
     Returns 'other' on any parse or API failure — never raises."""
     key = _cache_key(topic)

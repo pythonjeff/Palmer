@@ -718,6 +718,14 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                           f"{profile.get('city')!r} -> {new_city!r}")
                 if "enabled" in b.input:
                     updates["morning_enabled"] = b.input["enabled"]
+                evening_note = ""
+                if "evening_enabled" in b.input:
+                    updates["evening_enabled"] = bool(b.input["evening_enabled"])
+                    evening_note = (" The evening update is on: at 6pm (or the time they set) they "
+                                    "get only what changed since the morning, and nothing on a day "
+                                    "when nothing did."
+                                    if updates["evening_enabled"]
+                                    else " The evening update is off; mornings are unchanged.")
                 opening_note = _apply_opening_kinds(profile, b.input, updates)
                 if "episode_alerts" in b.input:
                     prefs = dict(updates.get("morning_prefs")
@@ -751,12 +759,15 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 topic_str = ", ".join(topics) if topics else "none"
                 enabled = updates.get("morning_enabled")
                 if enabled is False:
-                    result = f"Morning briefing paused. Topics saved: {topic_str}. Say 'resume my morning' to turn it back on."
+                    result = (f"Updates paused — the morning and the evening both. Topics saved: "
+                              f"{topic_str}. Say 'resume my morning' to turn them back on.")
                 elif enabled is True:
-                    result = f"Morning briefing resumed. Topics: {topic_str}."
+                    result = (f"Updates on. Topics: {topic_str}. They get the morning at 7 (their "
+                              f"time) and, at 6pm, an evening text with only what changed — "
+                              f"mention the evening in one clause so they know it is coming.")
                 else:
-                    result = f"Morning briefing updated. Topics: {topic_str}."
-                result += opening_note
+                    result = f"Updates changed. Topics: {topic_str}."
+                result += opening_note + evening_note
                 for added, dup in overlaps:
                     result += (f" Note: {added!r} may cover the same ground as {dup!r}, "
                                f"which they already track. Both are on the list now — "
@@ -833,9 +844,10 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                                + " — ask which they meant in one short line, don't guess.")
             elif b.name == "set_morning_time":
                 normalized = _normalize_hhmm(b.input.get("time", ""))
+                which = "evening" if b.input.get("which") == "evening" else "morning"
                 if normalized:
-                    upsert_profile(phone_number, {"morning_time": normalized})
-                    result = f"Morning briefing time set to {normalized} local."
+                    upsert_profile(phone_number, {f"{which}_time": normalized})
+                    result = f"{which.capitalize()} update time set to {normalized} local."
                 else:
                     result = f"Invalid time {b.input.get('time')!r} — must be 24-hour HH:MM, e.g. 07:00."
             elif b.name == "cancel_reminders":
@@ -891,9 +903,17 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 else:
                     current.append(matches[0])
                     upsert_profile(phone_number, {"followed_teams": current})
-                    result = (f"Now following {matches[0]['name']}. They get a text when the lead "
-                              f"changes, when someone scores in the last five minutes, and at the "
-                              f"final — a few a game, not every play. Say that plainly.")
+                    try:
+                        from home import invalidate
+                        invalidate(phone_number, ("scores",))
+                    except Exception as e:
+                        print(f"home.invalidate after follow_team failed: {e}")
+                    result = (f"Now following {matches[0]['name']}. Their game rides in the two "
+                              f"scheduled updates: the morning carries last night's result and "
+                              f"tonight's game, the evening carries how it went, and the Scores "
+                              f"section of their page has both. There are NO live score texts "
+                              f"during a game — say that plainly if they asked for play-by-play, "
+                              f"and do not promise one.")
             elif b.name == "unfollow_team":
                 profile = get_profile(phone_number)
                 current = list(profile.get("followed_teams") or [])
@@ -908,8 +928,13 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 dropped = len(current) - len(kept)
                 if dropped:
                     upsert_profile(phone_number, {"followed_teams": kept})
-                result = (f"Stopped score alerts for {dropped} team(s)." if dropped
-                          else "No followed team matched that.")
+                    try:
+                        from home import invalidate
+                        invalidate(phone_number, ("scores",))
+                    except Exception as e:
+                        print(f"home.invalidate after unfollow_team failed: {e}")
+                result = (f"Unfollowed {dropped} team(s); their games leave the updates and the page."
+                          if dropped else "No followed team matched that.")
             elif b.name == "get_score":
                 from sports import find_teams, team_game, describe
                 matches = find_teams(b.input.get("team", ""))

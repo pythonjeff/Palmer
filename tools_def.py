@@ -104,13 +104,14 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "update_morning_briefing",
-        "description": "Add or remove things the user tracks, or pause/resume their morning entirely. This ONE list drives both their morning update and their live page, so it is also how the page changes: a topic that names something tradeable becomes a live price row in Markets, and everything else becomes a followed subject.\n\nUse it whenever they ask to start or stop tracking anything, in whatever words they reach for — 'add Bitcoin to my morning', 'add Apple stock to markets', 'put Nvidia on my site', 'track Tesla for me', 'start following the Cardinals', 'drop the movie stuff', 'stop sending me sports'. Do not treat 'markets', 'my site', 'my page', and 'my morning' as different places; they are the same list and you update it the same way.\n\nFor a price, pass the company or asset plus the word stock or price ('Apple stock price', 'Bitcoin price') — the ticker is resolved and verified for you, so never refuse because you are unsure whether something is listed and never invent a ticker yourself. Say 'stop my morning' / 'pause mornings' for enabled=false, 'resume my morning' for enabled=true; topics are preserved when paused.\n\nThe Opening section is separate from topics and is tuned with opening_add / opening_remove, not by adding a topic string. If they say 'I want movie openings too', 'add concerts to my morning', 'stop telling me about restaurants' or 'no more shows', that is opening_add/opening_remove — not add/remove, which are for subjects Palmer searches news for. All three kinds are on by default. Different from set_reminder — these repeat every day.",
+        "description": "Add or remove things the user tracks, or pause/resume their scheduled updates (the morning and the evening) entirely. This ONE list drives both their morning update and their live page, so it is also how the page changes: a topic that names something tradeable becomes a live price row in Markets, and everything else becomes a followed subject.\n\nUse it whenever they ask to start or stop tracking anything, in whatever words they reach for — 'add Bitcoin to my morning', 'add Apple stock to markets', 'put Nvidia on my site', 'track Tesla for me', 'start following the Cardinals', 'drop the movie stuff', 'stop sending me sports'. Do not treat 'markets', 'my site', 'my page', and 'my morning' as different places; they are the same list and you update it the same way.\n\nFor a price, pass the company or asset plus the word stock or price ('Apple stock price', 'Bitcoin price') — the ticker is resolved and verified for you, so never refuse because you are unsure whether something is listed and never invent a ticker yourself. Say 'stop my morning' / 'pause mornings' / 'stop the updates' for enabled=false (pauses the morning AND the evening), 'resume my morning' for enabled=true; topics are preserved when paused. The evening update — a short text with only what changed since the morning — is on by default and has its own switch: 'stop the evening one' / 'just mornings' is evening_enabled=false, 'turn the evening update back on' is evening_enabled=true.\n\nThe Opening section is separate from topics and is tuned with opening_add / opening_remove, not by adding a topic string. If they say 'I want movie openings too', 'add concerts to my morning', 'stop telling me about restaurants' or 'no more shows', that is opening_add/opening_remove — not add/remove, which are for subjects Palmer searches news for. All three kinds are on by default. Different from set_reminder — these repeat every day.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "add": {"type": "array", "items": {"type": "string"}, "description": "Topics to add, e.g. ['Bitcoin price', 'St. Louis weather']"},
                 "remove": {"type": "array", "items": {"type": "string"}, "description": "Topics to remove"},
-                "enabled": {"type": "boolean", "description": "Set false to pause morning briefings, true to resume. Topics are preserved."},
+                "enabled": {"type": "boolean", "description": "Set false to pause BOTH scheduled updates (morning and evening), true to resume them. Topics are preserved."},
+                "evening_enabled": {"type": "boolean", "description": "Set false to stop only the evening update ('just the morning', 'no evening texts'), true to bring it back. Leaves the morning alone."},
             "opening_add": {
                 "type": "array",
                 "items": {"type": "string", "enum": ["restaurants", "events", "movies"]},
@@ -128,7 +129,7 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "arrange_page",
-        "description": "Change how the user's Palmer Home page is ARRANGED — presentation only, never what is tracked. Use when they ask to reorder, sort, or hide sections of their page: 'sort my stocks by biggest movers', 'put markets at the top', 'move news below markets', 'hide the commute', 'bring the news section back'.\n\nSections: weather (their extra pinned locations — the main city's forecast at the top always stays), commute, markets, news, opening, watching. Pass the words they used; unrecognized ones come back for you to ask about, so never guess a mapping yourself.\n\nThis is NOT for changing WHAT they track — 'add Apple', 'drop the Eagles' is update_morning_briefing, and trimming Opening kinds ('no more concerts') is opening_add/opening_remove. 'Take news off my page' is this tool only when they mean hide the section; if they mean stop following the topics, that is update_morning_briefing. When it is genuinely unclear, ask in one short line. Confirm what changed in your own voice, without reading back internal section names.",
+        "description": "Change how the user's Palmer Home page is ARRANGED — presentation only, never what is tracked. Use when they ask to reorder, sort, or hide sections of their page: 'sort my stocks by biggest movers', 'put markets at the top', 'move news below markets', 'hide the commute', 'bring the news section back'.\n\nSections: weather (their extra pinned locations — the main city's forecast at the top always stays), commute, scores, markets, news, opening, watching. Pass the words they used; unrecognized ones come back for you to ask about, so never guess a mapping yourself.\n\nThis is NOT for changing WHAT they track — 'add Apple', 'drop the Eagles' is update_morning_briefing, and trimming Opening kinds ('no more concerts') is opening_add/opening_remove. 'Take news off my page' is this tool only when they mean hide the section; if they mean stop following the topics, that is update_morning_briefing. When it is genuinely unclear, ask in one short line. Confirm what changed in your own voice, without reading back internal section names.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -150,11 +151,12 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "set_morning_time",
-        "description": "Change what time the user's daily morning briefing is sent, in their local timezone. Use when they ask to get their morning update earlier, later, or at a specific time (e.g. 'send my update at 8', 'make my briefing 9am'). The default is 07:00. Convert whatever they say into 24-hour HH:MM.",
+        "description": "Change what time one of the user's two daily updates is sent, in their local timezone. Use when they ask to get an update earlier, later, or at a specific time ('send my update at 8', 'make my briefing 9am', 'move the evening one to 7'). Defaults are 07:00 for the morning and 18:00 for the evening. Convert whatever they say into 24-hour HH:MM, and pass which='evening' when they mean the evening update.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "time": {"type": "string", "description": "24-hour local time HH:MM, e.g. '07:00' for 7am, '08:30' for 8:30am, '09:15' for 9:15am"},
+                "time": {"type": "string", "description": "24-hour local time HH:MM, e.g. '07:00' for 7am, '08:30' for 8:30am, '19:00' for 7pm"},
+                "which": {"type": "string", "enum": ["morning", "evening"], "description": "Which update to move. Defaults to 'morning'. Use 'evening' for 'the evening one', 'the 6pm text', 'my end-of-day update'."},
             },
             "required": ["time"],
         },
@@ -295,7 +297,7 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "get_my_page",
-        "description": "Return the live URL of THIS user's own page — the same one that goes out with their morning update. It holds their weather, commute, the prices they follow, their headlines, and everything you're watching for them, and it refreshes itself. Call this whenever they ask for it in any words: 'send me my page', 'what's that link', 'link me my dashboard', 'can I see my stuff', 'resend this morning's link', 'where's my briefing'. Also call it when they ask for a rundown of everything at once ('catch me up', 'what's going on today') and the page would answer better than a wall of text — but not for a single specific question, where the right tool is the specific one. The URL is stable and permanent, so resending it is always safe.\n\nThe tool result contains the URL. Put it at the very END of your reply with nothing after it, exactly as returned — no shortening, no markdown, no parentheses around it. Message apps only draw the rich preview when the link sits at a boundary, and that preview is the point. Say one short thing in your own voice and let the link close the message.",
+        "description": "Return the live URL of THIS user's own page — the same one that goes out with their morning and evening updates. It holds their weather, commute, their team's games, the prices they follow, their headlines, and everything you're watching for them, and it refreshes itself. Call this whenever they ask for it in any words: 'send me my page', 'what's that link', 'link me my dashboard', 'can I see my stuff', 'resend this morning's link', 'where's my briefing'. Also call it when they ask for a rundown of everything at once ('catch me up', 'what's going on today') and the page would answer better than a wall of text — but not for a single specific question, where the right tool is the specific one. The URL is stable and permanent, so resending it is always safe.\n\nThe tool result contains the URL. Put it at the very END of your reply with nothing after it, exactly as returned — no shortening, no markdown, no parentheses around it. Message apps only draw the rich preview when the link sits at a boundary, and that preview is the point. Say one short thing in your own voice and let the link close the message.",
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -375,7 +377,7 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "follow_team",
-        "description": "Follow a sports team for live score alerts. Use when they say they want score updates — 'follow the Eagles', 'text me Cardinals scores', 'track the Blues'. They get a text when the lead changes, when someone scores in the last five minutes, and at the final — a few a game, not every play. Team names are ambiguous ('Cardinals' is two teams, 'Rangers' is two), so if the result comes back with more than one match, ASK which they mean before following.",
+        "description": "Follow a sports team so its games ride in the user's scheduled updates. Use when they say they want to keep up with a team — 'follow the Eagles', 'text me Cardinals scores', 'track the Blues', 'put my team in my morning'. The morning update carries last night's result and tonight's game, the evening update carries how it went, and the Scores section of their page has both. There are NO live texts during a game — if they ask for play-by-play or 'text me when they score', say plainly that it is the morning and evening, not live. Team names are ambiguous ('Cardinals' is two teams, 'Rangers' is two), so if the result comes back with more than one match, ASK which they mean before following.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -386,7 +388,7 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "unfollow_team",
-        "description": "Stop live score alerts for a team. Pass text_match with part of the team name; omit to stop all of them.",
+        "description": "Stop following a team — its games leave the morning and evening updates and the page. Pass text_match with part of the team name; omit to stop all of them.",
         "input_schema": {
             "type": "object",
             "properties": {"text_match": {"type": "string", "description": "Part of the team name. Omit to unfollow all."}},
