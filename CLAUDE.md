@@ -59,6 +59,8 @@ Schema is created lazily in `init_db()`, called at import time from `agent.py`. 
 llm.py          client, HAIKU_MODEL, SONNET_MODEL, _parse_json
 netutil.py      _http_get_json, _http_get_json_retry
 smstext.py      _sms_clean, shorten_message, _normalize_hhmm, _parse_published
+timeutil.py     local_now/local_today, valid_zone, clock_block, resolve_day_delta,
+                RECURRENCES, next_occurrence — imports nothing from Palmer
 prompts.py      SYSTEM_PROMPT, EXTRACT_PROMPT, CONSOLIDATE_PROMPT
 tools_def.py    TOOLS schema
 weather.py      geocoding, NWS (US) + Open-Meteo (rest of world)
@@ -234,6 +236,20 @@ There used to be a second tier of paths carrying their own one-line persona ("Yo
 
 The deliberate exception is `traffic.py`: its output is *source data* for a draft that already carries the system prompt (morning briefings, and the `get_city_traffic` tool inside `get_reply`), so it is a plain factual summarizer on Haiku. Voicing it there would layer a second, uncalibrated Palmer under a real one.
 
+`watches.py` was an unrecorded second exception until recently: `run_watches` sent
+`_format_alert`'s bare `title\nurl` — no system prompt, no calibration, and an
+unprompted URL with nothing around it. `_draft_alert` now writes the line through
+`_build_system` on Sonnet, exactly as its sibling `alerts.py` always did, with the
+URL appended by the caller so it stays last and alone. Three things there are
+load-bearing: the draft runs **after** both dedup gates and the claim (deduping on
+a paraphrase is worse than deduping on the facts, and drafting first would spend a
+Sonnet call on every candidate the gates discard, at a 30-minute cadence); what is
+sent is what is saved, so history and `_is_duplicate_subject` see the real message;
+and every failure still delivers — `base_system()` when `_build_system` raises,
+the raw headline when the draft does. `update_watch_alerted` still stores the
+factual title, because that string is fed back into `_check_watch_hit`'s
+already-sent block where a voiced paraphrase would degrade the match.
+
 ### A reply never dies because the turn was long
 `agent.TOOL_ITERATION_CAP` bounds the tool loop, and hitting it used to **raise**.
 `main.py` catches that, leaves `reply` falsy, and answers a falsy reply with
@@ -248,6 +264,78 @@ mid-word. `_trim_to_sentence` cuts back to the last complete sentence, but only
 when that leaves most of the message standing: trimming "Ok. <thirty truncated
 words>" back to "Ok." throws away everything the reply was for, so there the
 fragment wins.
+
+### A tool that raises must not take the turn with it
+Nothing wrapped the dispatch chain in `get_reply`, so a raise from any of the 31
+branches escaped the function: `main.py` caught it, left `reply` falsy, and
+answered with `FALLBACK_SMS`. Every tool result already gathered went with it —
+in a three-intent message, one failing DB write destroyed the two intents that
+had already succeeded. That is the same failure `TOOL_ITERATION_CAP` was fixed
+for, reached through a different door.
+
+The chain lives in a nested `_dispatch()` and the caller wraps **one block at a
+time**, not the whole loop: every `tool_use` block must come back with a matching
+`tool_result` or the next `messages.create` rejects the turn, so catching around
+the loop would lose the other tools' results and dead-end the turn by another
+route. Nested rather than module-level because fourteen assertions across eight
+test files read `inspect.getsource(get_reply)` to check what a branch says.
+
+`_tool_error` reduces the exception to its type unless it is ours (`KeyError`,
+`ValueError`, `TypeError` — our own strings, and the only ones the model can act
+on). `netutil` re-raises the underlying urllib error on its last attempt, and
+that message carries the request URL, which for SerpAPI carries the API key.
+
+The six `home.invalidate` try/excepts stay. They wrap a best-effort cache expiry
+that runs **after a successful write**, so folding them into the outer catch
+would turn a stale cache into a tool error for an operation that actually
+succeeded — Palmer would tell the user their topic wasn't added when it was.
+
+**A failure string is a prompt.** `flights.py` set the pattern — say what failed,
+say what to do next, never imply the capability is missing — and it had not
+reached `datafeeds`, which backs `web_search` and `get_price` and returned eight
+dead ends, three of them interpolating raw exception text into the drafting
+context. `"No results found."` was the commonest failure string in the system,
+since the recency window and the source floor throw most of a page away by
+design. Also fixed: `shopping`'s browse and search no-result strings, `hotels`'
+two (its sibling branch in `flights.py` got the treatment and it did not), and
+`get_city_traffic`, which collapsed "no key", "unknown city" and "API down" into
+one `None` the dispatch could not tell apart — `traffic.city_traffic` returns the
+reason, and `get_city_traffic` stays a thin wrapper because `morning.py` wants
+exactly a line or nothing.
+
+### A capability denial is caught in code, like a handoff
+`guards.redirects_elsewhere` only fires when a denial is *accompanied by* a
+competitor. Three of the four real production violations in
+`test_guards_and_flights.py` are denials first and handoffs second — strip the
+brand name and nothing caught what was left. `guards.denies_capability` closes
+that, wired into `agent._finalize`'s existing loop.
+
+Two tiers, for the reason `leaks_deliberation` has two. Damning alone: the
+app-inventory register ("not in my toolbox", "outside my capabilities"). A person
+with a real gap says "I can't send email"; nobody says "email isn't in my
+toolbox", so this tier needs no capability object and cannot collide with an
+honest gap. Damning together: a **first-person** denial plus a job Palmer has a
+tool for, unless the clause carries a transient marker.
+
+First person is load-bearing twice. Every tool failure string addresses Palmer in
+the second person ("never say you cannot do flights"), so anchoring on "I" keeps
+the guard off Palmer's own scaffolding; and it keeps it off a third party's
+limits ("the airline doesn't publish seat maps") with no separate exclusion —
+the same structural reason those sentences survive the redirect guard. The
+transient exemption is the sentence `SYSTEM_PROMPT` actually asks for when a tool
+is down, so it is the shape being protected rather than policed.
+
+**Redraft only, never a `send_sms` block.** A deliberation leak is blocked
+outright because the drafter was announcing it had decided not to send. A
+capability denial is a reply the user is waiting on, and blocking it hands them
+`FALLBACK_SMS` — worse than an imperfect answer.
+
+The corpus asserts both directions, and the second half is the one that matters:
+nine categorical denials fire, while four honest gaps, three third-party limits,
+four transient failures, all eight existing `MUST_SURVIVE` sentences and **every
+failure string in the codebase** do not. That last check is the interlock — those
+strings are what the model paraphrases, so if one read as a denial the guard
+would be policing a problem we wrote.
 
 ### A check-in is about something the profile actually says
 `followup.py` fetches no data at all — it is pure model output conditioned on a
@@ -297,7 +385,7 @@ The Markets section of Palmer Home is derived from the user's `morning_topics`, 
 
 `resolve_topic_asset` runs cheapest-first and **never calls a model** — it is on the read path, which runs on every page view: crypto name → explicit `$SYM`/`(SYM)` → curated name map → bare uppercase token behind a `NOT_TICKERS` stopword guard. It returns `(symbol, display_label)` because Yahoo's index symbols are correct and unreadable; nobody wants `^GSPC` in their Markets section.
 
-`resolve_company_ticker` is the Haiku escape hatch for names the map doesn't carry. It runs **once when a topic is saved** (`agent._normalize_price_topic`, called from the `update_morning_briefing` dispatch), never on read.
+`resolve_company_ticker` is the escape hatch for names the map doesn't carry — Yahoo's search, not a model, per the paragraph below; the docstrings in `agent` and `tickers` still called it a Haiku pass long after it stopped being one. It runs **once when a topic is saved** (`agent._normalize_price_topic`, called from the `update_morning_briefing` dispatch), never on read.
 
 **Resolution is Yahoo's search endpoint, not a model.** Keyless, ~0.2s, filtered to `quoteType=EQUITY` on a US exchange. It is self-updating, which is the property the alternatives lacked: it independently returns SPCX for SpaceX and XYZ for Block, the two entries the hand-written map had wrong. The filter is load-bearing rather than defensive — unfiltered, `"openai"` comes back as a tokenized crypto and a thematic ETF that merely share the name, so filtering is what makes a private company resolve to nothing instead of to somebody else's price. Strip price words from the query first: `"spacex"` returns SPCX, `"spacex stock"` returns nothing.
 
@@ -720,8 +808,9 @@ system prompt as CURRENT fact.
 
 That is where the "Palmer keeps getting things wrong" reports actually came
 from, and it is worth being precise about what it was not: the system prompt and
-tool schemas are about 13k tokens and a profile 1-3k, which is comfortable for
-Sonnet. The model was not overloaded. It was being told, every turn, things that
+tool schemas are about 17-18k tokens (measured: 36k characters of prompt, 34k of
+tool JSON — the schemas are now the larger half) and a profile 1-3k, which is
+still comfortable for Sonnet. The model was not overloaded. It was being told, every turn, things that
 had stopped being true — one profile read `city: "Culver City"` three lines
 above `life_context: "Based in LA"`, both accurate when written, and the model
 reconciled them by putting an LA temperature under the Culver City name. That is
@@ -759,6 +848,22 @@ take two "daily" alerts in one local day and none the next. `morning.py` and
 `_daily_alert_hour`'s UTC date is deliberately left alone: it is only reached when
 the profile has no timezone, so there is no local day to key on, and it only needs
 to stay stable within a UTC day.
+
+The two watch caps were the ones left behind by that fix. `watches._daily_ok` and
+`shopping._daily_ok` both keyed on the UTC date, and so did the matching writes in
+`db.update_watch_alerted` / `update_price_watch_alerted` — read and write agreed
+with each other and both disagreed with the reader, so the window rolled at 17:00
+Pacific, inside the evening rather than between days, and the allowance could be
+spent twice over one local evening. `run_watches` already did one profile read per
+user for the pacing cap, so the local day rides along on it; `run_price_watches`
+read no profiles at all and takes one batched `get_all_profiles()`, never N+1.
+
+`agent._prompt_safe_profile` had the mirror-image version: `_stamp_volatile`
+writes `field_dates` with `local_today`, and `fresh_profile_for_prompt` was called
+with no `today` so it aged them against `date.today()`. The two ends of one
+subtraction used different calendars — after 17:00 Pacific a fact asserted minutes
+ago came back to the model as `days_old: 1`, and a volatile field was dropped a
+day before its life ran out.
 
 **`morning._recent_assistant_texts` selects prior MORNINGS**, via
 `db.get_recent_messages_of_kind` and the `kind` column. It took the last four
@@ -872,6 +977,31 @@ The system prompt in `agent.py` hard-routes user asks to specific tools. Never m
 - `web_search` → Tavily news mode only, never for weather or prices
 
 If you add a new tool, follow the same discipline: one data source per tool, and update the `USE THE RIGHT TOOL` block in `SYSTEM_PROMPT` so Claude routes correctly.
+
+**A tool the prompt never names is one the model routes from its own description
+alone.** Eight of the thirty-one were in that state. `add_watch` was the costly
+one: its description tells the model to fire on "a team, a story, a market",
+which is exactly what the routing block assigns to `update_morning_briefing` and
+`follow_team`, so "track the Cardinals" satisfied all three and nothing
+arbitrated. They are three different promises — breaking news, the daily list,
+live scores — and the block says so, with the daily as the safe default because
+it is the one that costs nothing when the story is quiet. Both traffic tools were
+absent outright while the prompt advertised "traffic, drive times" among Palmer's
+capabilities. So was every undo verb, though "stop tracking the Eagles" matches
+four of them and guessing there deletes something the user wanted.
+`test_calibration.py::TestEveryToolIsRouted` fails on any tool name missing from
+`SYSTEM_PROMPT`, so a tool added later cannot ship unrouted.
+
+**The prompt's factual claims are tested against the code they describe.** It
+still said price watches alert on "~15% drops" long after that bar was deleted
+for the second time and replaced with a flat `$2` in either direction — so Palmer
+described a drop-only percentage watch to users and then sent a rise alert. It
+described the morning update as carrying "sports scores, news, Bitcoin price",
+which moved to the page two versions ago. And a NEVER bullet held up "here are
+the fares now — I can't watch them for changes yet" as the sentence to imitate,
+four lines from the routing block's own "Never say you can't track flights".
+`TestThePromptDescribesTheProductThatExists` pins the first against
+`shopping.MOVE_MIN_ABS` and forbids a percentage in that section at all.
 
 ### Source quality is one gate, applied at the search call
 Every news fact and every news link Palmer sends — watch alerts, the morning briefing, Palmer Home, and the conversation `web_search` — comes out of `datafeeds._search_raw` or `datafeeds._search`. Both apply `sources.py` before returning, so quality is decided in one place rather than by each caller.
@@ -1063,7 +1193,40 @@ reasoned correctly from it.
 
 With no resolvable zone the block says so and asserts **no local date at all**.
 Presenting UTC as though it were their day is the whole defect, so the honest
-form is the safe one. `timeutil.valid_zone` is the gate — `profile["timezone"]`
+form is the safe one. Same rule now on the page and the card: `page._local_day`
+fell back to `datetime.utcnow()` and printed it unlabelled as the reader's day,
+so a zoneless user west of UTC saw tomorrow's date on their own page from 5pm.
+Both omit the date instead — they render from one payload and must not disagree
+about the day, which is why `cards.render_dashboard` takes `show_date`.
+
+**The block carries the week, not just today and tomorrow.** It named exactly
+those two days and emitted no ISO date at all, so anything further out — "next
+Friday", "the 15th", "a week Tuesday" — was the model rebuilding a date from the
+prose "Friday, September 04, 2026" and counting in its head. That is the one
+computation on the reminder path nothing checks: `_normalize_due_at` catches an
+unreadable string, a past time and a date over a year out, but a plausible wrong
+Friday passes and then reads correctly in the confirmation, which is exactly what
+makes it unfalsifiable. `_date_run` lists the next eight days with full ISO dates
+so the model lifts one rather than deriving it. Eight, not seven: the weekday that
+IS today then appears twice, which is the only way the repo's own convention — a
+bare weekday naming today means the one a week out — has a date to point at.
+
+**`resolve_day_delta` lives in `timeutil`, not `weather`.** It is generic date
+reasoning that happened to sit in the weather module, which is why the reminder
+path — the only path where the MODEL computes the date — had no answer for "next
+friday" while the weather path had a considered one, and the same user could get
+both in one thread. `SYSTEM_PROMPT`'s REMINDERS section states the convention
+where the model does the work, and `tools_def`'s `due_at` description points at
+the block rather than restating the rule, so the two cannot drift.
+
+**`recurrence` is vetted on the write path.** A tool-use `enum` is guidance to
+the model, not a constraint the API enforces, and nothing downstream checked:
+`"monthly"` reached the column intact, the dispatch confirmed "It repeats
+(monthly)", and `next_occurrence` then returned None so the row was never
+re-armed. The user was told it repeats and got exactly one text — the outcome
+`SYSTEM_PROMPT` and the tool description both name as the thing never to allow.
+The dispatch refuses it now, naming the three that work, and `send_reminders`
+logs the case rather than dropping a standing reminder in silence. `timeutil.valid_zone` is the gate — `profile["timezone"]`
 is named in `EXTRACT_PROMPT`, so Haiku can write anything there, and an
 unresolvable value silently degrades every `local_now`/`local_today` call.
 
@@ -1191,6 +1354,53 @@ daily, so the flat $2 product rule would page someone every morning).
 preferences.** SerpAPI is the only paid input and the account is on 250
 searches/month; one active watch costs ~30. Watches whose departure has passed
 retire themselves rather than spending a search a day on an unbookable flight.
+
+### Ask which one, where guessing wrong costs them the turn
+`sports.find_teams` returns a LIST because "Cardinals" is two teams in two
+sports, and the dispatch asks rather than picking. Nothing else did. Every other
+resolution took the top hit and then confirmed it to the user as though they had
+named it, which is the failure that stays silent longest — the user has no reason
+to doubt a confirmation.
+
+- **Places.** `weather._geocode` asked for `count=1`, so Springfield, Portland,
+  Columbus and Cambridge each resolved to whichever the geocoder ranked first.
+  The count is 5 on the same call at no extra cost; `_geocode` still returns the
+  top hit and caches exactly as before, and the runners-up are kept for
+  `weather.ambiguous_location`, used on the **write** paths only. Note
+  `resolve_weather_location`'s docstring has always claimed "None means the model
+  should ask rather than guess" — that was only ever true when *nothing* matched.
+- **Shows.** `resolve_show` took `results[0]` too, and `sports.py`'s own comment
+  says naming a show is not ambiguous the way naming a team is. True of Reacher,
+  false of The Office, Shameless, Skins and Ghosts. `shows.find_shows` returns
+  matches with year and origin country; only a genuinely shared title is a
+  question, since "Reacher" also matching "Reacher: Behind the Scenes" is the
+  search working, not two things the user might have meant.
+- **Products.** `add_price_watch` echoed the words the user typed while
+  `add_amazon_watch` echoed the listing it resolved. The Google Shopping match is
+  picked by a model with no confidence floor, so "AirPods" can baseline on Gen 2,
+  Gen 4 or Pro — and echoing their own phrasing back made a wrong pick invisible
+  until an alert arrived about the wrong product.
+
+**Reminders were the one table-backed thing the model could not see.**
+`_build_system` lists active watches and price watches; the thing the user
+explicitly asked to happen at a named time was absent, so "what have I got on"
+had nothing to answer from and "cancel my 4pm one" was a guess against twenty
+messages of history — against a tool that deletes. `db.get_pending_reminders`
+feeds them in on the reader's clock, with the hazard stated: `cancel_reminders`
+with no `text_match` takes all of them, and `text_match` is a substring, so
+"call" takes "call mom" and "call the vet" together. `cancel_reminders_named`
+returns the texts that went, because a bare count is the half the user cannot
+check.
+
+This is deliberately not "ask about everything". `SYSTEM_PROMPT`'s cost test
+still governs — ask when guessing wrong wastes their turn, act when either
+reading gets them something useful — and the rules that say act immediately (a
+reminder, an Amazon link, turning the morning on) still win. What changed is that
+the clarification rule now **outranks the rhythm rules** it was previously
+outvoted by. It was stated once; the pressure against ending on a question was
+stated four times, and one of those is shape-based and unconditional ("if your
+last reply ended with a question, this one ends on a take or silence") so it
+fired exactly when a clarification needed a second turn.
 
 ### Topic overlap is raised, not enforced
 Adding a topic runs `userprofile.topic_already_covered` — a Haiku check beside
