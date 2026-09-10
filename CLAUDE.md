@@ -88,6 +88,7 @@ send_morning_messages    every 5 min   (each user has a local target time; per-d
 run_watches              every 30 min
 send_missing_data_asks   every 60 min  (asks users with no city so mornings can target them; DATA_ASK_DRY_RUN=1 to preview)
 run_followups            every 2 hr   (cron, NOT interval — see main.py; the per-user gap in DAYS (followup.GAP_DAYS), not the tick, is the cadence)
+run_score_alerts         every 2 min   (interval, deliberately — a game is a window, not a clock time; polls only leagues someone set a `live` level on, two-speed)
 run_price_watches        00:00 + 16:00 UTC (cron, NOT interval — see below; SerpAPI Google Shopping + Amazon; baseline seeded at watch creation, alerts on target-hit or ANY move over $2 in either direction, then re-baselines)
 ```
 
@@ -336,14 +337,14 @@ failure string in the codebase** do not. That last check is the interlock — th
 strings are what the model paraphrases, so if one read as a denial the guard
 would be policing a problem we wrote.
 
-### The check-in is the one unprompted text, and it is paced in days
-Two jobs used to text people on Palmer's own judgment: a live score poller
-(`scorewatch.py`, every 2 minutes during a game, up to several texts a game) and
-a daily "a friend would text this" news alert (`alerts.py`, once a day from the
-profile's interests). Both are gone, and `test_scheduler_config.py` pins the job
-list so neither comes back quietly. A followed team rides the morning update and
-the page's Scores section instead. What remains is `followup.py`: one text every
-`GAP_DAYS` (10) or more, in a 1-7pm local window, about ONE thing.
+### The check-in is the one text on Palmer's own initiative, and it is paced in days
+A daily "a friend would text this" news alert (`alerts.py`, once a day from the
+profile's interests) used to text people on Palmer's own judgment. It is gone,
+and `test_scheduler_config.py` pins the job list so it does not come back
+quietly. Live score texts exist but are not on Palmer's initiative — see the
+Scores section: a user has to set a level. What remains unprompted is
+`followup.py`: one text every `GAP_DAYS` (10) or more, in a 1-7pm local window,
+about ONE thing.
 
 **The subject is copied from data, never written by the model.** Three pools,
 none of them fetched for this job: `ongoing_threads` from the profile, a followed
@@ -584,18 +585,38 @@ only when a screen row is actually present. **TMDB is free for non-commercial us
 only** — the same clause shape as Open-Meteo, and a question the day Palmer
 charges.
 
-### Scores: a followed team is in the morning and on the page, never a pager
-`sports.py` reads scores. There used to be a second half, `scorewatch.py`, that
-decided which moments in a live game deserved a text; it is gone (see the
-check-in section for why). `sports.team_day(team, today)` is now the one read:
-yesterday's game if it finished, and today's in whatever state it is in, both
-keyed on the READER's calendar day via ESPN's `dates=` parameter. `home._fetch_scores`
-renders it as the one-word `Scores` section, `morning.score_lines` puts it in the
-morning digest and the REQUIRED list, and `followup._candidates` offers it to the
-check-in. A team with nothing on either day produces no row — the same rule
-`shows.py` applies to a series between seasons. `result_line` states a game from
-the team's side ("beat the Cubs 5-2", "play the Cubs, 7:15 PM CT") so no drafter
-is left to infer whose side the reader is on from `CIN 17, PHI 21`.
+### Scores: following is the morning and the page; live texts are an ask with a level
+`sports.py` reads scores. `sports.team_day(team, today)` is the read every
+surface shares: yesterday's game if it finished, and today's in whatever state
+it is in, both keyed on the READER's calendar day via ESPN's `dates=` parameter.
+`home._fetch_scores` renders it as the one-word `Scores` section,
+`morning.score_lines` puts it in the morning digest and the REQUIRED list, and
+`followup._candidates` offers it to the check-in. A team with nothing on either
+day produces no row. `result_line` states a game from the team's side ("beat the
+Cubs 5-2") so no drafter is left to infer whose side the reader is on.
+
+**Live texts during a game are opt-in, twice over.** A followed team dict
+carries `live`: absent or `off` (the default), `key`, or `all`. `scorewatch.py`
+polls only teams with a level set (`live_teams`), so following a team costs
+nothing there. `key` is the original rationing — the lead changing hands, a
+score in the closing stretch (`_is_late`, which means different things per
+sport), and the final. `all` adds every other score in the leagues where that
+is a text anyone could want (`EVERY_SCORE_LEAGUES`); for the NBA, where a basket
+lands every thirty seconds, `all` means key moments. `alert_cap(mode)` is the
+per-game backstop (4 for key, 20 for all) and the final is never swallowed by
+it. Everything not texted still moves the stored baseline (`game_alerts`), so
+the next comparison is against what the user was last TOLD.
+
+**Palmer offers it once, and only when there is a reason.** `_build_system`
+appends a LIVE SCORES OFFER block when the extractor has written `sports_teams`,
+`followed_teams` is empty, and `score_offer_sent` is not set;
+`userprofile._update_profile` marks it consumed the first time that condition
+holds after a turn, answered or not — the same shape as the ONBOARDING ASK. The
+`follow_team` result also tells the model to offer the two levels in one clause
+when it was called without `live`, and `set_score_updates` changes the level of
+an already-followed team without dropping it — "stop the live score texts" is
+that with `off`, never `unfollow_team`. `test_sports.py` pins the default-off,
+the NBA fallback, the cap, and the once-only offer.
 
 **The obvious ESPN endpoint does not work from Heroku.**
 `site.api.espn.com/.../scoreboard` — the one every guide recommends — returns

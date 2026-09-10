@@ -23,6 +23,9 @@ Natural-language reminders that arrive when you need them. "Remind me Friday mor
 ### Checks in, occasionally
 Every week or two, one text about one thing: how your team did, a story on a subject you follow, or something you mentioned — an interview, a move, a rough week. Not scripted, not daily. Anything you set a watch on still arrives when it moves; nothing else arrives on Palmer's own initiative.
 
+### Live scores, if you ask
+Follow a team and it shows up in your morning text and on your page. Want texts during the game? Say so, and pick a level: the big moments only (lead changes, a late score, the final) or every score. Palmer offers it once when you mention a team, and never turns it on for you.
+
 ### Sees photos
 Send Palmer a picture and it'll actually respond to what's in it — a menu, a whiteboard, a receipt, a dog. It's using vision, not guessing from a filename.
 
@@ -55,7 +58,7 @@ Palmer is dry, quick, and observant. It's not an assistant and it's not a brand 
 | Crypto prices | CoinGecko |
 | Stock prices | yfinance |
 | GIFs | Giphy |
-| Background jobs | APScheduler (reminders 1m · mornings 5m · watches 30m · missing-data asks 60m · check-ins every 2h tick, paced in days · price watches twice daily · flight watches daily) |
+| Background jobs | APScheduler (reminders 1m · mornings 5m · watches 30m · missing-data asks 60m · check-ins every 2h tick, paced in days · live scores 2m, opt-in per team · price watches twice daily · flight watches daily) |
 | Database | Heroku Postgres |
 
 ---

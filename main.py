@@ -129,11 +129,19 @@ _scheduler.add_job(
     misfire_grace_time=3600,
 )
 
-# There is deliberately no live-score poller and no daily "a friend would text
-# this" news alert here any more. Both texted on Palmer's own judgment, and the
-# score one was a pager by construction. A followed team rides the morning
-# update and the page's Scores section; run_followups is the one paced,
-# unprompted text, and it draws on teams and news as well as personal threads.
+# Live game texts, for the people who asked for them. INTERVAL, not cron, and
+# it is the one job where that is right: a game is a window rather than a clock
+# time, so this has to tick often enough to catch a lead change and cheaply
+# enough to run all day. sports.py does the rationing — an idle league is
+# polled every 15 minutes and a live one every ~2, so most ticks make no HTTP
+# call at all — and scorewatch.live_teams is the gate: a followed team with no
+# `live` level set costs nothing here and gets nothing from here.
+#
+# There is deliberately no daily "a friend would text this" news alert. It
+# texted on Palmer's own judgment; run_followups is the one paced, unprompted
+# text, and it draws on teams and news as well as personal threads.
+from scorewatch import run_score_alerts
+_scheduler.add_job(run_score_alerts, "interval", minutes=2, misfire_grace_time=60)
 if _SCHEDULER_ENABLED:
     _scheduler.start()
 else:

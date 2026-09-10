@@ -222,6 +222,24 @@ def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = 
                 "not a form, not your opener. Don't mention their page or send any link here — "
                 "that comes later, on request or with their first morning update."
             )
+    if (not is_new_user and (profile or {}).get("intro_sent")
+            and (profile or {}).get("sports_teams") and not (profile or {}).get("followed_teams")
+            and not (profile or {}).get("score_offer_sent")):
+        # They have told Palmer about a team and nothing is set up for it. Offer
+        # once — userprofile._update_profile marks score_offer_sent under this
+        # same condition after the turn, so this never becomes a nag.
+        teams = profile.get("sports_teams")
+        teams = ", ".join(teams) if isinstance(teams, list) else str(teams)
+        system += (
+            "\n\nLIVE SCORES OFFER\n"
+            f"They've mentioned a team they follow ({teams}) and nothing is set up for it. "
+            "Somewhere natural in this reply — after answering what they actually said — "
+            "offer once, in one line, to put their team in their morning text and on their "
+            "page, and ask whether they also want live game texts: key moments only (lead "
+            "changes, a score in the closing stretch, the final) or every score. Not your "
+            "opener, not a menu. If they say yes, call follow_team with the live level they "
+            "chose; if they don't answer, drop it and never bring it up again unprompted."
+        )
     if include_recent:
         recent = get_history(phone, limit=8)
         if recent:
@@ -642,6 +660,17 @@ def _finalize(text: str, system: str, messages: list, gif_url):
         # every occurrence.
         print(f"GUARD: redraft still {label}; shipping the original")
     return reply, gif_url
+
+
+def _live_desc(mode: str) -> str:
+    """What a live-text level means, in the words the dispatch hands the model."""
+    return {
+        "off": "no live texts during games",
+        "key": ("live texts at key moments — the lead changing hands, a score in the "
+                "closing stretch, and the final; a few a game, not every play"),
+        "all": ("a text on every score, and the final (key moments only in the NBA, "
+                "where a basket lands every thirty seconds)"),
+    }.get(mode, "no live texts during games")
 
 
 def get_reply(phone_number: str, message: str, media_url: str = None, history: list[dict] | None = None, is_new_user: bool = False) -> tuple[str, str | None]:
@@ -1066,10 +1095,12 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     b.input.get("return_date"),
                 )
             elif b.name == "follow_team":
-                from sports import find_teams, FOLLOW_MAX as TEAM_MAX
+                from sports import find_teams, live_mode, LIVE_MODES, FOLLOW_MAX as TEAM_MAX
                 profile = get_profile(phone_number)
-                current = list(profile.get("followed_teams") or [])
+                current = [dict(t) for t in (profile.get("followed_teams") or [])]
                 asked = (b.input.get("name") or "").strip()
+                live = b.input.get("live")
+                live = live if live in LIVE_MODES else None
                 matches = find_teams(asked)
                 if not matches:
                     result = (f"No team matches {asked!r}. Ask them to confirm the team — "
@@ -1081,14 +1112,25 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     result = (f"{asked!r} matches more than one team: {listed}. Ask which they "
                               f"mean in one short line, then call follow_team again with the "
                               f"fuller name. Do NOT pick one yourself.")
-                elif any(t.get("abbrev") == matches[0]["abbrev"]
-                         and t.get("league") == matches[0]["league"] for t in current):
-                    result = f"They already follow {matches[0]['name']}."
+                elif (found := next((t for t in current
+                                     if t.get("abbrev") == matches[0]["abbrev"]
+                                     and t.get("league") == matches[0]["league"]), None)):
+                    if live is not None and live_mode(found) != live:
+                        found["live"] = live
+                        upsert_profile(phone_number, {"followed_teams": current})
+                        result = (f"They already follow {found['name']}; live texts changed to: "
+                                  f"{_live_desc(live)}.")
+                    else:
+                        result = (f"They already follow {found['name']} — currently "
+                                  f"{_live_desc(live_mode(found))}.")
                 elif len(current) >= TEAM_MAX:
                     result = (f"They already follow {TEAM_MAX} teams, which is the limit. "
                               f"Tell them and offer to drop one.")
                 else:
-                    current.append(matches[0])
+                    entry = dict(matches[0])
+                    if live:
+                        entry["live"] = live
+                    current.append(entry)
                     upsert_profile(phone_number, {"followed_teams": current})
                     try:
                         from home import invalidate
@@ -1097,9 +1139,16 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                         print(f"home.invalidate after follow_team failed: {e}")
                     result = (f"Now following {matches[0]['name']}. Their game rides in the "
                               f"morning update — last night's result and tonight's game — and "
-                              f"the Scores section of their page has both. There are "
-                              f"NO live score texts during a game: say that plainly if they "
-                              f"asked for play-by-play, and do not promise one.")
+                              f"the Scores section of their page has both. ")
+                    if live:
+                        result += f"Live texts: {_live_desc(live)}. Say that plainly."
+                    else:
+                        # Live texts are opt-in, and this is the moment to ask.
+                        result += ("No live texts are set — the default. Offer them in one clause: "
+                                   "key moments only (lead changes, a score in the closing stretch, "
+                                   "the final) or every score. If they want one, call "
+                                   "set_score_updates with mode 'key' or 'all'. "
+                                   "Do not promise live texts they have not chosen.")
             elif b.name == "unfollow_team":
                 profile = get_profile(phone_number)
                 current = list(profile.get("followed_teams") or [])
@@ -1121,6 +1170,30 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                         print(f"home.invalidate after unfollow_team failed: {e}")
                 result = (f"Unfollowed {dropped} team(s); their games leave the morning and the page."
                           if dropped else "No followed team matched that.")
+            elif b.name == "set_score_updates":
+                from sports import LIVE_MODES
+                profile = get_profile(phone_number)
+                current = [dict(t) for t in (profile.get("followed_teams") or [])]
+                mode = (b.input.get("mode") or "").strip().lower()
+                match = (b.input.get("text_match") or b.input.get("name") or "").strip().lower()
+                if mode not in LIVE_MODES:
+                    result = f"Unknown level {mode!r} — must be one of off, key, all."
+                elif not current:
+                    result = ("They don't follow any team yet. Call follow_team first, with "
+                              "`live` set to the level they want.")
+                else:
+                    hit = [t for t in current
+                           if not match or match in (t.get("name") or "").lower()]
+                    if not hit:
+                        names = ", ".join(t.get("name") or "" for t in current)
+                        result = f"No followed team matched that. They follow: {names}."
+                    else:
+                        for t in hit:
+                            t["live"] = mode
+                        upsert_profile(phone_number, {"followed_teams": current})
+                        names = ", ".join(t.get("name") or "" for t in hit)
+                        result = (f"{names}: {_live_desc(mode)}. They still follow the team — "
+                                  f"it stays in the morning update and on their page.")
             elif b.name == "get_score":
                 from sports import find_teams, team_game, describe
                 matches = find_teams(b.input.get("team", ""))
