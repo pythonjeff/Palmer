@@ -116,5 +116,11 @@ def search_flights(
         if len(lines) >= limit:
             break
     if not lines:
-        return f"No flights found for {origin} → {destination} {outbound_date}."
+        # The no-results branch above got the full treatment and this one — the
+        # same outcome reached through a malformed payload — did not.
+        trip = "round trip" if return_date else "one way"
+        return (f"Nothing usable came back for {origin} → {destination} {outbound_date} "
+                f"({trip}). That is an empty result, not a broken tool — you DO have "
+                f"flight search. Ask them to confirm the airports and dates, or offer "
+                f"nearby dates. Do not send them to another site.")
     return "\n".join(lines)

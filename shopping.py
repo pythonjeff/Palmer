@@ -211,7 +211,10 @@ def search_shopping(query: str, max_price: float | None = None,
         limit = 1  # link mode always returns exactly one row
     results = _serpapi_search(query)
     if not results:
-        return f"No shopping results found for {query!r}."
+        return (f"Nothing came back for {query!r}. That is an empty result, not a broken "
+                f"tool — you DO have product search. Try a broader or differently-worded "
+                f"query once, or ask them for a brand or a price range. Do not send them "
+                f"to another store or site.")
     if include_link:
         # Respect Google's ranking (quality signal), but push third-party
         # marketplace listings to the bottom. Sorting by price would pick a
@@ -229,7 +232,9 @@ def search_shopping(query: str, max_price: float | None = None,
             bound = f" under ${float(max_price):.0f}"
         elif min_price is not None:
             bound = f" over ${float(min_price):.0f}"
-        return f"No matches for {query!r}{bound}."
+        return (f"Results came back for {query!r} but none{bound}. Tell them what you "
+                f"looked for and offer to widen the range — you DO have product search. "
+                f"Do not send them to another store or site.")
     lines = []
     for r in matches:
         base = f"${r['price']:.2f} - {r['title'][:80]} ({r['merchant'] or 'unknown seller'})"
@@ -296,7 +301,7 @@ def browse_shop(query: str) -> str:
         return ("Product search failed to run just now. Say so plainly and offer to try "
                 "again — you DO have product search. Do not name another store or site.")
     if not query:
-        return "No browse result found."
+        return ("No store page came back for that. You DO have this — ask them to confirm the brand or retailer, or offer to pull a few options instead. Do not name another site.")
     data = serpapi.search({
         "engine": "google",
         "q": query,
@@ -305,7 +310,7 @@ def browse_shop(query: str) -> str:
         "gl": "us",
     })
     if not data:
-        return f"No browse result found for {query!r}."
+        return (f"No store page came back for {query!r}. You DO have this — ask them to confirm the brand or retailer name, or offer to pull a few options instead. Do not name another site.")
 
     tokens = _brand_tokens(query)
 
@@ -327,7 +332,7 @@ def browse_shop(query: str) -> str:
         r = valid[0]
         return f"{(r.get('title') or query)} — {r['link']}"
 
-    return f"No browse result found for {query!r}."
+    return (f"No store page came back for {query!r}. You DO have this — ask them to confirm the brand or retailer name, or offer to pull a few options instead. Do not name another site.")
 
 
 def _cooldown_ok(watch: dict, now: datetime | None = None) -> bool:
@@ -360,11 +365,12 @@ def _should_alert(watch: dict, current_price: float) -> str:
     return ""
 
 
-def _daily_ok(watch: dict) -> bool:
-    """True if this price watch is still under the per-day alert cap (UTC date).
-    Mirrors watches._daily_ok — same rationale, different table."""
+def _daily_ok(watch: dict, today: str | None = None) -> bool:
+    """True if this price watch is still under the per-day alert cap, on the
+    READER's day. Mirrors watches._daily_ok — same rationale, same fix: a cap
+    keyed on the dyno's UTC date resets mid-evening for anyone west of it."""
     from datetime import date as _date
-    today = _date.today().isoformat()
+    today = today or _date.today().isoformat()
     if watch.get("daily_alert_date") != today:
         return True
     return (watch.get("daily_alert_count") or 0) < PRICE_DAILY_ALERT_MAX
@@ -391,11 +397,22 @@ def run_price_watches():
     import amazon
 
     watches = get_active_price_watches()
+    # One batched read for every profile, not one per watch — _conn() opens a
+    # fresh connection per call, so the inline version is N+1 per tick.
+    days = {}
+    try:
+        from db import get_all_profiles
+        from timeutil import local_today
+        days = {phone: local_today((profile or {}).get("timezone")).isoformat()
+                for phone, profile in get_all_profiles()}
+    except Exception as e:
+        print(f"run_price_watches: could not read local days, falling back to UTC: {e}")
     for w in watches:
         try:
+            today = days.get(w["phone"])
             if not _cooldown_ok(w):
                 continue
-            if not _daily_ok(w):
+            if not _daily_ok(w, today):
                 print(f"Price watch {w['id']}: at daily cap ({PRICE_DAILY_ALERT_MAX}), skipping")
                 continue
             if w.get("source") == "amazon":
@@ -431,7 +448,8 @@ def run_price_watches():
             # again" to someone who had asked for nothing.
             if send_sms(w["phone"], body):
                 update_price_watch_alerted(
-                    w["id"], current["price"], current["url"], current["merchant"], body
+                    w["id"], current["price"], current["url"], current["merchant"], body,
+                    today=today,
                 )
                 # Price alerts were never written to history at all, so the model
                 # had no idea it had just sent one — a user replying "how much?"

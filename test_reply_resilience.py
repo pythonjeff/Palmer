@@ -105,3 +105,99 @@ class TestTheLoopAnswersInsteadOfDying:
     def test_the_cap_is_high_enough_for_ordinary_asks(self):
         """Three tickers plus a commute is five calls before Palmer speaks."""
         assert agent.TOOL_ITERATION_CAP >= 8
+
+
+class TestAToolThatRaisesDoesNotLoseTheTurn:
+    """The same failure as the cap, through a different door.
+
+    Nothing wrapped the dispatch chain, so a raise anywhere in it escaped
+    get_reply, main.py answered the falsy reply with FALLBACK_SMS, and every
+    tool result already gathered went with it. In a three-intent turn one
+    failing DB write destroyed the two intents that had already succeeded.
+    """
+
+    def _run(self, search_side_effect, final_text="ok, here's what I have"):
+        calls = []
+
+        def _create(**kw):
+            calls.append(kw)
+            if len(calls) == 1:
+                return MagicMock(stop_reason="tool_use", content=_blocks(tool="web_search"))
+            return MagicMock(stop_reason="end_turn", content=_blocks(text=final_text))
+
+        with patch.object(agent.client.messages, "create", side_effect=_create), \
+             patch.object(agent, "_build_system", return_value="sys"), \
+             patch.object(agent, "get_profile", return_value={}), \
+             patch.object(agent, "get_history", return_value=[]), \
+             patch.object(agent, "_search", side_effect=search_side_effect):
+            out, _ = agent.get_reply("+15550001111", "what's the news", history=[])
+        return out, calls
+
+    def _tool_results(self, calls):
+        """The tool_result blocks handed back on the follow-up call."""
+        out = []
+        for m in calls[-1]["messages"]:
+            content = m.get("content")
+            if isinstance(content, list):
+                out += [c for c in content if isinstance(c, dict)
+                        and c.get("type") == "tool_result"]
+        return out
+
+    def test_the_turn_still_answers(self):
+        out, _ = self._run(RuntimeError("boom"))
+        assert out == "ok, here's what I have"
+
+    def test_the_error_comes_back_as_a_tool_result(self):
+        _, calls = self._run(RuntimeError("boom"))
+        results = self._tool_results(calls)
+        # Every tool_use block must be answered or the next call is rejected.
+        assert len(results) == 1
+        assert results[0]["tool_use_id"] == "tu_1"
+        assert "web_search" in results[0]["content"]
+
+    def test_a_raise_is_still_loud_in_the_logs(self, capsys):
+        self._run(RuntimeError("boom"))
+        err = capsys.readouterr()
+        assert "TOOL web_search raised: RuntimeError: boom" in err.out
+        assert "Traceback" in err.err
+
+    def test_keyboard_interrupt_is_not_swallowed(self):
+        """`except Exception`, never `BaseException` — a ctrl-c must still stop."""
+        try:
+            self._run(KeyboardInterrupt())
+        except KeyboardInterrupt:
+            return
+        assert False, "KeyboardInterrupt was swallowed by the tool guard"
+
+
+class TestWhatTheModelIsToldWhenAToolRaises:
+    def test_it_never_claims_a_missing_capability(self):
+        import guards
+        out = agent._tool_error("search_flights", RuntimeError("x"))
+        assert not guards.redirects_elsewhere(out)
+        assert "not a missing capability" in out
+
+    def test_it_does_not_leak_a_query_string(self):
+        """netutil re-raises the urllib error, and that URL carries the API key."""
+        exc = RuntimeError(
+            "HTTP Error 500: https://serpapi.com/search.json?api_key=SECRETKEY&q=x")
+        out = agent._tool_error("search_shopping", exc)
+        assert "SECRETKEY" not in out
+        assert "api_key" not in out
+        assert "RuntimeError" in out          # the type still reaches the model
+
+    def test_an_argument_error_is_actionable(self):
+        """Our own strings carry no secrets and are the only ones it can fix."""
+        out = agent._tool_error("set_reminder", KeyError("due_at"))
+        assert "due_at" in out
+        assert "once more" in out
+
+    def test_the_cache_invalidate_guards_are_left_alone(self):
+        """They wrap a best-effort expiry AFTER a successful write.
+
+        Folding them into the outer catch would turn a stale cache into a
+        tool error for an operation that actually succeeded — Palmer would
+        tell the user their topic wasn't added when it was."""
+        import inspect
+        src = inspect.getsource(agent.get_reply)
+        assert src.count("home.invalidate after") >= 6

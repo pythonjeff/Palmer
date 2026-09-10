@@ -146,13 +146,31 @@ class TestTheCardUsesTheReadersClock:
         chi = artifacts._card_now({"timezone": "America/Chicago"})
         assert la.utcoffset() != chi.utcoffset()
 
-    def test_a_missing_timezone_still_renders(self):
-        assert artifacts._card_now({}) is not None
-        assert artifacts._card_now({"timezone": "Not/AZone"}) is not None
+    def test_a_missing_timezone_asserts_no_day_at_all(self):
+        """It used to fall back to a naive datetime.now() — UTC on the dyno —
+        and print that unlabelled as the reader's day, which is the exact
+        thing clock_block was rewritten to stop doing. page.py omits the date
+        in this case, so the card has to as well or the two disagree."""
+        assert artifacts._card_now({}) is None
+        assert artifacts._card_now({"timezone": "Not/AZone"}) is None
+
+    def test_the_card_still_renders_without_a_day(self):
+        import cards
+        png = cards.render_dashboard(city="Austin", weather=None, traffic=None,
+                                     prices=None, headlines=None, show_date=False)
+        assert png[:4] == b"\x89PNG"
+
+    def test_the_page_omits_it_too(self):
+        import page
+        assert page._local_day(None) == ""
+        assert page._local_day("Not/AZone") == ""
+        assert page._local_day("America/Chicago") != ""
 
     def test_the_renderer_is_told_the_time(self):
         import inspect
-        assert "when=_card_now(payload)" in inspect.getsource(artifacts.render_png)
+        src = inspect.getsource(artifacts.render_png)
+        assert "_card_now(payload)" in src
+        assert "show_date=" in src
 
     def test_the_cache_key_uses_the_readers_day(self):
         """Otherwise the cached card outlives the reader's midnight."""

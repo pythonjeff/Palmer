@@ -25,6 +25,7 @@ not apply — that arrives later, if the page ever authenticates.
 from __future__ import annotations
 
 import json
+from datetime import datetime as _dt, timezone as _tz
 import os
 import secrets
 import threading
@@ -82,13 +83,20 @@ def _card_now(payload: dict):
     cards.py defaulted to datetime.now(), which is UTC on the dyno — so from
     5pm Pacific onward the card printed tomorrow's date while page.py, which
     has always used the user's zone, printed today's. Two surfaces of the same
-    briefing disagreeing about what day it is."""
-    from timeutil import local_now
-    from datetime import datetime
+    briefing disagreeing about what day it is.
+
+    Returns None when there is no resolvable zone. The old fallback here was a
+    naive datetime.now() — UTC on the dyno — so a zoneless reader got a date
+    that was simply wrong for half of every day, and the page (which now omits
+    it) and the card would disagree besides."""
+    from timeutil import valid_zone, local_now
+    tz = payload.get("timezone")
+    if not valid_zone(tz):
+        return None
     try:
-        return local_now(payload.get("timezone"))
+        return local_now(tz)
     except Exception:
-        return datetime.now()
+        return None
 
 
 def _card_inputs(payload: dict) -> dict:
@@ -103,7 +111,7 @@ def _card_inputs(payload: dict) -> dict:
         # The masthead prints the date, so a new day is a different card even
         # when every other input is byte-identical — and it must be the
         # reader's day, or the cache holds yesterday's card past their midnight.
-        "_date": _card_now(payload).strftime("%Y-%m-%d"),
+        "_date": (_card_now(payload) or _dt.now(_tz.utc)).strftime("%Y-%m-%d"),
     }
 
 
@@ -137,7 +145,10 @@ def render_png(token: str, payload: dict) -> bytes:
     from cards import render_dashboard
     inputs = _card_inputs(payload)
     inputs.pop("_date", None)
-    png = render_dashboard(when=_card_now(payload), **inputs)
+    # No resolvable zone means no day we can stand behind, so the masthead
+    # carries none — matching the page, which omits it for the same reason.
+    card_when = _card_now(payload)
+    png = render_dashboard(when=card_when, show_date=card_when is not None, **inputs)
     with _cache_lock:
         _png_cache[key] = png
         if len(_png_cache) > 64:          # bounded; single dyno, low volume

@@ -320,7 +320,16 @@ class TestConversationSearchLabelsSources:
         assert "msn.com" not in out
 
     def test_no_results_message_when_everything_is_filtered(self):
+        """An empty search says so — and says it is empty, not broken.
+
+        This used to assert the literal "No results found.", which is the shape
+        of failure string that gets paraphrased into "I can't find news on that"
+        and then into a competitor. The gates firing is the common case, not a
+        rare one, so what the model is told here matters."""
         fake = MagicMock()
         fake.search.return_value = {"results": [_r("https://biztoc.com/a")]}
         with patch.object(datafeeds, "_tavily", fake):
-            assert datafeeds._search("q") == "No results found."
+            out = datafeeds._search("q")
+        assert "'q'" in out                      # names what was searched for
+        assert "DO have news search" in out      # never implies the capability is gone
+        assert "another site" in out             # and never hands them off
