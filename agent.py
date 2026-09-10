@@ -8,6 +8,7 @@ _build_system is the one helper siblings still take from here: it assembles the
 system prompt for every user-facing message (see CLAUDE.md "One voice").
 """
 import json
+import os
 import re
 import threading
 from datetime import datetime, timedelta, timezone
@@ -203,6 +204,14 @@ def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = 
             "'what can you do'). Pick the case that matches what they actually said and reply "
             "accordingly. Do not mention that you were just told this is their first message."
         )
+        if os.environ.get("APP_URL"):
+            system += (
+                "\n\nTheir setup link IS attached to this reply, automatically, after your last "
+                "word. Follow THE SETUP LINK rules above: answer whatever they actually said "
+                "first, then one short clause about what filling it in gets them, and stop. Do "
+                "not type a URL or a placeholder, do not ask for their name or city here, and "
+                "write nothing after that clause."
+            )
     elif (profile or {}).get("intro_sent") and not (profile or {}).get("onboarding_ask_sent"):
         missing = [f for f in ("name", "city") if not (profile or {}).get(f)]
         if missing:

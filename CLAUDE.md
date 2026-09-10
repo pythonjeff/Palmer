@@ -195,6 +195,60 @@ value can do. Only the second holds against a write path nobody has enumerated y
 "102 in Los Angeles" is read as wrong in one second, where the same number under the
 right city name is unfalsifiable from the message. `test_weather_city.py` guards both.
 
+### A new user is set up on a page, not interviewed over text
+`onboard.py` is the first-run path. The first message a stranger ever sends gets
+a reply that says what Palmer is for, with their setup link appended **in code**
+after it — `main._handle_sms_inner`, not the drafter, because SYSTEM_PROMPT
+forbids the model inventing URLs and the link has to land last and alone or the
+message app draws no preview. `/h/{token}` renders the form while the token's
+payload says `setup_pending` and their real page forever after: one link, sent
+once, that turns into the thing.
+
+The reason it is a form and not more conversation is ordering. Every fact used
+to reach a profile through `userprofile._update_profile` — a Haiku pass reading
+the chat *after* the reply had already gone out — and three separate defects
+came off that one property. The worst: `update_morning_briefing`'s dispatch
+seeds topics from `profile["city"]`, which on the turn a user says *"Jeff,
+Austin, set it up"* is still empty, so `default_topics(None)` returns national
+news alone and no local topic is ever added. Palmer then says the words "local
+news" in his confirmation. A typed city is on the row before anything reads it,
+and that bug does not need a patch — it stops existing.
+
+Three things are load-bearing:
+
+- **The write is one-shot.** The token has always been the page's only
+  protection (see home.py), and a form turns a read key into a write key.
+  `onboard.apply` clears `setup_pending` *before* it writes anything, so a
+  double-tap, a refresh or a forwarded link cannot rewrite a profile.
+- **A chip's label is not its topic.** `morning_topics` entries are search
+  queries — `datafeeds._search_raw` matches on query text — so `INTERESTS`
+  carries a human label and a subject-shaped query separately, in the phrasing
+  `morning.default_topics` already proved against the live index. Storing "Tech
+  & AI" as a topic would return nothing, silently, forever. The list is short
+  because each topic is one Tavily search per briefing and `MAX_TOPICS` pulls
+  six.
+- **The link is appended inside the per-phone lock**, gated on
+  `setup_link_sent`. `is_new_user` is computed *before* that lock in
+  `_handle_sms_inner`, so two texts seconds apart both carry it — which without
+  the flag means two links.
+
+Name and city go through `userprofile._apply_profile_updates` rather than a
+direct write, so they pick up the timezone derivation that lives there; without
+it the morning job has no local clock and every `local_today()` degrades to UTC.
+Topics are written *first*, so the `_eager_build_home` that fires on the city
+landing builds against the list the user just chose.
+
+The build runs off the request thread — a full rebuild is two paid searches and
+a Haiku curation pass — and `/h/{token}` serves a self-refreshing holding page
+until `built_at` appears. The `.png` route 404s in both those states: there is
+no card to draw, and a preview scraper asks before the user has typed anything.
+
+**Existing users are untouched**, and that falls out of the gate rather than
+being enforced: the link is appended on the first inbound message only, and
+everyone already on the system carries `intro_sent`. The conversational
+name/city ask below stays exactly as it was, because plenty of people will not
+tap a link from an unknown number.
+
 ### Onboarding asks once; the site builds ahead of it, silently
 Message 1 never demands anything — `SYSTEM_PROMPT`'s NEW USERS rules cover a bare
 greeting, a random question, and "what do you do" without ever requiring city or

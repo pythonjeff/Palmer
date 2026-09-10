@@ -34,7 +34,7 @@ PROFILE_FIELDS = frozenset({
     "intro_sent", "conversation_topics", "reactions", "reactions_folded_count",
     "pending_morning_suggestion", "pending_preference_notice",
     "alert_sent_date", "followup_sent_date", "city_ask_sent_date",
-    "onboarding_ask_sent",
+    "onboarding_ask_sent", "setup_link_sent", "setup_done",
     # Which thread the last check-in was about, so the next one moves on, and
     # the message count at the last consolidation, so it does not re-run every
     # turn. Both bookkeeping, NOT extraction fields — deliberately absent from

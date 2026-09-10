@@ -240,7 +240,26 @@ def _handle_sms_inner(from_number: str, body: str, media_url: str | None) -> boo
                     snippet = body if len(body) <= 50 else body[:50].rstrip() + "…"
                     reply = f"> {snippet}\n{reply}"
 
+                # A first-time texter gets their setup link attached to this
+                # one reply. Appended in code rather than drafted: SYSTEM_PROMPT
+                # forbids the model inventing URLs for good reason, and the link
+                # has to land last and alone or the message app draws no
+                # preview (same rule morning.py's link follows).
+                #
+                # The flag is read HERE, inside the per-phone lock, and written
+                # immediately after the send — `is_new_user` is computed before
+                # the lock, so two texts arriving seconds apart both carry it
+                # and would otherwise both append a link.
+                setup_url = None
+                if is_new_user and not get_profile(from_number).get("setup_link_sent"):
+                    from onboard import start as _setup_start
+                    setup_url = _setup_start(from_number)
+                    if setup_url:
+                        reply = f"{reply.rstrip()}\n\n{setup_url}"
+
                 reply_sent = ensure_sms(from_number, reply)
+                if reply_sent and setup_url:
+                    upsert_profile(from_number, {"setup_link_sent": True})
                 if reply_sent:
                     if gif_url:
                         _send_gif_outbound(from_number, gif_url)
@@ -396,6 +415,10 @@ async def home_png(token: str):
     payload = load(token)
     if payload is None:
         raise HTTPException(status_code=404)
+    # A token still on its setup form has no card to draw, and a link preview
+    # scraper asks for this before the user has typed anything.
+    if payload.get("setup_pending") or not payload.get("built_at"):
+        raise HTTPException(status_code=404)
     payload = refresh_stale(token, payload)
     from artifacts import _card_fingerprint
     stamp = _card_fingerprint(payload)
@@ -413,6 +436,27 @@ async def home_png(token: str):
     )
 
 
+@app.post("/h/{token}")
+async def home_setup_submit(token: str, request: Request):
+    """The one write a page ever accepts: a new user's setup form.
+
+    Guarded by onboard.apply's one-shot rule rather than by auth — the token has
+    always been the page's only protection, and this keeps it a read key
+    everywhere except the single submission it was minted for."""
+    from home import load
+    from onboard import apply, needs_setup
+    payload = load(token)
+    if payload is None:
+        raise HTTPException(status_code=404)
+    base = os.environ.get("APP_URL", "").rstrip("/")
+    if needs_setup(payload):
+        apply(token, payload, await request.form())
+    # Redirect either way: a resubmitted form lands on the page it already
+    # built rather than on an error the user can do nothing about.
+    return Response(status_code=303, headers={"Location": f"{base}/h/{token}",
+                                              "Cache-Control": "no-store"})
+
+
 @app.api_route("/h/{token}", methods=["GET", "HEAD"])
 async def home_page(token: str):
     """The user's live page. No login — the token is the whole protection, so
@@ -422,8 +466,25 @@ async def home_page(token: str):
     payload = load(token)
     if payload is None:
         raise HTTPException(status_code=404)
-    payload = refresh_stale(token, payload)
     base = os.environ.get("APP_URL", "").rstrip("/")
+    # Before the form is submitted this address IS the form, and between submit
+    # and the first payload it is a holding page. Both return before
+    # refresh_stale, which would otherwise spend on sections for a user whose
+    # city is still unknown.
+    from onboard import needs_setup, render_setup, render_building
+    if needs_setup(payload):
+        return FileResponse(
+            content=render_setup(token, action=f"{base}/h/{token}"),
+            media_type="text/html; charset=utf-8",
+            headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow",
+                     "Referrer-Policy": "no-referrer"})
+    if not payload.get("built_at"):
+        return FileResponse(
+            content=render_building(f"{base}/h/{token}"),
+            media_type="text/html; charset=utf-8",
+            headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow",
+                     "Referrer-Policy": "no-referrer"})
+    payload = refresh_stale(token, payload)
     # The og:image URL carries the card's content fingerprint. Link-preview
     # scrapers — iMessage most stubbornly — cache og:images by URL and have no
     # reason to refetch a URL they have already seen, so a fixed
