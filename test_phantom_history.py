@@ -97,7 +97,7 @@ class TestProactiveSendersNeverShipTheFallbackString:
         price check texted 'something went sideways on my end, try again' to
         someone who had asked for nothing."""
         import pathlib
-        proactive = ["watches.py", "followup.py", "morning.py",
+        proactive = ["watches.py", "followup.py", "morning.py", "scorewatch.py",
                      "shopping.py", "flightwatch.py", "send_reminders.py"]
         for name in proactive:
             src = pathlib.Path(name).read_text()

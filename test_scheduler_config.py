@@ -122,14 +122,14 @@ class TestFollowupGrid:
 
 
 class TestNoUnpromptedSenderComesBack:
-    """Two jobs used to text people on Palmer's own initiative — a live score
-    poller and a daily "a friend would text this" news alert. Both are gone; a
-    followed team rides the morning and the page, and run_followups is the one
-    paced check-in. This pins that nothing quietly comes back."""
+    """A daily "a friend would text this" news alert used to text people on
+    Palmer's own initiative. It is gone; run_followups is the one paced
+    check-in, and run_score_alerts only texts teams a user set a live level
+    on. This pins that nothing quietly comes back."""
 
     def test_the_retired_modules_are_gone(self):
         import importlib
-        for name in ("scorewatch", "alerts"):
+        for name in ("alerts",):
             try:
                 importlib.import_module(name)
             except ModuleNotFoundError:
@@ -139,7 +139,7 @@ class TestNoUnpromptedSenderComesBack:
     def test_the_job_list_is_exactly_this(self):
         allowed = {"send_due_reminders", "send_morning_messages", "run_watches",
                    "send_missing_data_asks", "run_followups", "run_price_watches",
-                   "run_forecast_audit", "run_flight_watches"}
+                   "run_forecast_audit", "run_flight_watches", "run_score_alerts"}
         names = {j.func.__name__ for j in _scheduler().get_jobs()}
         assert names == allowed, names
 

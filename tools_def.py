@@ -393,11 +393,12 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "follow_team",
-        "description": "Follow a sports team so its games ride in the user's morning update and the Scores section of their page. Use when they want to keep up with a team — 'follow the Eagles', 'keep me posted on the Cardinals', 'track the Blues', 'put my team in my morning'. There are NO live texts during a game: the morning carries last night's result and tonight's game, and the page has both. Team names are ambiguous ('Cardinals', 'Rangers' are each two teams), so when the result lists several matches, ask which — never pick.",
+        "description": "Follow a sports team so its games ride in the user's morning update and the Scores section of their page. Use when they want to keep up with a team — 'follow the Eagles', 'keep me posted on the Cardinals', 'track the Blues', 'put my team in my morning'. Live game texts are OPT-IN via `live`: pass 'key' if they asked for the big moments (lead changes, a score in the closing stretch, the final), 'all' if they asked for every score, and leave it out if they did not say — the result will tell you to offer it in one clause. Team names are ambiguous ('Cardinals', 'Rangers' are each two teams), so when the result lists several matches, ask which — never pick.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Team as they said it, e.g. 'Eagles'. Add the sport or city if they gave one, e.g. 'St. Louis Cardinals'."},
+                "live": {"type": "string", "enum": ["off", "key", "all"], "description": "Live game texts. 'key' = lead changes, a score in the last five minutes, and the final. 'all' = every score (key moments only in the NBA). Omit unless they said."},
             },
             "required": ["name"],
         },
@@ -409,6 +410,18 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
             "type": "object",
             "properties": {"text_match": {"type": "string", "description": "Part of the team name. Omit to unfollow all."}},
             "required": [],
+        },
+    },
+    {
+        "name": "set_score_updates",
+        "description": "Change the LIVE game texts for a team the user already follows, without unfollowing it. mode 'off' stops live texts (the team stays in the morning update and on the page), 'key' = lead changes, a score in the closing stretch, and the final, 'all' = every score (key moments only in the NBA). Use for 'stop the live score texts', 'just the big moments', 'text me every score', 'turn on live updates for the Eagles'. Pass text_match with part of the team name; omit to apply to every team they follow. To drop a team entirely use unfollow_team instead.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["off", "key", "all"]},
+                "text_match": {"type": "string", "description": "Part of the team name. Omit to apply to all followed teams."},
+            },
+            "required": ["mode"],
         },
     },
     {

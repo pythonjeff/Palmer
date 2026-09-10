@@ -10,14 +10,17 @@ names are ambiguous in a way show titles are not — "Cardinals" is two teams.
 
 All offline.
 """
+from contextlib import contextmanager
 from datetime import date
 from unittest.mock import patch
+
+import db
 
 import sports
 
 
-def _game(home=0, away=0, state="in", period=4, clock=200, gid="1", detail="Q4 3:20"):
-    return {"id": gid, "league": "nfl", "short": "CIN @ PHI", "state": state,
+def _game(home=0, away=0, state="in", period=4, clock=200, gid="1", detail="Q4 3:20", league="nfl"):
+    return {"id": gid, "league": league, "short": "CIN @ PHI", "state": state,
             "detail": detail, "period": period, "clock": clock, "date": "2026-09-03",
             "home": {"abbrev": "PHI", "name": "Philadelphia Eagles", "score": home},
             "away": {"abbrev": "CIN", "name": "Cincinnati Bengals", "score": away}}
@@ -129,12 +132,12 @@ class TestScoreboardByDay:
             assert sports.scoreboard("quidditch") == []
         g.assert_not_called()
 
-    def test_there_is_one_polling_speed_and_it_is_not_a_pager(self):
-        """The two-speed live poll went with the alerts. Nothing in this
-        module is tuned to catch a moment inside a game any more."""
-        assert not hasattr(sports, "LIVE_POLL_SECONDS")
-        assert not hasattr(sports, "alert_reason")
-        assert not hasattr(sports, "MAX_ALERTS_PER_GAME")
+    def test_the_poll_is_two_speed_and_gated_on_the_ask(self):
+        """The two-speed live poll is back for the people who opted in;
+        scorewatch.live_teams is what keeps everyone else out of it."""
+        import scorewatch
+        assert scorewatch.live_teams({"followed_teams": [TEAM]}) == []
+        assert scorewatch.live_teams({"followed_teams": [dict(TEAM, live="key")]}) == [dict(TEAM, live="key")]
 
 
 class TestAmbiguousTeamNames:
@@ -175,21 +178,49 @@ class TestAmbiguousTeamNames:
         assert "matches more than one team" in block
 
 
-class TestFollowingIsNotSigningUpForLiveTexts:
-    def test_the_dispatch_says_so_in_as_many_words(self):
-        """The model confirms from the tool result, so the tool result has to
-        say what they actually get — and that it is not live."""
+class TestLiveTextsAreOptIn:
+    """Following a team puts it in the morning and on the page. Live texts
+    during a game are a separate ask with a level, and the dispatch offers
+    them rather than assuming."""
+
+    def test_a_team_with_no_level_is_off(self):
+        assert sports.live_mode({"abbrev": "PHI"}) == "off"
+        assert sports.live_mode({"abbrev": "PHI", "live": "nonsense"}) == "off"
+        assert sports.live_mode({"abbrev": "PHI", "live": "all"}) == "all"
+
+    def test_the_dispatch_offers_when_no_level_was_given(self):
         import inspect
         import agent
         block = inspect.getsource(agent.get_reply).split('"follow_team"')[1].split("elif b.name")[0]
-        assert "NO live score texts" in block
-        assert "morning" in block and "page" in block
+        assert "No live texts are set" in block and "Offer them in one clause" in block
+        assert "Do not promise live texts they have not chosen" in block
 
-    def test_the_tool_description_agrees(self):
+    def test_the_tool_descriptions_agree(self):
         from tools_def import TOOLS
-        d = next(t for t in TOOLS if t["name"] == "follow_team")["description"]
-        assert "NO live texts" in d
-        assert "lead changes" not in d
+        follow = next(t for t in TOOLS if t["name"] == "follow_team")
+        assert "OPT-IN" in follow["description"]
+        assert follow["input_schema"]["properties"]["live"]["enum"] == ["off", "key", "all"]
+        setter = next(t for t in TOOLS if t["name"] == "set_score_updates")
+        assert "without unfollowing" in setter["description"]
+        assert setter["input_schema"]["required"] == ["mode"]
+
+    def test_the_offer_block_fires_once_for_a_named_team(self):
+        import agent
+        import userprofile
+        base = {"intro_sent": True, "sports_teams": ["Cardinals fan"], "name": "Jeff", "city": "Kirkwood, MO"}
+        with patch.object(agent, "get_profile", return_value=dict(base)), \
+             patch.object(agent, "get_history", return_value=[]):
+            assert "LIVE SCORES OFFER" in agent._build_system("+1")
+        with patch.object(agent, "get_profile", return_value=dict(base, score_offer_sent=True)), \
+             patch.object(agent, "get_history", return_value=[]):
+            assert "LIVE SCORES OFFER" not in agent._build_system("+1")
+        with patch.object(agent, "get_profile", return_value=dict(base, followed_teams=[{"abbrev": "STL"}])), \
+             patch.object(agent, "get_history", return_value=[]):
+            assert "LIVE SCORES OFFER" not in agent._build_system("+1")
+        # Consumed after the turn under the same condition, answered or not.
+        import inspect
+        src = inspect.getsource(userprofile._update_profile)
+        assert '"score_offer_sent": True' in src
 
     def test_a_follow_expires_the_page_section(self):
         """Otherwise the Scores card stays empty for up to ten minutes after
@@ -281,8 +312,225 @@ class TestAFailedFetchIsNotAnAnswer:
             assert len(sports.scoreboard("nfl", ttl=0)) == 1, "went dark on one bad request"
 
 
-class TestTheStoredAlertStateIsGone:
-    def test_db_no_longer_carries_game_alert_state(self):
-        import db
-        assert not hasattr(db, "record_game_alert")
-        assert not hasattr(db, "get_game_alert")
+# ---- the poller, for the people who asked ------------------------------------
+
+def _told(home, away, leader, state="in"):
+    return {"home_score": home, "away_score": away, "leader": leader, "state": state}
+
+
+@contextmanager
+def _run(game, prev=None, alert_count=0, delivered=True, live="key"):
+    """Run one pass of the job over a single followed team, offline.
+
+    Yields a record of what was texted and what was written back, so tests can
+    assert on behaviour instead of on the source of the function."""
+    import scorewatch
+    rec = {"sms": [], "saved": []}
+    if prev is not None:
+        prev = {**prev, "alert_count": alert_count}
+    team = {"league": "nfl", "abbrev": "PHI", "name": "Philadelphia Eagles"}
+    if live:
+        team["live"] = live
+    profile = {"followed_teams": [team]}
+    with patch.object(scorewatch, "get_all_profiles", return_value=[("+1", profile)]), \
+         patch.object(sports, "scoreboard", return_value=[game]), \
+         patch.object(scorewatch, "get_game_alert", return_value=prev), \
+         patch.object(scorewatch, "_draft", return_value="line"), \
+         patch.object(scorewatch, "record_game_alert",
+                      side_effect=lambda p, g, h, a, l, st, sent: rec["saved"].append((h, a, sent))), \
+         patch("sms_util.send_sms", side_effect=lambda p, t, **k: rec["sms"].append(t) or delivered):
+        scorewatch.run_score_alerts()
+    yield rec
+
+
+class TestFollowingAloneSendsNothingLive:
+    def test_a_team_with_no_level_is_not_polled_or_texted(self):
+        with patch.object(sports, "scoreboard") as board:
+            with _run(_game(14, 17), prev=_told(14, 10, "home"), live=None) as rec:
+                assert rec["sms"] == []
+        board.assert_not_called()
+
+    def test_off_is_the_same_as_absent(self):
+        with _run(_game(14, 17), prev=_told(14, 10, "home"), live="off") as rec:
+            assert rec["sms"] == []
+
+
+class TestMostOfAGameIsSilent:
+    """The default answer is no. Three moments are exceptions at the key level."""
+
+    def test_the_first_sighting_is_a_baseline_not_news(self):
+        assert sports.alert_reason(None, _game(7, 0)) is None
+        assert sports.alert_reason(None, _game(7, 0), "all") is None
+
+    def test_a_routine_score_says_nothing(self):
+        """A touchdown in the second quarter of a blowout is the case that would
+        make this a pager."""
+        assert sports.alert_reason(_told(21, 0, "home"),
+                                   _game(28, 0, period=2, clock=600)) is None
+
+    def test_no_change_says_nothing(self):
+        assert sports.alert_reason(_told(14, 10, "home"), _game(14, 10)) is None
+        assert sports.alert_reason(_told(14, 10, "home"), _game(14, 10), "all") is None
+
+    def test_a_game_not_started_says_nothing(self):
+        assert sports.alert_reason(None, _game(0, 0, state="pre")) is None
+
+    def test_a_final_is_announced_once(self):
+        assert sports.alert_reason(_told(14, 10, "home"), _game(14, 10, state="post")) == "final"
+        assert sports.alert_reason(_told(14, 10, "home", state="post"),
+                                   _game(14, 10, state="post")) is None
+
+
+class TestTheThreeMomentsThatEarnATextAtKey:
+    def test_the_lead_changing_hands(self):
+        assert sports.alert_reason(_told(14, 10, "home"), _game(14, 17)) == "lead"
+
+    def test_a_score_inside_the_last_five_minutes(self):
+        assert sports.alert_reason(_told(14, 10, "home"), _game(21, 10)) == "late"
+
+    def test_late_needs_both_a_score_and_the_clock(self):
+        assert sports.alert_reason(_told(14, 10, "home"), _game(14, 10, clock=30)) is None
+
+    def test_an_equalising_score_reads_as_tied(self):
+        assert sports.alert_reason(_told(21, 14, "home"), _game(21, 21)) == "tied"
+
+    def test_a_go_ahead_score_after_a_tie_is_still_a_lead_change(self):
+        assert sports.alert_reason(_told(21, 21, None), _game(28, 21)) == "lead"
+
+
+class TestEveryScoreIsTheSecondLevel:
+    def test_a_routine_score_earns_a_text_at_all(self):
+        routine = _game(28, 0, period=2, clock=600)
+        assert sports.alert_reason(_told(21, 0, "home"), routine, "all") == "score"
+
+    def test_a_lead_change_is_still_a_lead_change(self):
+        assert sports.alert_reason(_told(14, 10, "home"), _game(14, 17), "all") == "lead"
+
+    def test_the_nba_falls_back_to_key_moments(self):
+        """A basket lands every thirty seconds; nobody wants that text."""
+        routine = _game(58, 40, period=2, clock=600, league="nba")
+        assert sports.alert_reason(_told(56, 40, "home"), routine, "all") is None
+        assert sports.alert_reason(_told(56, 57, "away"), _game(58, 57, period=2, clock=600, league="nba"), "all") == "lead"
+
+    def test_the_cap_is_a_backstop_not_a_budget(self):
+        assert sports.alert_cap("all") > sports.alert_cap("key")
+        assert sports.alert_cap("key") == sports.MAX_ALERTS_PER_GAME <= 4
+
+    def test_the_drafter_knows_who_scored(self):
+        assert sports.scorer(_told(14, 10, "home"), _game(21, 10)) == "home"
+        assert sports.scorer(_told(14, 10, "home"), _game(14, 17)) == "away"
+        assert sports.scorer(None, _game(14, 17)) is None
+        import inspect
+        import scorewatch
+        assert "just scored" in inspect.getsource(scorewatch._draft)
+
+    def test_the_job_texts_every_score_only_for_all(self):
+        routine = _game(28, 0, period=2, clock=600)
+        with _run(routine, prev=_told(21, 0, "home"), live="key") as rec:
+            assert rec["sms"] == []
+        with _run(routine, prev=_told(21, 0, "home"), live="all") as rec:
+            assert rec["sms"] == ["line"]
+
+
+class TestTheClosingStretchMeansDifferentThingsPerSport:
+    def _late(self, league, period, clock):
+        return sports._is_late({"league": league, "period": period, "clock": clock})
+
+    def test_football_needs_both_the_period_and_the_clock(self):
+        assert self._late("nfl", 4, 200)
+        assert not self._late("nfl", 4, 720)
+        assert not self._late("nfl", 2, 200)
+
+    def test_overtime_counts(self):
+        assert self._late("nfl", 5, 120)
+        assert self._late("mlb", 11, 0)
+
+    def test_baseball_has_no_clock_to_read(self):
+        assert self._late("mlb", 9, 0)
+        assert not self._late("mlb", 4, 0)
+
+    def test_soccer_needs_a_floor_because_its_clock_counts_up(self):
+        assert self._late("mls", 2, 5100)
+        assert not self._late("mls", 2, 3000)
+
+    def test_hockey_ends_in_the_third(self):
+        assert self._late("nhl", 3, 180)
+        assert not self._late("nhl", 2, 180)
+
+
+class TestTheCapNeverSwallowsTheResult:
+    def test_a_suppressed_alert_still_updates_what_they_know(self):
+        routine = _game(28, 0, period=2, clock=600)
+        with _run(routine, prev=_told(21, 0, "home")) as rec:
+            assert rec["sms"] == []
+            assert rec["saved"][-1][:2] == (28, 0)
+            assert rec["saved"][-1][2] is False
+
+    def test_a_mid_game_score_is_suppressed_once_the_cap_is_hit(self):
+        with _run(_game(21, 24), prev=_told(21, 17, "home"),
+                  alert_count=sports.MAX_ALERTS_PER_GAME) as rec:
+            assert rec["sms"] == []
+
+    def test_but_the_result_still_arrives(self):
+        with _run(_game(21, 24, state="post"), prev=_told(21, 17, "home"),
+                  alert_count=sports.MAX_ALERTS_PER_GAME) as rec:
+            assert rec["sms"], "the final was swallowed by the cap"
+
+    def test_an_undelivered_text_does_not_consume_the_moment(self):
+        with _run(_game(14, 17), prev=_told(14, 10, "home"), delivered=False) as rec:
+            assert rec["sms"]
+            assert rec["saved"][-1][2] is False
+
+    def test_a_delivered_text_does_count(self):
+        with _run(_game(14, 17), prev=_told(14, 10, "home")) as rec:
+            assert rec["saved"][-1][2] is True
+
+    def test_a_game_that_ended_before_they_followed_is_not_news(self):
+        assert sports.alert_reason(None, _game(21, 17, state="post")) is None
+
+
+class TestPollingIsTwoSpeed:
+    def test_an_idle_league_is_checked_far_less_often(self):
+        assert sports.IDLE_POLL_SECONDS >= 5 * sports.LIVE_POLL_SECONDS
+
+    def test_a_live_league_is_checked_often_enough_to_catch_a_lead_change(self):
+        assert sports.LIVE_POLL_SECONDS <= 120
+
+    def test_the_job_never_raises(self):
+        import scorewatch
+        with patch("scorewatch.get_all_profiles", side_effect=RuntimeError("db down")):
+            scorewatch.run_score_alerts()
+
+
+class TestStoredState:
+    def _fresh(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "g.db")
+        db.init_db()
+
+    def test_a_sent_alert_counts_and_a_silent_update_does_not(self, tmp_path, monkeypatch):
+        self._fresh(tmp_path, monkeypatch)
+        db.record_game_alert("+1", "9", 7, 0, "home", "in", sent=True)
+        db.record_game_alert("+1", "9", 14, 0, "home", "in", sent=False)
+        row = db.get_game_alert("+1", "9")
+        assert row["alert_count"] == 1
+        assert row["home_score"] == 14
+
+    def test_state_is_per_user(self, tmp_path, monkeypatch):
+        self._fresh(tmp_path, monkeypatch)
+        db.record_game_alert("+1", "9", 7, 0, "home", "in", sent=True)
+        assert db.get_game_alert("+2", "9") is None
+
+
+class TestSetScoreUpdatesDispatch:
+    def _block(self):
+        import inspect
+        import agent
+        return inspect.getsource(agent.get_reply).split('"set_score_updates"')[1].split("elif b.name")[0]
+
+    def test_it_changes_the_level_without_dropping_the_team(self):
+        block = self._block()
+        assert 'upsert_profile(phone_number, {"followed_teams": current})' in block
+        assert "They still follow the team" in block
+
+    def test_it_accepts_the_key_the_model_carries_over(self):
+        assert 'b.input.get("name")' in self._block()

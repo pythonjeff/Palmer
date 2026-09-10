@@ -37,7 +37,7 @@ class TestAllowList:
                       "pending_morning_suggestion", "pending_preference_notice",
                       "followup_sent_date", "intro_sent",
                       "ongoing_threads", "life_context",
-                      "onboarding_ask_sent", "followed_teams"):
+                      "onboarding_ask_sent", "score_offer_sent", "followed_teams"):
             assert field in userprofile.PROFILE_FIELDS, field
 
 

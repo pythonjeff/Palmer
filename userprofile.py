@@ -34,7 +34,7 @@ PROFILE_FIELDS = frozenset({
     "intro_sent", "conversation_topics", "reactions", "reactions_folded_count",
     "pending_morning_suggestion", "pending_preference_notice",
     "followup_sent_date", "city_ask_sent_date",
-    "onboarding_ask_sent",
+    "onboarding_ask_sent", "score_offer_sent",
     # What the last check-in was about, so the next one moves on, and
     # the message count at the last consolidation, so it does not re-run every
     # turn. Both bookkeeping, NOT extraction fields — deliberately absent from
@@ -392,6 +392,12 @@ def _update_profile(phone: str, user_msg: str, reply: str):
     if (profile.get("intro_sent") and not profile.get("onboarding_ask_sent")
             and (not profile.get("name") or not profile.get("city"))):
         upsert_profile(phone, {"onboarding_ask_sent": True})
+    # Same shape for the LIVE SCORES OFFER: the block shows when they have named
+    # a team and follow none, and it is consumed the first time that holds
+    # after a turn, whether or not they took it up.
+    if (profile.get("intro_sent") and profile.get("sports_teams")
+            and not profile.get("followed_teams") and not profile.get("score_offer_sent")):
+        upsert_profile(phone, {"score_offer_sent": True})
     _track_conversation_topic(phone, user_msg, reply, profile)
 
 def _user_already_covered(phone: str, candidate: str, window_hours: float = 12) -> bool:

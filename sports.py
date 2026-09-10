@@ -281,3 +281,117 @@ def result_line(game: dict, team: dict) -> str:
         return f"drew {opp} {mine}-{theirs}"
     standing = ("up" if mine > theirs else "down" if mine < theirs else "level")
     return f"{standing} {mine}-{theirs} vs {opp}" + (f", {detail}" if detail else "")
+
+
+# ---- live texts: opt-in, two levels ------------------------------------------
+# A followed team gets no live texts unless the user asked. `live` on the team
+# dict is the ask, and the level decides how much:
+#
+#   off   the default — morning update and page only
+#   key   the lead changing hands, a score in the closing stretch, the final
+#   all   every score, plus the final
+#
+# A scoring feed is a pager by construction — an NFL game has six to ten
+# scoring plays, and two teams on a Sunday is twenty texts in an afternoon —
+# which is why "key" is what Palmer offers first, and why even "all" has a
+# per-game cap and a league it does not apply to.
+LIVE_MODES = ("off", "key", "all")
+MAX_ALERTS_PER_GAME = 4          # key moments; however wild the game
+MAX_ALERTS_PER_GAME_ALL = 20     # every score: a backstop, not a budget
+LATE_CLOCK_SECONDS = 5 * 60
+
+# Leagues where "every score" is a text someone could want. A basket lands
+# every thirty seconds, so for the NBA "all" means key moments.
+EVERY_SCORE_LEAGUES = {"nfl", "ncaaf", "mlb", "nhl", "mls"}
+
+# Two speeds for the poller. Polling every couple of minutes around the clock
+# would be thousands of calls a day against an unofficial API to learn that
+# nothing is happening; polling slowly during a game misses the moments.
+LIVE_POLL_SECONDS = 110
+IDLE_POLL_SECONDS = 15 * 60
+
+# The last period of regulation, per league. Innings and halves are not
+# quarters, and assuming they were is what made "late" mean nothing for half
+# these sports.
+FINAL_PERIOD = {"nfl": 4, "ncaaf": 4, "nba": 4, "nhl": 3, "mlb": 9, "mls": 2}
+# Baseball has innings and no clock at all, so the inning IS the signal.
+# Soccer has a clock that counts UP toward ~90 minutes rather than down to
+# zero, so it needs a floor rather than a ceiling — treating the whole second
+# half as "late" would make a 45-minute window the closing stretch.
+CLOCKLESS = {"mlb"}
+COUNTS_UP = {"mls": 80 * 60}
+
+
+def live_mode(team: dict) -> str:
+    """The live-text level a followed team was set to. Absent or unknown is off."""
+    mode = (team or {}).get("live") or "off"
+    return mode if mode in LIVE_MODES else "off"
+
+
+def alert_cap(mode: str) -> int:
+    return MAX_ALERTS_PER_GAME_ALL if mode == "all" else MAX_ALERTS_PER_GAME
+
+
+def _is_late(game: dict) -> bool:
+    """Is this the closing stretch — the point where a score changes the game?
+
+    Two questions, not one: are we in the final period, and if the sport has a
+    countdown, is it nearly done. Extra time counts, which is why the period
+    test is `>=`."""
+    league = game.get("league") or ""
+    if (game.get("period") or 0) < FINAL_PERIOD.get(league, 4):
+        return False
+    if league in CLOCKLESS:
+        return True
+    clock = game.get("clock") or 0
+    floor = COUNTS_UP.get(league)
+    if floor is not None:
+        return clock >= floor
+    return 0 < clock <= LATE_CLOCK_SECONDS
+
+
+def scorer(prev: dict | None, game: dict) -> str | None:
+    """Which side's score moved since they were last told: "home", "away", or None."""
+    if not prev:
+        return None
+    if game["home"]["score"] != prev.get("home_score"):
+        return "home"
+    if game["away"]["score"] != prev.get("away_score"):
+        return "away"
+    return None
+
+
+def alert_reason(prev: dict | None, game: dict, mode: str = "key") -> str | None:
+    """Why this moment deserves a text, or None for the many that do not.
+
+    `prev` is the last state this user was told about. The comparison is
+    against what they were TOLD, not against the last poll — otherwise a score
+    that arrives in the same tick as a lead change reads as two events.
+
+    `mode` is the level they asked for. "key" allows the lead changing hands,
+    a score in the closing stretch, and the final; "all" adds every other
+    score, in the leagues where that is a text anyone could want."""
+    if game.get("state") == "pre":
+        return None
+    if not prev:
+        # First sighting is a baseline whatever state it is in. ESPN's NFL
+        # board carries the whole current week, so following the Eagles on a
+        # Tuesday used to open with "Final: CIN 17, PHI 21" for Sunday's game.
+        return None
+    if game.get("state") == "post":
+        return None if prev.get("state") == "post" else "final"
+    scored = (game["home"]["score"] != prev.get("home_score")
+              or game["away"]["score"] != prev.get("away_score"))
+    if not scored:
+        return None
+    now = leader(game)
+    if now != prev.get("leader"):
+        # Somebody now leads, or nobody does. Calling a tying score a lead
+        # change handed the drafter "the lead just changed hands" next to a
+        # standing line reading "level, tied at 21".
+        return "lead" if now else "tied"
+    if _is_late(game):
+        return "late"
+    if mode == "all" and (game.get("league") or "") in EVERY_SCORE_LEAGUES:
+        return "score"
+    return None
