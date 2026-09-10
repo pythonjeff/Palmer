@@ -321,16 +321,35 @@ def traffic_snapshot(origin: str, destination: str, *,
             return None
         free = summary.get("noTrafficTravelTimeInSeconds") or live
         dist = summary.get("lengthInMeters")
-        from timeutil import local_now
-        base = depart_at if predicted else local_now(tz_name)
+        # `trafficDelayInSeconds` is the delay from LIVE incidents, and a
+        # departAt route has none: TomTom answers it from historical speed
+        # profiles, so the field reads 0 even when the trip is a third slower
+        # than free-flow (measured: 29 min against 22, delay 0), and every
+        # surface then printed "normal" beside an amber meter. For a prediction
+        # the only meaning "vs normal" can have is live minus free-flow.
+        if predicted:
+            delay_s = max(live - free, 0)
+        else:
+            delay_s = summary.get("trafficDelayInSeconds") or 0
+        from timeutil import local_now, valid_zone
+        # The arrival is a clock on the reader's wall. With no resolvable zone
+        # there is no such clock — local_now would hand back UTC and the digest
+        # would say "arriving about 15:42" to someone at 8am — so the field is
+        # absent, the same refusal clock_block makes for the date.
+        if predicted:
+            base = depart_at
+        elif valid_zone(tz_name):
+            base = local_now(tz_name)
+        else:
+            base = None
         out = {
             "live_min": round(live / 60),
             "free_min": round(free / 60),
-            "delay_min": round((summary.get("trafficDelayInSeconds") or 0) / 60),
+            "delay_min": round(delay_s / 60),
             "miles": round(dist / 1609.34, 1) if dist else None,
             "ratio": round(live / free, 3) if free else 1.0,
             "predicted": predicted,
-            "arrive_at": (base + timedelta(seconds=live)).strftime("%H:%M"),
+            "arrive_at": (base + timedelta(seconds=live)).strftime("%H:%M") if base else None,
         }
         if predicted:
             out["depart_at"] = depart_at.strftime("%H:%M")

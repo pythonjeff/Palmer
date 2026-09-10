@@ -48,13 +48,22 @@ class TestFriendlyTime:
         assert friendly_hhmm("25:00") == "25:00"
 
 
-def _snapshot(**kw):
+# What TomTom actually returns for a departAt route: the trip is a third
+# slower than free-flow and trafficDelayInSeconds is 0, because that field
+# counts live incidents and a prediction has none.
+PREDICTED_ROUTE = {"routes": [{"summary": {"travelTimeInSeconds": 1740,
+                                           "noTrafficTravelTimeInSeconds": 1320,
+                                           "trafficDelayInSeconds": 0,
+                                           "lengthInMeters": 22000}}]}
+
+
+def _snapshot(route=ROUTE, **kw):
     """traffic_snapshot against a canned TomTom reply; returns (result, url)."""
     seen = {}
 
     def _get(url, **_):
         seen["url"] = url
-        return ROUTE
+        return route
 
     with patch.object(traffic, "_http_get_json", side_effect=_get):
         out = traffic.traffic_snapshot(ORIGIN, DEST, **kw)
@@ -82,6 +91,25 @@ class TestSnapshotDeparture:
             _, url = _snapshot(depart_at=depart, tz_name="Europe/Paris")
         stamp = url.split("departAt=")[1]
         assert "+" not in stamp and "%2B" in stamp and "%3A" in stamp
+
+    def test_a_predicted_delay_is_live_minus_free_flow(self):
+        depart = datetime.now(CHI) + timedelta(hours=2)
+        with patch.object(traffic, "_geocode_address", return_value=(38.5, -90.4)):
+            out, _ = _snapshot(route=PREDICTED_ROUTE, depart_at=depart, tz_name="America/Chicago")
+        assert out["live_min"] == 29 and out["free_min"] == 22
+        assert out["delay_min"] == 7, "a 29-vs-22 prediction must not read as 'normal'"
+        # A live route keeps TomTom's incident delay, unchanged from before.
+        with patch.object(traffic, "_geocode_address", return_value=(38.5, -90.4)):
+            out, _ = _snapshot(tz_name="America/Chicago")
+        assert out["delay_min"] == 1
+
+    def test_no_zone_means_no_arrival_clock(self):
+        with patch.object(traffic, "_geocode_address", return_value=(38.5, -90.4)):
+            out, _ = _snapshot(tz_name=None)
+            bad, _ = _snapshot(tz_name="Pacific Time")
+            ok, _ = _snapshot(tz_name="America/Chicago")
+        assert out["arrive_at"] is None and bad["arrive_at"] is None
+        assert ok["arrive_at"] and out["live_min"] == ok["live_min"]
 
     def test_a_past_departure_routes_live(self):
         depart = datetime.now(CHI) - timedelta(minutes=10)
@@ -157,6 +185,12 @@ class TestDepartureRule:
     def test_no_or_bad_leave_time_routes_live(self):
         assert home._commute_depart_at({}, "America/Chicago", now=self._at("07:00")) is None
         assert home._commute_depart_at({"leave_time": "soonish"}, "America/Chicago", now=self._at("07:00")) is None
+
+    def test_no_zone_routes_live_rather_than_predicting_for_utc(self):
+        # Without a resolvable zone "08:30" has no clock to sit on; predicting
+        # for 08:30Z and labelling it 8:30am would be confidently wrong.
+        assert home._commute_depart_at({"leave_time": "08:30"}, None) is None
+        assert home._commute_depart_at({"leave_time": "08:30"}, "Pacific Time") is None
 
     def test_fetch_forwards_the_stored_route_and_departure(self):
         profile = {"timezone": "America/Chicago",

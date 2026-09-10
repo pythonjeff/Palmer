@@ -143,12 +143,18 @@ def _commute_depart_at(commute: dict, tz_name: str | None, now=None):
     Pure given `now`, so it is testable without freezing a clock."""
     from datetime import timedelta
     from smstext import _normalize_hhmm
-    from timeutil import local_now
+    from timeutil import local_now, valid_zone
     leave = _normalize_hhmm((commute or {}).get("leave_time") or "")
     if not leave:
         return None
     h, m = leave.split(":")
-    now = now or local_now(tz_name)
+    if now is None:
+        # No zone means no local clock to put "08:30" on: local_now would fall
+        # back to UTC, the route would be predicted for 08:30Z, and every
+        # surface would label it "8:30am". Live is the honest answer.
+        if not valid_zone(tz_name):
+            return None
+        now = local_now(tz_name)
     target = now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
     if target - now < timedelta(seconds=COMMUTE_PREDICT_MIN_LEAD):
         return None
