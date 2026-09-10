@@ -1075,8 +1075,8 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     result = (f"No team matches {asked!r}. Ask them to confirm the team — "
                               f"do not guess one, and do not send them elsewhere to look it up.")
                 elif len(matches) > 1:
-                    # "Cardinals" is two teams in two sports. Guessing signs them
-                    # up for alerts about the wrong one, in the wrong season.
+                    # "Cardinals" is two teams in two sports. Guessing puts the
+                    # wrong one, in the wrong season, in their morning and on their page.
                     listed = ", ".join(f"{m['name']} ({m['league'].upper()})" for m in matches)
                     result = (f"{asked!r} matches more than one team: {listed}. Ask which they "
                               f"mean in one short line, then call follow_team again with the "
@@ -1090,9 +1090,16 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 else:
                     current.append(matches[0])
                     upsert_profile(phone_number, {"followed_teams": current})
-                    result = (f"Now following {matches[0]['name']}. They get a text when the lead "
-                              f"changes, when someone scores in the last five minutes, and at the "
-                              f"final — a few a game, not every play. Say that plainly.")
+                    try:
+                        from home import invalidate
+                        invalidate(phone_number, ("scores",))
+                    except Exception as e:
+                        print(f"home.invalidate after follow_team failed: {e}")
+                    result = (f"Now following {matches[0]['name']}. Their game rides in the "
+                              f"morning update — last night's result and tonight's game — and "
+                              f"the Scores section of their page has both. There are "
+                              f"NO live score texts during a game: say that plainly if they "
+                              f"asked for play-by-play, and do not promise one.")
             elif b.name == "unfollow_team":
                 profile = get_profile(phone_number)
                 current = list(profile.get("followed_teams") or [])
@@ -1107,8 +1114,13 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 dropped = len(current) - len(kept)
                 if dropped:
                     upsert_profile(phone_number, {"followed_teams": kept})
-                result = (f"Stopped score alerts for {dropped} team(s)." if dropped
-                          else "No followed team matched that.")
+                    try:
+                        from home import invalidate
+                        invalidate(phone_number, ("scores",))
+                    except Exception as e:
+                        print(f"home.invalidate after unfollow_team failed: {e}")
+                result = (f"Unfollowed {dropped} team(s); their games leave the morning and the page."
+                          if dropped else "No followed team matched that.")
             elif b.name == "get_score":
                 from sports import find_teams, team_game, describe
                 matches = find_teams(b.input.get("team", ""))

@@ -231,22 +231,21 @@ class TestPacingFactor:
         from datetime import datetime, timedelta
         base = {"morning_onboarded": True, "timezone": "America/Chicago",
                 "ongoing_threads": ["job offer"]}
-        two_days_ago = (datetime.now() - timedelta(days=2)).date().isoformat()
-
+        short = followup.GAP_DAYS - 1
+        recent = (datetime.now() - timedelta(days=short)).date().isoformat()
         with patch.object(followup, "_local_now",
                           return_value=datetime.now().replace(hour=15)):
-            calm = dict(base, followup_sent_date=two_days_ago, reactions=[])
-            noisy = dict(base, followup_sent_date=two_days_ago, reactions=_neg("checkins", 4))
-            # 2 days < 3-day base gap either way, but the noisy user's gap is longer still
+            calm = dict(base, followup_sent_date=recent, reactions=[])
+            noisy = dict(base, followup_sent_date=recent, reactions=_neg("checkins", 4))
             assert followup._should_send_followup(calm) is False
             assert followup._should_send_followup(noisy) is False
 
-        four_days_ago = (datetime.now() - timedelta(days=4)).date().isoformat()
+        due = (datetime.now() - timedelta(days=followup.GAP_DAYS + 1)).date().isoformat()
         with patch.object(followup, "_local_now",
                           return_value=datetime.now().replace(hour=15)):
-            calm = dict(base, followup_sent_date=four_days_ago, reactions=[])
-            noisy = dict(base, followup_sent_date=four_days_ago, reactions=_neg("checkins", 4))
-            assert followup._should_send_followup(calm) is True, "normal user is due at 4 days"
+            calm = dict(base, followup_sent_date=due, reactions=[])
+            noisy = dict(base, followup_sent_date=due, reactions=_neg("checkins", 4))
+            assert followup._should_send_followup(calm) is True, "normal user is due"
             assert followup._should_send_followup(noisy) is False, "backed-off user is not"
 
 
