@@ -86,9 +86,8 @@ Underscore prefixes still mean "internal to Palmer", not "private to this module
 send_due_reminders       every 1 min
 send_morning_messages    every 5 min   (each user has a local target time; per-day guard prevents double-sends)
 run_watches              every 30 min
-run_alert_checks         every 60 min
 send_missing_data_asks   every 60 min  (asks users with no city so mornings can target them; DATA_ASK_DRY_RUN=1 to preview)
-run_followups            every 2 hr   (cron, NOT interval — see main.py; the per-user daily claim, not the tick, is what bounds cost)
+run_followups            every 2 hr   (cron, NOT interval — see main.py; the per-user gap in DAYS (followup.GAP_DAYS), not the tick, is the cadence)
 run_price_watches        00:00 + 16:00 UTC (cron, NOT interval — see below; SerpAPI Google Shopping + Amazon; baseline seeded at watch creation, alerts on target-hit or ANY move over $2 in either direction, then re-baselines)
 ```
 
@@ -126,7 +125,7 @@ Four things here are load-bearing:
   window dead.
 - **A failed send still re-arms.** The claim already consumed the occurrence, so
   bailing on a Twilio hiccup would end a standing reminder for good. This is the
-  opposite of the daily-guard jobs (morning, alerts, followups), where releasing
+  opposite of the daily-guard jobs (morning, followups), where releasing
   the claim is right because there the claim *is* the delivery record.
 
 `save_reminder`'s duplicate guard is **same `due_at` (to the minute) AND similar
@@ -337,33 +336,51 @@ failure string in the codebase** do not. That last check is the interlock — th
 strings are what the model paraphrases, so if one read as a denial the guard
 would be policing a problem we wrote.
 
-### A check-in is about something the profile actually says
-`followup.py` fetches no data at all — it is pure model output conditioned on a
-profile string — so every guard has to be structural.
+### The check-in is the one unprompted text, and it is paced in days
+Two jobs used to text people on Palmer's own judgment: a live score poller
+(`scorewatch.py`, every 2 minutes during a game, up to several texts a game) and
+a daily "a friend would text this" news alert (`alerts.py`, once a day from the
+profile's interests). Both are gone, and `test_scheduler_config.py` pins the job
+list so neither comes back quietly. A followed team rides the morning update and
+the page's Scores section instead. What remains is `followup.py`: one text every
+`GAP_DAYS` (10) or more, in a 1-7pm local window, about ONE thing.
 
-**`_pick_thread` returns a string copied from the profile, never the model's own
-words.** It used to return whatever Haiku emitted and hand it straight to the
-drafter, so a confabulated thread was written up as though it were real: a
-specific-sounding question about something that never happened. It now
-echo-matches against `ongoing_threads` and fails closed, exactly as
-`userprofile.topic_already_covered` already did, and for the stated reason — an
-echo can be checked against the list, a paraphrase cannot.
+**The subject is copied from data, never written by the model.** Three pools,
+none of them fetched for this job: `ongoing_threads` from the profile, a followed
+team's game yesterday or today (`sports.team_day`, the same read the page makes),
+and the page's stored headlines for their topics (`home.load`, never a search).
+`_candidates` turns them into `Subject` lines; Haiku picks one by echoing its text
+exactly, or NONE, and `_pick_subject` matches the echo back against the list and
+fails closed. That echo rule is what let the job take on news and sports without a
+new way to make things up — it was written for threads, after a confabulated
+thread was drafted as though it were real, and it holds for every kind.
 
-**`life_context` alone no longer triggers a check-in.** It is a paragraph about
+**The gap is the rate limit, and it is measured in days, not ticks.** With teams
+and news in the pool there is nearly always a candidate, so the 3-day gap the
+thread-only version ran on would have become a text every three days for
+everyone. `tapback.pacing_factor` stretches it; `GAP_MAX_DAYS` caps the stretch.
+
+**`life_context` alone never triggers a check-in.** It is a paragraph about
 someone's life, not a thread with a follow-up, and handing that to a model asked
-to find something "worth a check-in today" is how one gets invented.
+to find something "worth a text today" is how one gets invented.
 
-**The draft prompt no longer asks for invented specificity.** "A statement that
-just shows you remembered" is an instruction to make something up; it now says to
-use only what the thread text and recent messages actually say, and to ask one
-short question when that is not enough.
+**The draft prompt does not ask for invented specificity.** "A statement that
+just shows you remembered" is an instruction to make something up; each kind's
+prompt says to use only the subject line and recent messages. A news subject
+carries its URL last and alone, appended in code after the draft, never asked of
+the model. A headline older than `NEWS_MAX_AGE_HOURS` is not a candidate.
 
 **Every bail path restores `followup_sent_date`, it does not null it.**
 `claim_daily_guard` overwrites the field with today, so nulling it on a bail
 erased the record of the last real send — and `_should_send_followup` measures
-the 3-to-14-day pacing gap against exactly that field. The gap is the thing
-standing between a check-in and a drumbeat. `followup_last_thread` then keeps the
-next pick from landing on the same thread twice running.
+the pacing gap against exactly that field. `followup_last_thread` (the name
+predates news and teams; it holds any subject's text) keeps the next pick from
+landing on the same thing twice running.
+
+`RETIRED_FIELDS` in `userprofile.py` nulls what the retired jobs wrote
+(`alert_sent_date`, `interest_genres`) on the next inbound message. Dropping a
+key from `PROFILE_FIELDS` only stops new writes; the value already in a row would
+otherwise stay and be dumped into every system prompt.
 
 ### Reactions (tapback.py)
 iMessage and Google Messages degrade reactions to plain text over SMS (`Liked "..."`), so they arrive as ordinary inbound messages. `main._handle_sms_inner` short-circuits on them before anything else runs:
@@ -374,7 +391,7 @@ iMessage and Google Messages degrade reactions to plain text over SMS (`Liked ".
 
 Silence is both the default and the failure default, so a Haiku outage degrades to silence rather than to unwanted texts. **Returning `True` from the reaction branch is load-bearing** — `_handle_sms` fires `FALLBACK_SMS` on a falsy return.
 
-Reactions then feed `communication_style`, `morning_prefs["avoid"]`, and a pacing factor that stretches followup gaps and lowers the alert cap. Each is behind a threshold so one stray tap can't reshape Palmer, and a dropped topic is announced once via `pending_preference_notice` rather than silently vanishing.
+Reactions then feed `communication_style`, `morning_prefs["avoid"]`, and a pacing factor that stretches followup gaps and lowers the watch cap. Each is behind a threshold so one stray tap can't reshape Palmer, and a dropped topic is announced once via `pending_preference_notice` rather than silently vanishing.
 
 ### Shared modules — don't re-copy these
 - `serpapi.py` — SerpAPI key, base URL, timeout, and request transport. Both `shopping.py` and `amazon.py` use it. Each still parses its own engine's payload; only the transport is shared.
@@ -567,24 +584,18 @@ only when a screen row is actually present. **TMDB is free for non-commercial us
 only** — the same clause shape as Open-Meteo, and a question the day Palmer
 charges.
 
-### Live scores: the first thing in Palmer built to interrupt
-`sports.py` reads scores, `scorewatch.py` decides which moments deserve a text.
-That second half is the feature. A scoring feed is a pager by construction — an
-NFL game has six to ten scoring plays, and two followed teams on a Sunday is
-twenty texts in an afternoon — and every other proactive path in this codebase
-exists partly to ration sends. So three moments earn a text and nothing else
-does:
-
-  * the lead changes hands,
-  * someone scores inside the last five minutes,
-  * the game ends.
-
-Everything else updates the stored state **silently**, which is load-bearing:
-the comparison is against what the user was last TOLD, not the last poll, so a
-score arriving in the same tick as a lead change is one event rather than two,
-and a suppressed score does not make the next one look bigger than it was.
-`MAX_ALERTS_PER_GAME` is the backstop. Simulated over a full game, five scoring
-events produced three texts.
+### Scores: a followed team is in the morning and on the page, never a pager
+`sports.py` reads scores. There used to be a second half, `scorewatch.py`, that
+decided which moments in a live game deserved a text; it is gone (see the
+check-in section for why). `sports.team_day(team, today)` is now the one read:
+yesterday's game if it finished, and today's in whatever state it is in, both
+keyed on the READER's calendar day via ESPN's `dates=` parameter. `home._fetch_scores`
+renders it as the one-word `Scores` section, `morning.score_lines` puts it in the
+morning digest and the REQUIRED list, and `followup._candidates` offers it to the
+check-in. A team with nothing on either day produces no row — the same rule
+`shows.py` applies to a series between seasons. `result_line` states a game from
+the team's side ("beat the Cubs 5-2", "play the Cubs, 7:15 PM CT") so no drafter
+is left to infer whose side the reader is on from `CIN 17, PHI 21`.
 
 **The obvious ESPN endpoint does not work from Heroku.**
 `site.api.espn.com/.../scoreboard` — the one every guide recommends — returns
@@ -595,33 +606,11 @@ unblocked, and returns a whole league in one call. The core API
 one game's score. Free and undocumented is a deliberate starting position; the
 ESPN shape is confined to `sports.py` so a paid feed is a one-module swap.
 
-**"The closing stretch" is not one rule.** `_is_late` originally compared a
-countdown against five minutes, which is meaningless in two of the six leagues:
-baseball has innings and `clock` is always 0, and soccer's clock counts UP. Late
-alerts were therefore silently dead for MLB and MLS — including the sport a real
-user follows. It now asks two questions: are we in `FINAL_PERIOD` for this
-league (`>=`, so extra time counts), and *if the sport has a countdown*, is it
-nearly done.
-
-**The drafter is told whose side they are on and by how much.** Leaving it to
-infer "PHI" from `CIN 17, PHI 21` mostly worked and is the wrong thing to lean
-on — a buddy does not deduce who you support, and the margin is what sets the
-tone. It is also told, in as many words, that it can see the score and the clock
-and **nothing else**: given only a final score it was writing "that one had to be
-close the whole way", which it cannot know. Same failure as the weather
-over-claiming, wearing personality.
-
-**Polling is two-speed.** Checking every couple of minutes around the clock
-would be thousands of calls a day to learn nothing is happening; checking slowly
-during a game misses the moments. A league with something live is polled at
-`LIVE_POLL_SECONDS`, an idle one at `IDLE_POLL_SECONDS`, and the board is cached
-per league so two users following the same one cost a single fetch.
-
 **Team names are ambiguous in a way show titles are not.** `find_teams` returns
 a LIST — "Cardinals" is two teams in two sports, "Rangers" likewise — and the
-dispatch asks rather than picking, because guessing signs someone up for alerts
-about the wrong team in the wrong season. Verified live: "text me cardinals
-scores" gets *"Which Cardinals — baseball (St. Louis) or football (Arizona)?"*
+dispatch asks rather than picking, because guessing puts the wrong team, in the
+wrong season, in someone's morning. Verified live: "text me cardinals scores"
+gets *"Which Cardinals — baseball (St. Louis) or football (Arizona)?"*
 
 `teams` on the profile is the resolved follow list. It is **not** `sports_teams`,
 which is the extractor's free-text description ("Cardinals fan, emotionally
@@ -1345,8 +1334,9 @@ end, try again" to someone who had asked for nothing. Proactive senders use
 reaches for `ensure_sms` again.
 
 `messages.kind` records which job sent an assistant message (`morning`,
-`followup`, `alert`, `watch`, `price`, `flight`, `reminder`, `reply`, `city_ask`).
-NULL means written before the column existed; readers must tolerate it.
+`followup`, `watch`, `price`, `flight`, `reminder`, `reply`, `city_ask`; `alert`
+on rows from the retired daily-alert job). NULL means written before the column
+existed; readers must tolerate it.
 
 ### SMS send pipeline
 All outbound SMS goes through `sms_util.send_sms` / `ensure_sms`. It cleans text (`_sms_clean` strips markdown and non-SMS glyphs), splits on paragraph breaks over 1500 chars, and falls back through progressively shorter candidates (original → `shorten_message` → hard truncate → `FALLBACK_SMS`) so a user is never left with silence. Never call Twilio's `messages.create` directly from feature code; go through this module.

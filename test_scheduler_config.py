@@ -48,10 +48,12 @@ def _fire_times(trigger, start, count):
 # losing up to 30 minutes to a deploy is immaterial there.
 def _long_period_jobs():
     from followup import run_followups
-    from alerts import run_alert_checks
     from morning import send_missing_data_asks
     from shopping import run_price_watches
-    return [run_followups, run_alert_checks, send_missing_data_asks, run_price_watches]
+    from flightwatch import run_flight_watches
+    from wxaudit import run_forecast_audit
+    return [run_followups, send_missing_data_asks, run_price_watches,
+            run_flight_watches, run_forecast_audit]
 
 
 @pytest.mark.parametrize("func", _long_period_jobs(), ids=lambda f: f.__name__)
@@ -117,6 +119,29 @@ class TestFollowupGrid:
         # users are added in zones nobody picked hours for.
         counts = {tz: len(self._ticks_in_window(tz)) for tz in self.SERVED}
         assert len(set(counts.values())) == 1, counts
+
+
+class TestNoUnpromptedSenderComesBack:
+    """Two jobs used to text people on Palmer's own initiative — a live score
+    poller and a daily "a friend would text this" news alert. Both are gone; a
+    followed team rides the morning and the page, and run_followups is the one
+    paced check-in. This pins that nothing quietly comes back."""
+
+    def test_the_retired_modules_are_gone(self):
+        import importlib
+        for name in ("scorewatch", "alerts"):
+            try:
+                importlib.import_module(name)
+            except ModuleNotFoundError:
+                continue
+            raise AssertionError(f"{name} is back")
+
+    def test_the_job_list_is_exactly_this(self):
+        allowed = {"send_due_reminders", "send_morning_messages", "run_watches",
+                   "send_missing_data_asks", "run_followups", "run_price_watches",
+                   "run_forecast_audit", "run_flight_watches"}
+        names = {j.func.__name__ for j in _scheduler().get_jobs()}
+        assert names == allowed, names
 
 
 class TestShortJobsStayOnInterval:

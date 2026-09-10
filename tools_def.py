@@ -393,7 +393,7 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "follow_team",
-        "description": "Follow a sports team for live score alerts. Use when they say they want score updates — 'follow the Eagles', 'text me Cardinals scores', 'track the Blues'. They get a text when the lead changes, when someone scores in the last five minutes, and at the final — a few a game, not every play. Team names are ambiguous ('Cardinals' is two teams, 'Rangers' is two), so if the result comes back with more than one match, ASK which they mean before following.",
+        "description": "Follow a sports team so its games ride in the user's morning update and the Scores section of their page. Use when they want to keep up with a team — 'follow the Eagles', 'keep me posted on the Cardinals', 'track the Blues', 'put my team in my morning'. There are NO live texts during a game: the morning carries last night's result and tonight's game, and the page has both. Team names are ambiguous ('Cardinals', 'Rangers' are each two teams), so when the result lists several matches, ask which — never pick.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -404,7 +404,7 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "unfollow_team",
-        "description": "Stop live score alerts for a team. Pass text_match with part of the team name; omit to stop all of them.",
+        "description": "Stop following a team — its games leave the morning update and the page. Pass text_match with part of the team name; omit to stop all of them.",
         "input_schema": {
             "type": "object",
             "properties": {"text_match": {"type": "string", "description": "Part of the team name. Omit to unfollow all."}},

@@ -12,7 +12,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from agent import get_reply, save_assistant_turn
 from smstext import shorten_message
 from morning import generate_morning, send_morning_messages, send_missing_data_asks
-from alerts import run_alert_checks
 from followup import run_followups
 from db import get_profile, upsert_profile, save_message, get_history, HISTORY_LIMIT
 from send_reminders import send_due_reminders
@@ -50,23 +49,18 @@ _scheduler.add_job(send_due_reminders, "interval", minutes=1)
 _scheduler.add_job(send_morning_messages, "interval", minutes=5)
 _scheduler.add_job(run_watches, "interval", minutes=30)
 
-# Gated to 13:00-21:00 in the USER's timezone, at most one alert per user per
-# day. Hourly-on-the-hour gives every user ~9 attempts inside their own window.
-# Cron also repairs a latent trap in the no-timezone fallback path, which tests
-# `utcnow().hour == <assigned hour>` — an exact match that a drifting interval
-# grid can skip past entirely, silently costing that user every daily alert.
-_scheduler.add_job(run_alert_checks, "cron", minute=0,
-                   timezone="Etc/UTC", misfire_grace_time=1800)
-
-# :30 rather than :00 so this and run_alert_checks don't land in the same second
-# — both fan out over every profile and call a model, on one dyno.
+# Hourly at :30. It fans out over every profile and can call a model, on one
+# dyno, so it deliberately sits off the top of the hour where the other crons
+# land.
 _scheduler.add_job(send_missing_data_asks, "cron", minute=30,
                    timezone="Etc/UTC", misfire_grace_time=1800)
 
 # Every 2 hours, NOT at hand-picked UTC hours. _should_send_followup gates on a
 # 13:00-19:00 window in each user's own timezone, and users already span two
 # zones — a */2 grid keeps landing inside every such window as more timezones
-# are added, where fixed hours would silently stop covering someone.
+# are added, where fixed hours would silently stop covering someone. The tick
+# is not the cadence: the per-user gap (followup.GAP_DAYS) is, and the tick
+# only decides how soon after the gap lapses the text can go.
 #
 # This was "interval, hours=4" against a 6h window: 1.5 ticks of margin, and
 # the phase reset on top meant that on a day with several deploys the job could
@@ -135,13 +129,11 @@ _scheduler.add_job(
     misfire_grace_time=3600,
 )
 
-# Live score alerts. INTERVAL, not cron, and it is the one job where that is
-# right: a game is a window rather than a clock time, so this has to tick often
-# enough to catch a lead change and cheaply enough to run all day. sports.py
-# does the rationing — an idle league is polled every 15 minutes and a live one
-# every ~2, so most ticks make no HTTP call at all.
-from scorewatch import run_score_alerts
-_scheduler.add_job(run_score_alerts, "interval", minutes=2, misfire_grace_time=60)
+# There is deliberately no live-score poller and no daily "a friend would text
+# this" news alert here any more. Both texted on Palmer's own judgment, and the
+# score one was a pager by construction. A followed team rides the morning
+# update and the page's Scores section; run_followups is the one paced,
+# unprompted text, and it draws on teams and news as well as personal threads.
 if _SCHEDULER_ENABLED:
     _scheduler.start()
 else:

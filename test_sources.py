@@ -222,7 +222,7 @@ class TestSourceListIntegrity:
 
 
 class TestCorroboratedIsShared:
-    """test_alerts_corroboration.py imports corroborated from watches. It moved
+    """test_corroboration.py imports corroborated from watches. It moved
     here; this pins that watches still exposes the same object so the gate can
     never fork into two implementations."""
 
