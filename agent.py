@@ -711,7 +711,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 result = _get_price(_resolve_asset(b.input["asset"]))
             elif b.name == "add_weather_location":
                 from weather import (resolve_weather_location, ambiguous_location,
-                                     WEATHER_LOCATIONS_MAX)
+                                     same_place, WEATHER_LOCATIONS_MAX)
                 profile = get_profile(phone_number)
                 current = list(profile.get("weather_locations") or [])
                 asked = (b.input.get("location") or "").strip()
@@ -732,7 +732,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                               f"pick one yourself.")
                 elif resolved.lower() == (profile.get("city") or "").lower():
                     result = f"{resolved} is already their primary city."
-                elif any(loc.lower() == resolved.lower() for loc in current):
+                elif any(same_place(loc, resolved) for loc in current):
                     result = f"{resolved} is already on their page."
                 elif len(current) >= WEATHER_LOCATIONS_MAX:
                     result = (f"They already have {WEATHER_LOCATIONS_MAX} extra weather "
@@ -1264,6 +1264,14 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     result = (f"Couldn't find a city matching {asked_city!r}. Ask them to "
                               f"confirm it (state or country if it's ambiguous) — do not "
                               f"guess conditions and do not name a maps app.")
+                elif why == "no_key":
+                    # Deployment problem, not a blip: "try again" would be a
+                    # promise nothing can keep until someone sets the key.
+                    print("get_city_traffic: TOMTOM_API_KEY is not set")
+                    result = (f"Traffic for {asked_city!r} isn't reachable from here right "
+                              f"now. Say you couldn't pull it and move on — do not offer to "
+                              f"try again, do not guess conditions, and do not name a maps "
+                              f"app.")
                 else:
                     # A bare "no data available" was all this said, so a
                     # transient outage and an unknown city read identically to

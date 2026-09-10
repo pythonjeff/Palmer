@@ -46,6 +46,23 @@ def _block(tool_name: str) -> str:
     return src.split(f'"{tool_name}"')[1].split("elif b.name")[0]
 
 
+class TestSamePlace:
+    """_label appends the country outside the US now. Rows pinned before that
+    read "Paris, Île-de-France"; a strict compare pinned the same city twice."""
+
+    def test_a_legacy_label_matches_its_country_suffixed_form(self):
+        assert weather.same_place("Paris, Île-de-France", "Paris, Île-de-France, France")
+        assert weather.same_place("paris, île-de-france, france", "Paris, Île-de-France")
+
+    def test_a_different_place_with_the_same_name_does_not(self):
+        assert not weather.same_place("Paris, Texas", "Paris, Île-de-France, France")
+        assert not weather.same_place("Paris", "Paris, Île-de-France, France")
+        assert not weather.same_place("", "Paris, Île-de-France, France")
+
+    def test_the_dispatch_uses_it(self):
+        assert "same_place(loc, resolved)" in _block("add_weather_location")
+
+
 class TestAddDispatch:
     def test_resolution_happens_on_the_write_path(self):
         assert "resolve_weather_location" in _block("add_weather_location")

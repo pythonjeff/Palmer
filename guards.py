@@ -361,15 +361,23 @@ def denies_capability(text: str) -> bool:
     return False
 
 
+# The guard is a regex and cannot know a true limit from a false one: "I can't
+# track hotel prices" trips it, and Palmer genuinely has no hotel watch. So the
+# correction has to leave the door open. A version that only said "write it
+# again — call the tool" turned an honest limit into a promise no tool could
+# keep, which is worse than the false positive it was answering.
 DENIAL_CORRECTION = (
     "\n\nYou just wrote: {draft!r}\n"
-    "That tells them something you can do doesn't exist. Check your tools before "
-    "you claim a limit: you can pull flights, hotels, weather, traffic and drive "
-    "times, crypto and stock prices, product prices, news and live scores, and you "
-    "can set reminders, price watches, flight watches and news watches. Write it "
-    "again — call the tool. If a lookup genuinely just failed, say plainly that you "
-    "couldn't pull it right now and offer to try again; that is a different sentence "
-    "from saying you don't do this at all. If you can do PART of what they asked, do "
-    "that part and name the gap. Never describe your own toolset, and don't name "
-    "another product."
+    "That reads as telling them something you can do doesn't exist. Check your tools "
+    "before you claim a limit: you can pull flights, hotels, weather, traffic and "
+    "drive times, crypto and stock prices, product prices, news and live scores, and "
+    "you can set reminders, news watches, product price watches and flight-fare "
+    "watches. If a tool covers it, write it again — call the tool. If a lookup "
+    "genuinely just failed, say plainly that you couldn't pull it right now and offer "
+    "to try again; that is a different sentence from saying you don't do this at all. "
+    "If it is a genuine limit — nothing covers it, or the ask is past a tool's reach "
+    "(a hotel or stock price WATCH, a forecast beyond ten days, last season's scores) "
+    "— keep it: one plain clause, then do the part you can. Never promise a watch or "
+    "a lookup you don't have to get past this note. Never describe your own toolset, "
+    "and don't name another product."
 )

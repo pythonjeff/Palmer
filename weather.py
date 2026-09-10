@@ -81,6 +81,24 @@ def _geocode(location: str) -> tuple[float, float, str]:
     return coords
 
 
+def same_place(a: str, b: str) -> bool:
+    """Two resolved labels for one place, allowing for the trailing country
+    segment. A location pinned before _label carried the country was stored as
+    "Paris, Île-de-France"; the same place resolves to "Paris, Île-de-France,
+    France" now, and a strict compare let it be pinned twice. The shorter label
+    must be at least "city, region" and a whole leading run of the longer one,
+    so a bare "Paris" matches nothing and "Paris, Texas" never matches Paris,
+    France."""
+    x = [s.strip().lower() for s in (a or "").split(",") if s.strip()]
+    y = [s.strip().lower() for s in (b or "").split(",") if s.strip()]
+    if not x or not y:
+        return False
+    if x == y:
+        return True
+    n = min(len(x), len(y))
+    return n >= 2 and x[:n] == y[:n]
+
+
 def geocode_candidates(location: str) -> list[str]:
     """Other real places sharing this name, best match first, or [].
 

@@ -290,7 +290,7 @@ DENIALS = [
     "Flight prices are a bit outside what I can track directly.",
     "I don't have a live flight pricing feed.",
     "Flight search is one thing I can't pull directly.",
-    "I can't track hotel prices for you.",
+    "I can't pull hotel prices for you.",
     "Live scores aren't something I can do.",
     "I don't have access to real-time traffic.",
     "Watching a fare over time is outside my capabilities.",
@@ -421,6 +421,19 @@ class TestTheDenialRedraft:
 
     def test_the_correction_separates_transient_from_categorical(self):
         assert "different sentence" in guards.DENIAL_CORRECTION
+
+    def test_the_correction_leaves_room_for_a_true_limit(self):
+        """The guard cannot tell "I can't track hotel prices" (true — there is
+        no hotel watch) from "I can't do flights" (false). These trip it and
+        must NOT be redrafted into a promise:"""
+        for text in ("I can't track hotel prices - only flights and products.",
+                     "I can't do weather that far out - forecasts only run ten days."):
+            assert guards.denies_capability(text), text   # the false positive is real
+        assert "genuine limit" in guards.DENIAL_CORRECTION
+        assert "Never promise a watch" in guards.DENIAL_CORRECTION
+        # And it is exact about which watches exist, so it cannot invite one.
+        assert "product price watches" in guards.DENIAL_CORRECTION
+        assert "hotel or stock price WATCH" in guards.DENIAL_CORRECTION
 
     def test_the_correction_does_not_trade_one_guard_for_the_other(self):
         assert "another product" in guards.DENIAL_CORRECTION
