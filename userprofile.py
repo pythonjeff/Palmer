@@ -287,6 +287,18 @@ def _apply_profile_updates(phone: str, profile: dict, updates: dict) -> dict:
             print(f"profile: dropping unresolvable timezone {updates['timezone']!r} for {phone!r}")
             updates.pop("timezone")
 
+    # `commute` is written by set_commute, which stores coordinates and a leave
+    # time the extractor knows nothing about. It left EXTRACT_PROMPT for that
+    # reason, but it is still a real field, so a Haiku write of {origin,
+    # destination} would replace the tool's dict and silently drop both. A
+    # legacy string-only commute has nothing to protect and may still be
+    # overwritten, as before.
+    stored = profile.get("commute")
+    if ("commute" in updates and isinstance(stored, dict)
+            and (stored.get("origin_ll") or stored.get("leave_time"))):
+        print(f"profile: keeping tool-written commute for {phone!r}; extractor write dropped")
+        updates.pop("commute")
+
     new_city = updates.get("city")
     old_city = profile.get("city")
     if new_city and old_city and new_city != old_city:
