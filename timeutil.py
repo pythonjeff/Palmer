@@ -99,6 +99,28 @@ def clock_block(tz_name: str | None, now: datetime | None = None) -> str:
     )
 
 
+def friendly_hhmm(hhmm: str | None) -> str:
+    """"08:30" -> "8:30am", "12:00" -> "12:00pm", "00:05" -> "12:05am".
+
+    Times are STORED as 24-hour HH:MM (the shape `morning_time` and a commute's
+    `leave_time` already use) and rendered through this one function, so the
+    morning digest, the page and the PNG card cannot disagree about how a clock
+    reads. Anything that does not parse comes back unchanged rather than raising —
+    this sits on render paths."""
+    if not hhmm:
+        return ""
+    try:
+        h, m = str(hhmm).strip().split(":")
+        h, m = int(h), int(m)
+        if not (0 <= h < 24 and 0 <= m < 60):
+            return str(hhmm)
+    except (ValueError, AttributeError):
+        return str(hhmm)
+    suffix = "am" if h < 12 else "pm"
+    h12 = h % 12 or 12
+    return f"{h12}:{m:02d}{suffix}"
+
+
 # Reminder recurrence. Deliberately a small closed set — these are the shapes
 # people actually ask for by text, and each one has an unambiguous "next".
 RECURRENCES = ("daily", "weekdays", "weekly")

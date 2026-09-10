@@ -304,7 +304,7 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "get_travel_time",
-        "description": "Get driving time between two addresses using live traffic. Call this whenever the user asks how long a drive takes, when to leave, or ETA to a place ('how long to Fenway?', 'when should I leave for the airport?', 'time to my sister's from here?'). If the user names a destination but not an origin (or vice versa), ask them conversationally for the missing one in your own voice BEFORE calling this tool. We don't store addresses; ask fresh each time unless the user provides both in the same message.\n\nCRITICAL: Our geocoder is a mapping service, not a search engine — it does NOT reliably resolve famous landmarks, monuments, or business names. If the user gives a landmark, POI, monument, park, stadium, airport, or well-known building (e.g. 'The White House', 'Fenway Park', 'LAX', 'Times Square', 'the Golden Gate Bridge', 'Central Park', 'Wrigley Field'), YOU must convert it to the actual street address using your world knowledge before calling — pass '1600 Pennsylvania Ave NW, Washington DC 20500' not 'The White House'; pass '4 Jersey St, Boston MA 02215' not 'Fenway Park'; pass '1 World Way, Los Angeles CA 90045' not 'LAX'. Only pass raw landmark names as a last resort when you genuinely don't know the address (in which case ask the user for one). Never guess an address you don't actually know.",
+        "description": "Get driving time between two addresses using live traffic. Call this whenever the user asks how long a drive takes, when to leave, or ETA to a place ('how long to Fenway?', 'when should I leave for the airport?', 'time to my sister's from here?'). If the user names a destination but not an origin (or vice versa), ask them conversationally for the missing one in your own voice BEFORE calling this tool. This is for a ONE-OFF drive. Their regular commute — the drive they make every morning, which goes on their page and in their morning text — is set_commute, not this.\n\nCRITICAL: Our geocoder is a mapping service, not a search engine — it does NOT reliably resolve famous landmarks, monuments, or business names. If the user gives a landmark, POI, monument, park, stadium, airport, or well-known building (e.g. 'The White House', 'Fenway Park', 'LAX', 'Times Square', 'the Golden Gate Bridge', 'Central Park', 'Wrigley Field'), YOU must convert it to the actual street address using your world knowledge before calling — pass '1600 Pennsylvania Ave NW, Washington DC 20500' not 'The White House'; pass '4 Jersey St, Boston MA 02215' not 'Fenway Park'; pass '1 World Way, Los Angeles CA 90045' not 'LAX'. Only pass raw landmark names as a last resort when you genuinely don't know the address (in which case ask the user for one). Never guess an address you don't actually know.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -313,6 +313,24 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
             },
             "required": ["origin", "destination"],
         },
+    },
+    {
+        "name": "set_commute",
+        "description": "Save the user's REGULAR commute — the drive they make most mornings — so their page shows it as a live Commute card and their morning text carries the drive time. Use when they tell you their usual drive in any words: 'I drive from X to Y every day', 'my commute is home to the office on Main St', 'I leave for work around 8:30', 'track my drive to work'. A one-off 'how long to the airport' is get_travel_time, not this.\n\nleave_time is OPTIONAL: when they say when they usually head out, pass it as 24-hour HH:MM and the morning number is routed for that departure rather than for whatever traffic is doing when the text goes out. Without it the number is live. If they didn't say, you may ask once, in your own voice, later — never as a form and never as a condition of saving what they gave you. Calling this again replaces the saved commute; both addresses are geocoded for you and you are told if one can't be found.\n\nCRITICAL: Our geocoder is a mapping service, not a search engine — it does NOT reliably resolve famous landmarks, monuments, or business names. If the user gives a landmark, POI, monument, park, stadium, airport, or well-known building (e.g. 'The White House', 'Fenway Park', 'LAX', 'Times Square', 'the Golden Gate Bridge', 'Central Park', 'Wrigley Field'), YOU must convert it to the actual street address using your world knowledge before calling — pass '1600 Pennsylvania Ave NW, Washington DC 20500' not 'The White House'; pass '4 Jersey St, Boston MA 02215' not 'Fenway Park'; pass '1 World Way, Los Angeles CA 90045' not 'LAX'. Only pass raw landmark names as a last resort when you genuinely don't know the address (in which case ask the user for one). Never guess an address you don't actually know.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "origin": {"type": "string", "description": "Starting street address, usually home. Convert landmarks to street addresses first (see tool description)."},
+                "destination": {"type": "string", "description": "Ending street address, usually work. Convert landmarks to street addresses first (see tool description)."},
+                "leave_time": {"type": "string", "description": "Optional. When they usually leave, 24-hour local HH:MM, e.g. '08:30'. Omit if they didn't say."},
+            },
+            "required": ["origin", "destination"],
+        },
+    },
+    {
+        "name": "clear_commute",
+        "description": "Forget the user's saved commute — drops the Commute card from their page and the drive time from their morning text. Use for 'stop tracking my drive', 'forget my commute', 'I don't drive to work anymore'. Hiding the card while keeping the route is arrange_page, not this.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_city_traffic",

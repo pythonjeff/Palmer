@@ -657,6 +657,64 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                         print(f"home.invalidate after remove_weather_location failed: {e}")
                 result = (f"Removed {dropped} location(s)." if dropped
                           else "No extra weather location matched that.")
+            elif b.name == "set_commute":
+                import traffic as _traffic
+                origin = (b.input.get("origin") or "").strip()
+                destination = (b.input.get("destination") or "").strip()
+                leave_raw = (b.input.get("leave_time") or "").strip()
+                leave_time = _normalize_hhmm(leave_raw) if leave_raw else None
+                if not _traffic.TOMTOM_API_KEY:
+                    # Without a key the geocoder returns None, which would read
+                    # as "address not found" — the wrong thing to tell someone.
+                    result = ("Can't set up a commute right now — routing is unavailable "
+                              "on my end. Nothing saved. Say so plainly and offer to try "
+                              "again later; do not name a maps app.")
+                elif not origin or not destination:
+                    result = "Need both a starting and an ending address. Nothing saved. Ask for the missing one."
+                elif leave_raw and not leave_time:
+                    result = (f"Nothing saved. Invalid leave time {leave_raw!r} — must be "
+                              f"24-hour HH:MM, e.g. 08:30. Fix it and call again.")
+                else:
+                    # Resolve on the WRITE path, once — the read path is every
+                    # page view, and coordinates stored here mean it geocodes
+                    # nothing. Same terms as add_weather_location.
+                    orig_ll = _traffic._geocode_address(origin)
+                    dest_ll = _traffic._geocode_address(destination) if orig_ll else None
+                    missing = origin if not orig_ll else (destination if not dest_ll else None)
+                    if missing:
+                        result = (f"Couldn't find a street address matching {missing!r}. Ask "
+                                  f"them to confirm the address — do not guess one. Nothing saved.")
+                    else:
+                        commute = {"origin": origin, "destination": destination,
+                                   "origin_ll": [orig_ll[0], orig_ll[1]],
+                                   "dest_ll": [dest_ll[0], dest_ll[1]]}
+                        if leave_time:
+                            commute["leave_time"] = leave_time
+                        upsert_profile(phone_number, {"commute": commute})
+                        try:
+                            from home import invalidate
+                            invalidate(phone_number, ("traffic",))
+                        except Exception as e:
+                            print(f"home.invalidate after set_commute failed: {e}")
+                        if leave_time:
+                            result = (f"Saved their commute, leaving at {leave_time} local. Their "
+                                      f"page and morning text now carry the drive time routed for "
+                                      f"that departure. Confirm in one line, in your own voice, "
+                                      f"without reading the addresses back.")
+                        else:
+                            result = ("Saved their commute. Their page and morning text now carry "
+                                      "the drive time, as live traffic since no leave time was "
+                                      "given. Confirm in one line without reading the addresses "
+                                      "back; you may ask when they usually head out, once, only if "
+                                      "it fits naturally — it is optional.")
+            elif b.name == "clear_commute":
+                upsert_profile(phone_number, {"commute": None})
+                try:
+                    from home import invalidate
+                    invalidate(phone_number, ("traffic",))
+                except Exception as e:
+                    print(f"home.invalidate after clear_commute failed: {e}")
+                result = "Commute cleared. It's off their page and out of the morning text."
             elif b.name == "send_gif":
                 gif_url = _get_gif(b.input["query"])
                 result = f"GIF queued: {gif_url}" if gif_url else "No GIF found for that query."
