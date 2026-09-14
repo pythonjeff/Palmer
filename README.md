@@ -99,7 +99,7 @@ cp .env.example .env
 
 **3. Run locally**
 ```bash
-uvicorn main:app --reload
+uvicorn palmer.main:app --reload
 ```
 
 **4. Expose for Twilio (local dev)**
@@ -125,7 +125,7 @@ git push heroku main
 Set your Twilio SMS webhook to `https://<your-app>.herokuapp.com/sms` (POST).  
 Set your Twilio status callback to `https://<your-app>.herokuapp.com/sms-status` (POST).
 
-**Morning briefings** are sent by APScheduler inside the web dyno (checked every 5 minutes) at each user's chosen local time — 7am by default, changeable by texting Palmer. No Heroku Scheduler job is required; if one exists running `python send_morning.py`, it's a harmless redundant backup (the per-user sent-date guard prevents double-sends).
+**Morning briefings** are sent by APScheduler inside the web dyno (checked every 5 minutes) at each user's chosen local time — 7am by default, changeable by texting Palmer. No Heroku Scheduler job is required; if one exists running `python -m scripts.send_morning`, it's a harmless redundant backup (the per-user sent-date guard prevents double-sends).
 
 ---
 
