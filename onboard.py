@@ -19,51 +19,37 @@ home.py), and a form turns a read key into a write key, so the write is
 a second POST to the same token is refused. A forwarded screenshot can no more
 overwrite a profile than it can today.
 
-New users only, and that falls out of the gate rather than being enforced here:
-`main._handle_sms_inner` appends the link on the FIRST inbound message alone, so
-every existing user — all of whom already carry `intro_sent` — never sees it.
-The conversational ask in `agent._build_system` stays exactly as it is, because
-plenty of people will not tap a link from an unknown number, and for them
-nothing about onboarding has changed.
+The link goes out at the setup moment, not on message one. `get_my_page`'s
+dispatch in `agent.py` calls `start()` when the profile has no city — after the
+what-I-do list, or when someone says "set me up" before Palmer knows where they
+are — and the model closes its reply with the URL exactly as it does for a
+built page. A stranger's first "hey" gets a hello, not a form. Everyone who
+already has a city has a page, so nothing here reaches existing users. The
+conversational name/city ask in `agent._build_system` stays exactly as it is,
+because plenty of people will not tap a link from an unknown number, and for
+them nothing about onboarding has changed.
 """
 from __future__ import annotations
 
 import html
 import os
+import re
 import threading
 
-# Interest chips. Each is (key, label, topic).
-#
-# `label` is what the human taps; `topic` is what gets stored in
-# `morning_topics` — and they are deliberately not the same string. A topic is
-# not a tag, it is a **search query**: `datafeeds._search_raw` matches on query
-# text, so phrasing decides whether the topic returns anything at all. The
-# repository's own scar tissue on this is specific — "Top national news"
-# returned "Clemson Army ROTC earns top national honors" on a literal word
-# match, and "world news" and "breaking news" return nothing whatsoever. So the
-# labels stay human and the topics stay subject-shaped, in the same voice as
-# `morning.default_topics`, which is the one phrasing already proven against
-# the live index.
-#
-# Keep this list short. Every topic is one Tavily search per briefing and
-# `morning.MAX_TOPICS` only pulls six, so a long list costs money and pushes
-# everything else into rotation. TOPIC_MAX below is the real bound.
-INTERESTS: tuple[tuple[str, str, str], ...] = (
-    ("tech", "Tech & AI", "AI and technology news"),
-    ("business", "Business", "Business and markets news"),
-    ("sports", "Sports", "Sports news"),
-    ("science", "Science", "Science and research news"),
-    ("music", "Music", "Music industry news"),
-    ("film", "Film & TV", "Film and television industry news"),
-    ("food", "Food", "Restaurant and food news"),
-    ("health", "Health", "Health and medicine news"),
-)
-
-_INTEREST_TOPICS = {key: topic for key, _, topic in INTERESTS}
+# "What do you follow" is one free-text box, not a row of chips. A chip's
+# label is a category ("Sports", "Health") and a category is exactly the kind
+# of topic the search answers worst — CLAUDE.md's own numbers: "US politics"
+# tops out at 0.36 relevance and never clears the floor, while "Philadelphia
+# Eagles" and "Nvidia stock" return something most days and light up Markets.
+# A box people type into gets the specific thing they actually follow, in the
+# same words they would text Palmer, so the topic is subject-shaped from the
+# start. Each entry goes through `agent._normalize_price_topic`, the same pass
+# a texted topic gets, so "nvidia stock" resolves to a ticker here too.
 
 # Total topics kept from setup. morning.MAX_TOPICS pulls six per briefing, so
 # anything past that is stored and never read on a given day.
 TOPIC_MAX = 6
+FOLLOWS_MAX = 200
 
 NAME_MAX = 60
 CITY_MAX = 80
@@ -100,10 +86,11 @@ def apply(token: str, payload: dict, form: dict) -> bool:
     """Write a submitted form to the profile and start the page build.
 
     Returns False if this token has already been submitted — the one-shot rule
-    above. The write order matters: topics are stored BEFORE name and city, so
-    that when `_apply_profile_updates` fires `_eager_build_home` on the city
-    landing for the first time, the topic list it builds against is the one the
-    user just chose rather than an empty one."""
+    above. Topics are stored before name and city so that `_seed_local_topic`,
+    which fires inside `_apply_profile_updates` when the city first lands, sees
+    an onboarded list to add to. The eager page build there is skipped — the
+    parked stub is still on the token at that point — and `_build_async` below
+    is the one build."""
     from home import save
     from userprofile import _apply_profile_updates
     from db import get_profile
@@ -117,12 +104,11 @@ def apply(token: str, payload: dict, form: dict) -> bool:
 
     name = (form.get("name") or "").strip()[:NAME_MAX]
     city = (form.get("city") or "").strip()[:CITY_MAX]
-    picked = [k for k in form.getlist("interests")] if hasattr(form, "getlist") else list(
-        form.get("interests") or [])
+    follows = (form.get("follows") or "")[:FOLLOWS_MAX]
     mornings = bool(form.get("mornings"))
 
     profile = get_profile(phone) or {}
-    topics = _topics_for(city, picked)
+    topics = _topics_for(city, follows)
     updates: dict = {"morning_topics": topics, "morning_onboarded": True,
                      "morning_enabled": mornings, "setup_done": True}
     from db import upsert_profile
@@ -140,8 +126,8 @@ def apply(token: str, payload: dict, form: dict) -> bool:
     return True
 
 
-def _topics_for(city: str, picked: list[str]) -> list[str]:
-    """The seeded topic list: the local + national baseline, then their picks.
+def _topics_for(city: str, follows: str) -> list[str]:
+    """The seeded topic list: the local + national baseline, then what they typed.
 
     `morning.default_topics` is called with the city the user just typed, which
     is the whole point of collecting it here — the same call made from
@@ -149,11 +135,29 @@ def _topics_for(city: str, picked: list[str]) -> list[str]:
     a city and so silently seeds national news alone."""
     from morning import default_topics
     topics = list(default_topics(city or None))
-    for key in picked:
-        topic = _INTEREST_TOPICS.get(key)
-        if topic and topic not in topics:
-            topics.append(topic)
+    for item in split_follows(follows):
+        if not any(item.lower() == t.lower() for t in topics):
+            topics.append(item)
     return topics[:TOPIC_MAX]
+
+
+def split_follows(text: str) -> list[str]:
+    """"Eagles, Nvidia stock, AI" -> three topics, each normalized the way a
+    texted one is. Commas and newlines separate; "and" does not, because
+    "Simon and Garfunkel" is one thing."""
+    out: list[str] = []
+    for raw in re.split(r"[,\n;]+", text or ""):
+        item = raw.strip(" .")[:60]
+        if not item:
+            continue
+        try:
+            from agent import _normalize_price_topic
+            item = _normalize_price_topic(item)
+        except Exception:
+            pass
+        if item.lower() not in {o.lower() for o in out}:
+            out.append(item)
+    return out
 
 
 def _build_async(phone: str) -> None:
@@ -188,13 +192,6 @@ form{margin-top:26px}
 .field input[type=text]:focus{outline:0;border-bottom-width:2px}
 .hint{font-family:var(--mono);font-size:10px;color:var(--ink2);margin-top:6px;
  letter-spacing:.04em}
-.picks{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
-.picks label{display:inline-block;border:1px solid var(--rule);border-radius:2px;
- padding:8px 12px;font-family:var(--mono);font-size:12px;letter-spacing:.05em;
- text-transform:uppercase;color:var(--ink2);cursor:pointer;margin:0}
-.picks input{position:absolute;opacity:0;pointer-events:none}
-.picks input:checked+span{color:var(--ink)}
-.picks label:has(input:checked){border-color:var(--ink);color:var(--ink)}
 .toggle{display:flex;align-items:flex-start;gap:10px;font:15px/1.45 var(--serif)}
 .toggle input{margin-top:3px;accent-color:var(--ink)}
 button{width:100%;margin-top:10px;padding:15px 16px;background:var(--ink);
@@ -210,11 +207,6 @@ def render_setup(token: str, *, action: str) -> str:
     because it opens on a phone over a cell connection and nowhere else."""
     from page import CSS
     e = lambda v: html.escape(str(v), quote=True)  # noqa: E731
-    picks = "".join(
-        f'<label><input type=checkbox name=interests value="{e(key)}">'
-        f"<span>{e(label)}</span></label>"
-        for key, label, _ in INTERESTS
-    )
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
@@ -236,9 +228,11 @@ def render_setup(token: str, *, action: str) -> str:
         '<input type=text id=city name=city autocomplete="address-level2" '
         'autocapitalize=words maxlength=80 placeholder="Austin, TX" required>'
         '<div class=hint>Sets your forecast, your commute and your local news</div></div>'
-        "<div class=field><label>What are you into</label>"
-        f"<div class=picks>{picks}</div>"
-        "<div class=hint>Pick a few. You can add anything else by texting him</div></div>"
+        '<div class=field><label for=follows>What do you follow</label>'
+        '<input type=text id=follows name=follows autocapitalize=words maxlength=200 '
+        'placeholder="Eagles, Nvidia stock, AI">'
+        "<div class=hint>Teams, stocks, subjects &mdash; a few words each, commas between. "
+        "You can add more by texting him</div></div>"
         "<div class=field><label class=toggle><input type=checkbox name=mornings checked>"
         "<span>Text me a short rundown every morning at 7</span></label></div>"
         "<button type=submit>Build my page</button>"

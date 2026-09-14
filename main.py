@@ -240,26 +240,7 @@ def _handle_sms_inner(from_number: str, body: str, media_url: str | None) -> boo
                     snippet = body if len(body) <= 50 else body[:50].rstrip() + "…"
                     reply = f"> {snippet}\n{reply}"
 
-                # A first-time texter gets their setup link attached to this
-                # one reply. Appended in code rather than drafted: SYSTEM_PROMPT
-                # forbids the model inventing URLs for good reason, and the link
-                # has to land last and alone or the message app draws no
-                # preview (same rule morning.py's link follows).
-                #
-                # The flag is read HERE, inside the per-phone lock, and written
-                # immediately after the send — `is_new_user` is computed before
-                # the lock, so two texts arriving seconds apart both carry it
-                # and would otherwise both append a link.
-                setup_url = None
-                if is_new_user and not get_profile(from_number).get("setup_link_sent"):
-                    from onboard import start as _setup_start
-                    setup_url = _setup_start(from_number)
-                    if setup_url:
-                        reply = f"{reply.rstrip()}\n\n{setup_url}"
-
                 reply_sent = ensure_sms(from_number, reply)
-                if reply_sent and setup_url:
-                    upsert_profile(from_number, {"setup_link_sent": True})
                 if reply_sent:
                     if gif_url:
                         _send_gif_outbound(from_number, gif_url)

@@ -204,7 +204,11 @@ def _eager_build_home(phone: str) -> None:
     try:
         from home import rebuild, load, home_token
         token = home_token(phone)
-        if load(token) is not None:
+        existing = load(token)
+        # A parked setup form (onboard.start) is not a page: someone who got
+        # the link, never tapped it and then said their city in chat still
+        # needs the build, or their address stays a form forever.
+        if existing is not None and not existing.get("setup_pending"):
             return
         rebuild(phone, refresh_news=True)
     except Exception as e:
@@ -319,8 +323,34 @@ def _apply_profile_updates(phone: str, profile: dict, updates: dict) -> dict:
     _stamp_volatile(profile, updates)
     upsert_profile(phone, updates)
     if new_city and not old_city:
+        _seed_local_topic(phone, new_city)
         _eager_build_home(phone)
     return get_profile(phone)
+
+
+def _seed_local_topic(phone: str, city: str) -> None:
+    """Add the local-news topic the moment a city first lands.
+
+    `update_morning_briefing`'s dispatch seeds topics from `profile["city"]`,
+    and on the turn someone says "Jeff, Austin, set it up" that is still
+    empty — the extractor runs after the reply — so the list was seeded with
+    national news alone while Palmer said the words "local news". This is the
+    other half of that seed, run where the city actually arrives. Only touches
+    a list the dispatch already seeded; a user who never turned mornings on
+    keeps an empty list. Never raises."""
+    try:
+        profile = get_profile(phone)
+        if not profile.get("morning_onboarded"):
+            return
+        from morning import default_topics
+        national = set(default_topics(None))
+        local = [t for t in default_topics(city) if t not in national]
+        topics = list(profile.get("morning_topics") or [])
+        missing = [t for t in local if not any(t.lower() == x.lower() for x in topics)]
+        if missing:
+            upsert_profile(phone, {"morning_topics": missing + topics})
+    except Exception as e:
+        print(f"userprofile: local topic seed failed for {phone}: {type(e).__name__}: {e}")
 
 # How many new messages must accumulate before consolidating again. Without a
 # gate this ran on EVERY turn past 40 messages, re-summarising a near-identical
