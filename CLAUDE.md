@@ -197,6 +197,58 @@ value can do. Only the second holds against a write path nobody has enumerated y
 "102 in Los Angeles" is read as wrong in one second, where the same number under the
 right city name is unfalsifiable from the message. `test_weather_city.py` guards both.
 
+### Setup is a page, handed out at the setup moment
+`onboard.py` is the first-run path. When someone reaches the setup moment —
+they asked what Palmer does, or said "set me up" before Palmer knows where
+they are — and the profile has **no city**, `get_my_page`'s dispatch calls
+`onboard.start` instead of `home.ensure_fresh` and the model closes its reply
+with the URL, exactly as it does for a built page. `/h/{token}` renders a form
+(name, city, what they follow, mornings on/off) while the token's payload says
+`setup_pending`, and their real page forever after: one link that turns into
+the thing. The what-I-do list in `SYSTEM_PROMPT` ends on that link rather than
+on "what should I call you, and what city are you in?"
+
+**It is not on message one.** An earlier version appended the link to every
+stranger's first text. That put a feature pitch and an unasked-for URL into the
+first reply for a wrong number and for someone who only asked what Bitcoin is
+at, against two rules that predate it — the bare-greeting intro carries no
+pitch, and Palmer never volunteers a URL. `test_onboard.py::TestWhereTheLinkGoesOut`
+reads `main._handle_sms_inner` and fails if onboarding is mentioned there.
+
+The reason it is a form is ordering. Every fact used to reach a profile through
+`userprofile._update_profile`, a Haiku pass reading the chat *after* the reply
+had gone out, and `update_morning_briefing`'s dispatch seeds topics from
+`profile["city"]` — which on the turn a user says *"Jeff, Austin, set it up"*
+is still empty, so `default_topics(None)` returned national news alone while
+Palmer said the words "local news". A typed city is on the row before anything
+reads it. The chat path still exists (plenty of people never tap a link from an
+unknown number), so `userprofile._seed_local_topic` closes the same gap there:
+it runs inside `_apply_profile_updates` on the `new_city and not old_city`
+transition and adds the local topic to an already-onboarded list.
+
+Three things are load-bearing:
+
+- **The write is one-shot.** The token has always been the page's only
+  protection (see home.py), and a form turns a read key into a write key, so
+  `apply()` clears `setup_pending` before it writes anything, and a second POST
+  to the same token is refused. Anyone who sees the link before the user
+  submits can fill it in — the window is the minutes between the text and the
+  tap, and it is the whole exposure.
+- **"What do you follow" is free text, not chips.** A chip's label is a
+  category, and a category is the topic shape the search answers worst ("US
+  politics" never clears the relevance floor; "Philadelphia Eagles" returns
+  something most days). The box collects the specific thing in the words they
+  would text, and `split_follows` runs each through `agent._normalize_price_topic`
+  so "nvidia stock" resolves a ticker here exactly as it would texted.
+- **A parked stub is not a page.** `_eager_build_home` used to bail on any
+  existing payload; it now bails only on a built one, so someone who got the
+  link, never tapped it and then said their city in chat still gets the build
+  instead of an address that stays a form forever.
+
+The build runs off the request thread and `/h/{token}` serves a self-refreshing
+holding page until `built_at` appears; the `.png` route 404s in both states,
+because a preview scraper asks for it before anyone has typed anything.
+
 ### Onboarding asks once; the site builds ahead of it, silently
 Message 1 never demands anything — `SYSTEM_PROMPT`'s NEW USERS rules cover a bare
 greeting, a random question, and "what do you do" without ever requiring city or
@@ -724,8 +776,8 @@ gets no notice.
 
 The "edit button" is the name-ask pattern: an `.ask` tap target that opens
 Messages pre-filled with "Arrange my page: " (`quote()`, never `quote_plus()` —
-sms: URIs have no form encoding). The page has no auth and nothing to POST to,
-and that stays true.
+sms: URIs have no form encoding). The page has no auth and accepts exactly one
+POST — the one-shot setup form above — and nothing else.
 
 ### The preview image must change URL, or nobody ever refetches it
 `og:image` points at `/h/{token}.png?v={fingerprint}`. The query stamp is the

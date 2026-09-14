@@ -1382,6 +1382,25 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     result = "\n".join(lines)
             elif b.name == "get_my_page":
                 from home import ensure_fresh
+                profile = get_profile(phone_number)
+                # No city on file means there is no page to build yet — every
+                # section keys off it. The same address serves their setup
+                # form until they submit it, and their page forever after.
+                if not profile.get("city"):
+                    from onboard import start as _setup_start
+                    url = _setup_start(phone_number) or ""
+                    if url:
+                        result = (
+                            f"{url}\n\n"
+                            "That is their setup page: it asks for their name, their city "
+                            "and what they follow, and becomes their live page the moment "
+                            "they submit it. Do NOT ask for their name or city in this "
+                            "reply — the page does that. Say one short thing about what "
+                            "filling it in gets them, then put this URL at the very END of "
+                            "your reply, exactly as written, with no text or punctuation "
+                            "after it."
+                        )
+                        return result
                 url = ensure_fresh(phone_number)
                 if url.startswith("http"):
                     result = (

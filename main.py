@@ -396,6 +396,10 @@ async def home_png(token: str):
     payload = load(token)
     if payload is None:
         raise HTTPException(status_code=404)
+    # A token still on its setup form has no card to draw, and a link preview
+    # scraper asks for this before the user has typed anything.
+    if payload.get("setup_pending") or not payload.get("built_at"):
+        raise HTTPException(status_code=404)
     payload = refresh_stale(token, payload)
     from artifacts import _card_fingerprint
     stamp = _card_fingerprint(payload)
@@ -413,6 +417,27 @@ async def home_png(token: str):
     )
 
 
+@app.post("/h/{token}")
+async def home_setup_submit(token: str, request: Request):
+    """The one write a page ever accepts: a new user's setup form.
+
+    Guarded by onboard.apply's one-shot rule rather than by auth — the token has
+    always been the page's only protection, and this keeps it a read key
+    everywhere except the single submission it was minted for."""
+    from home import load
+    from onboard import apply, needs_setup
+    payload = load(token)
+    if payload is None:
+        raise HTTPException(status_code=404)
+    base = os.environ.get("APP_URL", "").rstrip("/")
+    if needs_setup(payload):
+        apply(token, payload, await request.form())
+    # Redirect either way: a resubmitted form lands on the page it already
+    # built rather than on an error the user can do nothing about.
+    return Response(status_code=303, headers={"Location": f"{base}/h/{token}",
+                                              "Cache-Control": "no-store"})
+
+
 @app.api_route("/h/{token}", methods=["GET", "HEAD"])
 async def home_page(token: str):
     """The user's live page. No login — the token is the whole protection, so
@@ -422,8 +447,25 @@ async def home_page(token: str):
     payload = load(token)
     if payload is None:
         raise HTTPException(status_code=404)
-    payload = refresh_stale(token, payload)
     base = os.environ.get("APP_URL", "").rstrip("/")
+    # Before the form is submitted this address IS the form, and between submit
+    # and the first payload it is a holding page. Both return before
+    # refresh_stale, which would otherwise spend on sections for a user whose
+    # city is still unknown.
+    from onboard import needs_setup, render_setup, render_building
+    if needs_setup(payload):
+        return FileResponse(
+            content=render_setup(token, action=f"{base}/h/{token}"),
+            media_type="text/html; charset=utf-8",
+            headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow",
+                     "Referrer-Policy": "no-referrer"})
+    if not payload.get("built_at"):
+        return FileResponse(
+            content=render_building(f"{base}/h/{token}"),
+            media_type="text/html; charset=utf-8",
+            headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow",
+                     "Referrer-Policy": "no-referrer"})
+    payload = refresh_stale(token, payload)
     # The og:image URL carries the card's content fingerprint. Link-preview
     # scrapers — iMessage most stubbornly — cache og:images by URL and have no
     # reason to refetch a URL they have already seen, so a fixed
