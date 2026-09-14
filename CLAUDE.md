@@ -9,7 +9,7 @@ Palmer is a personal AI delivered entirely over SMS via Twilio. A FastAPI web dy
 ## Running / commands
 
 ```bash
-# Install (uses .python-version, currently 3.12)
+# Install (uses .python-version, currently 3.11)
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
@@ -79,7 +79,7 @@ Dependencies run strictly downward: `llm`/`netutil`/`sources` ← `smstext`/`wea
 
 Underscore prefixes still mean "internal to Palmer", not "private to this module" — `smstext._sms_clean` is imported by six modules. Grep before renaming.
 
-**Patching in tests follows the code, not the name.** `patch("agent.client")` stopped working when functions moved out; patch the module the function actually lives in (`patch("userprofile.client")`). A dead patch target does not fail loudly — it lets the test make real API calls. Watch the suite runtime: 1058 tests in ~10s, and a jump means something is hitting the network.
+**Patching in tests follows the code, not the name.** `patch("agent.client")` stopped working when functions moved out; patch the module the function actually lives in (`patch("userprofile.client")`). A dead patch target does not fail loudly — it lets the test make real API calls. Watch the suite runtime: ~1,400 tests in ~6s, and a jump means something is hitting the network.
 
 ### Scheduler cadence (main.py)
 ```
@@ -666,7 +666,7 @@ Three rules came from the spec and each has a test that catches its reversal:
   (`MAX_EPISODES` takes its slots from `MAX_SCREENS`). A show you actually watch
   is worth more than a film chosen for you, and the row count stays put.
 
-Resolution runs on the **write** path (`resolve_show`, one TMDB search when the
+Resolution runs on the **write** path (`find_shows`, one TMDB search when the
 user follows), never on read — same terms as `_normalize_price_topic` and
 `_city_from_weather_topic`. An unresolvable title asks the user to confirm; it
 never guesses one and never sends them elsewhere to look it up.
@@ -966,7 +966,7 @@ code reading it gets strings where it expects dicts.
 `migrate_profile_prune.py` cleans rows that grew before the allow-list existed. It folds the stray keys into canonical fields with a Sonnet pass before dropping them, so real facts survive. Dry run by default; `--apply` writes.
 
 ### DB access patterns
-- `get_all_profiles()` returns every `(phone, profile)` in ONE query. The scheduler jobs use it. Do not write `for phone in get_all_phones(): get_profile(phone)` — `_conn()` opens a fresh connection per call, so that is N+1 per tick.
+- `get_all_profiles()` returns every `(phone, profile)` in ONE query. The scheduler jobs use it. Do not loop over phones calling `get_profile(phone)` per user — `_conn()` opens a fresh connection per call, so that is N+1 per tick.
 - `upsert_profile()` does its read and write on one connection, and takes a row lock on Postgres. It used to be two connections with an unsynchronised gap, so concurrent writers could drop each other's fields.
 - Pass profiles down rather than re-reading them. The reaction path once cost five `get_profile` calls for a single inbound tapback.
 
@@ -983,7 +983,7 @@ The system prompt in `agent.py` hard-routes user asks to specific tools. Never m
 - `get_price` → CoinGecko (crypto) / yfinance (stocks) only
 - `get_travel_time` / `get_city_traffic` → TomTom only
 - `set_commute` / `clear_commute` → the user's REGULAR drive; TomTom geocode on the write path, routed for their leave time by `home._fetch_traffic`
-- `get_my_page` → the caller's own Palmer Home URL, via `home.ensure_fresh` (never `home_url` — that can hand out a link to a page that was never built)
+- `get_my_page` → the caller's own Palmer Home URL, via `home.ensure_fresh` (never a bare URL builder — that can hand out a link to a page that was never built)
 - `add_price_watch` / `run_price_watches` → SerpAPI Google Shopping only (product prices, distinct from `get_price` for crypto/stocks)
 - `web_search` → Tavily news mode only, never for weather or prices
 
@@ -1426,7 +1426,7 @@ to doubt a confirmation.
   `weather.ambiguous_location`, used on the **write** paths only. Note
   `resolve_weather_location`'s docstring has always claimed "None means the model
   should ask rather than guess" — that was only ever true when *nothing* matched.
-- **Shows.** `resolve_show` took `results[0]` too, and `sports.py`'s own comment
+- **Shows.** The show resolver took `results[0]` too, and `sports.py`'s own comment
   says naming a show is not ambiguous the way naming a team is. True of Reacher,
   false of The Office, Shameless, Skins and Ghosts. `shows.find_shows` returns
   matches with year and origin country; only a genuinely shared title is a

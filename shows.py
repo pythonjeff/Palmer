@@ -21,7 +21,7 @@ import json
 import threading
 import urllib.parse
 import urllib.request
-from datetime import date, timedelta
+from datetime import date
 
 TMDB_BASE = "https://api.themoviedb.org/3"
 
@@ -104,12 +104,6 @@ def ambiguous_shows(found: list[dict]) -> list[dict]:
     top = (found[0].get("name") or "").strip().lower()
     same = [f for f in found if (f.get("name") or "").strip().lower() == top]
     return same if len(same) > 1 else []
-
-
-def resolve_show(name: str) -> dict | None:
-    """{"id", "name"} for a show title, or None. The single-answer form."""
-    found = find_shows(name, limit=1)
-    return {"id": found[0]["id"], "name": found[0]["name"]} if found else None
 
 
 def next_episode(show_id: int, today: date | None = None) -> dict | None:

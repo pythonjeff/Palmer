@@ -65,7 +65,8 @@ class TestTheWatchNamesWhatItMatched:
     stayed invisible until an alert arrived about the wrong product."""
 
     def test_the_matched_title_is_in_the_tool_result(self):
-        import inspect, agent
+        import inspect
+        import agent
         block = inspect.getsource(agent.get_reply).split('"add_price_watch"')[1] \
                                                   .split("elif b.name")[0]
         assert 'current.get("title")' in block
@@ -74,7 +75,8 @@ class TestTheWatchNamesWhatItMatched:
     def test_the_model_is_told_to_say_it_out_loud(self):
         """A resolved thing named only in the tool result is still invisible
         to the person who can correct it."""
-        import inspect, agent
+        import inspect
+        import agent
         block = inspect.getsource(agent.get_reply).split('"add_price_watch"')[1] \
                                                   .split("elif b.name")[0]
         assert "correct you" in block

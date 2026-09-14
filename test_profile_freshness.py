@@ -49,10 +49,10 @@ class TestVolatileFactsAge:
     def test_durable_facts_never_expire(self):
         """Name, city, job and relationships do not rot, and dating them would
         invite the model to doubt things it should not."""
-        old = {"name": "Danny", "city": "Culver City", "job": "producer",
+        old = {"name": "Sam", "city": "Springfield", "job": "teacher",
                "field_dates": {"name": "2020-01-01"}}
         out = userprofile.fresh_profile_for_prompt(old)
-        assert out["name"] == "Danny" and out["city"] == "Culver City"
+        assert out["name"] == "Sam" and out["city"] == "Springfield"
         for f in ("name", "city", "job"):
             assert f not in userprofile.VOLATILE_FIELDS
 

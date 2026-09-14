@@ -337,7 +337,7 @@ def _run(game, prev=None, alert_count=0, delivered=True, live="key"):
          patch.object(scorewatch, "get_game_alert", return_value=prev), \
          patch.object(scorewatch, "_draft", return_value="line"), \
          patch.object(scorewatch, "record_game_alert",
-                      side_effect=lambda p, g, h, a, l, st, sent: rec["saved"].append((h, a, sent))), \
+                      side_effect=lambda p, g, h, a, lv, st, sent: rec["saved"].append((h, a, sent))), \
          patch("sms_util.send_sms", side_effect=lambda p, t, **k: rec["sms"].append(t) or delivered):
         scorewatch.run_score_alerts()
     yield rec

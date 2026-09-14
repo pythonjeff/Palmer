@@ -145,7 +145,7 @@ class TestTheWatchAlertHasAVoice:
     """This was the one user-facing message in the system with no Palmer in
     it: a bare `title\\nurl`, no system prompt, no calibration — against the
     rule that anything the user reads is drafted through _build_system. Its
-    sibling alerts.py has always done this; the two paths simply diverged."""
+    sibling, the retired daily-alert job, always did this; the two paths simply diverged."""
 
     TOP = {"title": "Eagles sign Hurts to an extension",
            "url": "https://example.com/a",

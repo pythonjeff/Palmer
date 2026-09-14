@@ -186,7 +186,7 @@ def _clear_best_cache() -> None:
 
 
 def report(days: int = 30) -> str:
-    """Human-readable scoreboard. `python -c "import wxaudit; print(wxaudit.report())"`"""
+    """Human-readable scoreboard. Run with `python wxaudit.py`."""
     from db import forecast_scores
     rows = forecast_scores(days)
     if not rows:
@@ -199,3 +199,7 @@ def report(days: int = 30) -> str:
     out.append("\nbias: + means the source forecasts hotter than reality. "
                "Lowest mae per city wins.")
     return "\n".join(out)
+
+
+if __name__ == "__main__":
+    print(report())

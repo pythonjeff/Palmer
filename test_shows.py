@@ -276,11 +276,6 @@ class TestFollowing:
         block = src.split('"follow_show"')[1].split("elif b.name")[0]
         assert "invalidate" in block
 
-    def test_resolve_returns_none_rather_than_a_wrong_show(self):
-        with patch.object(shows, "_key", return_value="k"), \
-             patch.object(shows, "_get", return_value={"results": []}):
-            assert shows.resolve_show("asdfqwer") is None
-
 
 class TestAnAmbiguousTitleIsAskedAboutNotGuessed:
     """sports.find_teams returns a LIST because "Cardinals" is two teams, and
@@ -308,15 +303,9 @@ class TestAnAmbiguousTitleIsAskedAboutNotGuessed:
     def test_the_description_separates_them_for_a_person(self):
         assert shows.describe_show(self.GB) == "The Office (2001, GB)"
 
-    def test_resolve_show_still_answers_with_one(self):
-        with patch.object(shows, "_get", return_value={"results": [
-                {"id": 1, "name": "Reacher", "first_air_date": "2022-02-04",
-                 "origin_country": ["US"]}]}), \
-             patch.object(shows, "_key", return_value="k"):
-            assert shows.resolve_show("Reacher") == {"id": 1, "name": "Reacher"}
-
     def test_the_dispatch_refuses_to_pick(self):
-        import inspect, agent
+        import inspect
+        import agent
         block = inspect.getsource(agent.get_reply).split('"follow_show"')[1] \
                                                   .split("elif b.name")[0]
         assert "ambiguous_shows" in block

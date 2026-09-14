@@ -316,15 +316,6 @@ def get_profile(phone: str) -> dict:
     return json.loads(row["profile"]) if row else {}
 
 
-def get_all_phones() -> list[str]:
-    conn = _conn()
-    cur = conn.cursor()
-    cur.execute("SELECT phone FROM users")
-    phones = [r["phone"] for r in cur.fetchall()]
-    conn.close()
-    return phones
-
-
 def upsert_profile(phone: str, updates: dict):
     """Merge `updates` into the stored profile.
 
@@ -577,7 +568,7 @@ def normalize_due_at_rows() -> int:
     which is worth seeing rather than silently rewriting."""
     conn = _conn()
     cur = conn.cursor()
-    cur.execute(f"SELECT id, due_at FROM reminders WHERE sent = 0")
+    cur.execute("SELECT id, due_at FROM reminders WHERE sent = 0")
     fixed = 0
     for row in cur.fetchall():
         parsed = _parse_due(row["due_at"])
@@ -771,7 +762,7 @@ def update_watch_alerted(watch_id: int, summary: str, recent_summaries: list[str
     back by watches._daily_ok, and both used to key on the dyno's UTC day —
     so the cap window rolled at 17:00 Pacific, mid-evening, and a user could
     take the whole allowance across one local evening and be capped by lunch
-    the next day. Same defect alerts.py was fixed for."""
+    the next day. Same defect the retired daily-alert job was fixed for."""
     now = datetime.now(timezone.utc).isoformat()
     today = today or datetime.now(timezone.utc).date().isoformat()
     conn = _conn()

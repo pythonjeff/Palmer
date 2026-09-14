@@ -5,8 +5,9 @@ Pipeline per watch:
   2. Haiku picks the cheapest genuine match from the top candidates (guards
      against firing on unrelated cheap accessories/refurbs).
   3. If no baseline yet, record it silently and move on.
-  4. Otherwise alert if the target price is hit or the current price is at
-     least 15% below baseline. Cooldown gates repeat alerts.
+  4. Otherwise alert if the target price is hit or the price has moved more
+     than MOVE_MIN_ABS in either direction since the baseline, then re-baseline.
+     Cooldown gates repeat alerts.
 
 Returns None on any API failure so the scheduler tick silently skips —
 never surfaces a "shopping tool failed" line to the user (same discipline
@@ -384,8 +385,8 @@ def _draft_alert(product_name: str, current: dict, watch: dict, reason: str) -> 
 
 
 def run_price_watches():
-    """Scheduler job. Every 12h: check each active price watch, alert on target-hit
-    or >=15% drop from baseline. Silent-skip on any per-watch failure. Dispatches
+    """Scheduler job, twice daily on a cron (see main.py): check each active price
+    watch, alert on target-hit or any move over MOVE_MIN_ABS from baseline. Silent-skip on any per-watch failure. Dispatches
     to shopping (Google Shopping) or amazon (Amazon by ASIN) based on w['source']."""
     from userprofile import _is_duplicate_subject
     from db import (

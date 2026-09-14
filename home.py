@@ -80,10 +80,6 @@ def home_token(phone: str) -> str:
     return token
 
 
-def home_url(phone: str) -> str:
-    return f"{_APP_URL}/h/{home_token(phone)}"
-
-
 def rotate(phone: str) -> str:
     """Mint a new token, orphaning the old URL. The answer to a leaked link."""
     old = get_profile(phone).get("home_token")

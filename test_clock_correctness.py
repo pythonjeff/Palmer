@@ -7,7 +7,6 @@ does not match reality.
 from datetime import date, datetime, timezone
 from unittest.mock import patch
 
-import pytest
 
 import datafeeds
 import timeutil

@@ -16,10 +16,9 @@ same Palmer as a product alert and carries the user's calibrated register.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 
-from db import (get_active_flight_watches, update_flight_watch_price,
-                get_profile)
+from db import (get_active_flight_watches, update_flight_watch_price)
 
 # A fare has to move by more than this to be worth a text. Flights are volatile
 # by tens of dollars daily, so the flat $2 rule that governs product watches

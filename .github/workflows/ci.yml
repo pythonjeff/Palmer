@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # Placeholders only. The suite is fully offline; a few modules read their
+      # key at import time and simply need the variable to exist.
+      ANTHROPIC_API_KEY: test
+      TWILIO_ACCOUNT_SID: ACtest
+      TWILIO_AUTH_TOKEN: test
+      TWILIO_PHONE_NUMBER: "+15550000000"
+      TAVILY_API_KEY: test
+      TOMTOM_API_KEY: test
+      SERP_API_KEY: test
+      PALMER_NO_SCHEDULER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: pytest -q
