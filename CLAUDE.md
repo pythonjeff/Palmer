@@ -467,7 +467,7 @@ Company names are gated behind a price word, indices are not. Without that gate 
 
 **A stale model must not veto live data.** `SYSTEM_PROMPT` forbids claiming a company is private, delisted, or hasn't IPO'd from memory, and `get_price` resolves company names through `tickers.resolve_asset_name` so the tool answers rather than 404ing on `"SPACEX"`. Palmer was refusing to add SpaceX and explaining it was private, which was simply false — and the failed lookup had confirmed its prior.
 
-`cards.MAX_PRICES` is the shared cap. Four columns fit the card's width but the sparklines start overdrawing the price text, so three is the real limit; `home._fetch_prices` imports the constant rather than keeping its own, since the card and the page render from one payload and must not disagree about how much of it survives.
+`cards.MAX_PRICES` is the card's rendering cap and `home.MAX_PRICES` (6) is the payload's. The card slices the payload down to what it has room for, so the two never disagree — the card is a summary of the payload, not a different payload. The card's cap is now **2**, set by the type size rather than by the data: the rows are 40pt so the preview can be read at a quarter size (see the card layout section). The old reason for 3 — that a fourth column's sparkline overdrew the price text — has lapsed with the sparklines themselves, which were half a pixel wide at preview scale.
 
 ### Opening: metro-scoped weekly content
 `opening.py` feeds the `Opening` card — what is newly open or worth catching near
@@ -733,11 +733,14 @@ to sit beside "Commute" and "Markets", which made the column a mix of headings
 and a sentence, and the sentence was the one that looked like a product talking
 about itself.
 
-`cards.py` uses the same words in caps so the MMS preview and the page read as
+`cards.py` uses the same words in caps so the link preview and the page read as
 one publication — the two render from one payload and must not disagree about
 what a section is called. `test_page.py::TestSectionLabelsAreOneWord` reads the
 labels out of `page.py`'s markup and fails on a space in any of them, and also
-checks the card image kept in step.
+checks the card image kept in step. That last check asserts every word the card
+draws is also a page label, **not** that the two sets match: the card carries
+deliberately fewer sections, because it is read at a quarter size and holds
+about seven things (see the card layout section).
 
 ### The page is arranged by the user, in a text, never in a form
 `arrange_page` is presentation only — sort, order, visibility — and never
@@ -788,6 +791,29 @@ first time. The server was rendering today's card faithfully; nobody was asking
 for it, and there was no ETag or Last-Modified to hint otherwise. The PNG route
 now sends an ETag too, for caches that do revalidate.
 
+The corollary is that the fingerprint must cover **exactly** what is drawn, in
+both directions — it is the only thing gating that re-scrape. A field that is
+drawn but unkeyed freezes the card; a field that is keyed but undrawn pays the
+full re-scrape for a byte-identical image. That is why `opening` and `headlines`
+left `artifacts._card_inputs` the moment the card stopped drawing them, and why
+the test asserts the whole key set rather than a membership.
+
+### The preview's text is the half a scraper can always show
+`og:title` and `og:description` are what a client renders when it declines,
+fails, or has not yet fetched the image — so the day's basics cannot live only
+on the card. The title stays the user's **name** when Palmer knows it: it is
+what makes the link read as *yours* in a thread, and the user-visible proof the
+name was stored rather than just read back out of the conversation. But that
+meant the temperature then appeared in neither the title nor the description,
+so `og:description` now leads with it in exactly that case, and doesn't repeat
+it when the title already carries it.
+
+`page._trim_words` cuts the description on a word boundary. It was a bare
+`[:200]` slice, and the last thing joined into it is a news headline — so the
+preview routinely ended mid-word on the one string most likely to be long.
+Clients truncate again at their own width; the job here is only to make sure
+whatever survives is whole.
+
 ### Windows must be shorter than the refresh opportunity, or they alias
 Most users never open their page, so the only guaranteed refresh is the daily
 morning send. A section whose window is 24h therefore lapses on **about half**
@@ -835,9 +861,54 @@ defaulted to `datetime.now()`, which is UTC in production, so from 5pm Pacific
 the card printed tomorrow's date beside a page printing today's — `page.py` has
 always used the user's zone.
 
-`opening` renders in the left column between the weather chips (~y354) and the
-news rule (`H-90`) — the one band of the card that was empty. `CARD_OPENING_ROWS`
-is 3 against the page's 5, because that is what fits above the news rule.
+### The card is laid out for the size it is read at, not the size it is drawn at
+The card's only consumer is the `og:image` behind the page link (`page.py`).
+Nothing attaches it to a message — the one outbound `media_url` in the codebase
+is `_send_gif_outbound` — and both `cards.py` and `artifacts.py` described it as
+an MMS card long after that stopped being true. The distinction is the whole
+design: an MMS card is tapped open at full size, while an og:image is only ever
+seen shrunk into a chat bubble.
+
+A `summary_large_image` bubble renders around **300pt wide**, so the 1200px
+canvas is downscaled **4x** before anyone sees it, and on-screen text needs
+about 11px to read. `cards.MIN_LEGIBLE_PT` is that arithmetic: 11 / 0.25 = 44pt
+in the file. The previous layout carried **fourteen** data points at 15-30pt, so
+thirteen of them landed between 4px and 7px — present in the source, grey
+texture in the thread. Only the 118pt temperature cleared the bar.
+
+So the card carries fewer things, larger:
+
+- **`opening` and `headlines` are accepted and no longer drawn.** At 20pt and
+  21pt they were four times under the floor. The opening band's original
+  justification was that it filled "the one band of the card that was empty" —
+  dead space this layout does not have. Both still render on the page, where
+  they can be read and tapped. `CARD_OPENING_ROWS` is 0 and kept as the place
+  that documents why.
+- **They also left `artifacts._card_inputs`.** That is not tidiness: the
+  fingerprint stamps `?v=` onto the og:image URL, so a headline rotating at noon
+  would mint a new URL — and a fresh scrape from every cache that honours it —
+  for a byte-identical image. The key must track the drawn image in **both**
+  directions, which is why the test asserts the whole key set.
+- **No sparklines.** A 2px polyline is half a pixel at preview scale, and it was
+  overdrawing the price text it sat beside — the defect `MAX_PRICES` was capped
+  at 3 to avoid. `MAX_PRICES` is 2 now, set by the type size rather than the
+  data; the payload still carries `home.MAX_PRICES` (6) and the page shows all.
+- **Condition and chips sit beside the numeral, not under it.** Stacked, they
+  left a ~90px empty band across the middle while the right column ran out of
+  room — which is how a 1200px canvas came to feel crowded.
+- **Commute and Markets are assigned columns in order of what exists**, so a
+  user with no commute gets Markets on the left rather than an empty half and a
+  stranded column, which reads as a failed render.
+- **Nothing is drawn into the bottom margin.** The old news band bottomed out
+  **8px** from the edge where `PAD` is 60 everywhere else; it technically fit
+  and read as clipped. With no band at all the hero is centred instead of hung
+  off the masthead above two thirds of empty paper — `home.py` builds the page
+  the moment a city lands, before there is a commute or a ticker, so that is
+  the first preview most people ever see.
+
+`test_cards.py::TestItIsLegibleAtTheSizeItIsRead` guards the two properties that
+actually broke: no ink within 40px of the bottom edge, and no type below 26pt
+(~6.5px on screen) anywhere in `render_dashboard`.
 
 **Local card renders now match production.** macOS ships no `Menlo-Bold.ttc`, so
 a bold mono lookup fell through to Pillow's builtin bitmap face, which does not
@@ -1158,11 +1229,11 @@ It is page-only, on purpose, in both halves of the render:
   hero treatment, so this is the first place the word "Weather" appears at
   all, not a duplicate of anything.
 - **The PNG card** (`cards.py`) does not render it, and that is not an
-  oversight: the hero's chips already run to their cap of 3 and bottom out
-  around y=354, and the gap above the Opening band (~y374) and the news rule
-  (`H-90`) is ~26px on a fixed 1200×630 image — there is nowhere to put a
-  second location without shrinking something else. Same tradeoff as Opening
-  itself being capped to 3 rows on the card against 5 on the page.
+  oversight. The card is read at a quarter size (see the card layout section),
+  so its hero band is one numeral and two chips and there is no room for a
+  second location that would not come back as texture. Same reason Opening and
+  headlines came off the card entirely: the constraint is legibility at preview
+  scale, not pixels on the canvas.
 - **The morning text** never mentions it either, for the same reason tracked
   topics, prices and headlines don't: the morning update is basics plus a
   link, and anything beyond that lives on the page only.

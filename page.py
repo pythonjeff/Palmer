@@ -226,6 +226,21 @@ def _chip(e, text: str, url: str | None) -> str:
     return f'<span class=chip>{label}</span>'
 
 
+def _trim_words(text: str, limit: int) -> str:
+    """Cut to `limit` on a word boundary, with an ellipsis.
+
+    The og:description used to be a bare [:200] slice, and the last bit joined
+    into it is a news headline — so the preview routinely ended mid-word on the
+    one string most likely to be long. Clients truncate this again at their own
+    width; the job here is only to make sure whatever survives is whole."""
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    head = cut.rsplit(" ", 1)[0] if " " in cut else cut
+    return head.rstrip(" ,-·") + "…"
+
+
 def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
     """Full HTML document. Escapes every interpolated value — headlines come
     from news search, which is untrusted input."""
@@ -255,7 +270,29 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
     # rather than just reading it back out of the conversation.
     title = name or (f"{temp:.0f}° in {where}" if temp is not None
                      else f"{where}".capitalize())
+    # The description is the line or two of text under the image in the bubble.
+    #
+    # It leads with the weather whenever the name took the title, because
+    # otherwise the day's single most basic fact appears nowhere in the text at
+    # all — it was on the card and only on the card, and a card is exactly what
+    # a scraper that declines or fails the image does not show. When the title
+    # already carries the temperature there is no sense repeating it.
+    #
+    # The title is either the name or the temperature-and-place, so the
+    # description opens with whatever the title did NOT say. That also keeps it
+    # from coming back empty: with no name, no commute, no ticker and no
+    # headline it used to be the empty string — and that is exactly a new user,
+    # whose page home.py builds the moment their city lands.
     bits = []
+    cond = (w.get("description") or "").strip().lower()
+    hi, lo = w.get("high"), w.get("low")
+    if name and temp is not None:
+        bits.append(f"{temp:.0f}° in {where}" + (f", {cond}" if cond else ""))
+    else:
+        if cond:
+            bits.append(cond.capitalize())
+        if hi is not None and lo is not None:
+            bits.append(f"H {hi:.0f}° L {lo:.0f}°")
     if t.get("live_min"):
         bits.append(f"{t['live_min']} min commute"
                     + (f" at {friendly_hhmm(t['depart_at'])}" if t.get("depart_at") else ""))
@@ -264,7 +301,7 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         bits.append(f"{p0.get('label')} {p0.get('pct_24h', 0):+.1f}%")
     if heads:
         bits.append(heads[0].get("title", ""))
-    desc = " · ".join(b for b in bits if b)[:200]
+    desc = _trim_words(" · ".join(b for b in bits if b), 160)
 
     out = [
         '<!doctype html><html lang="en"><head><meta charset="utf-8">',

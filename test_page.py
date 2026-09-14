@@ -92,6 +92,52 @@ class TestPreviewTitle:
         assert self._title(name="   ").strip()
 
 
+class TestPreviewDescription:
+    """og:description is the half a client can always show — it renders when the
+    image is declined, fails, or has not been fetched yet. So the day's basics
+    must not live only on the card."""
+
+    def _desc(self, **over):
+        return re.search(r'og:description" content="(.*?)"', _render(**over)).group(1)
+
+    def test_it_leads_with_the_weather_when_the_name_took_the_title(self):
+        """Otherwise the temperature appears in neither the title nor the
+        description, and a client that skips the image shows no weather at all."""
+        assert self._desc(name="Jeff").startswith("81° in Kirkwood, MO")
+
+    def test_it_does_not_repeat_the_weather_the_title_already_carries(self):
+        assert not self._desc().startswith("81°")
+
+    def test_it_does_not_end_mid_word(self):
+        """It used to be a bare [:200] slice, and the last bit joined into it is
+        a news headline — the one string most likely to be long."""
+        long_head = [{"title": "Fed holds rates steady as inflation cools "
+                               "further across every major category " * 4}]
+        desc = self._desc(name="Jeff", headlines=long_head)
+        assert desc.endswith("…")
+        assert "&" not in desc or ";" in desc          # escaping stayed intact
+        assert not desc.rstrip("…").endswith(" ")
+        # the trim landed on a boundary, not inside the final word
+        assert long_head[0]["title"].startswith(desc.split(" · ")[-1].rstrip("…").strip())
+
+    def test_a_short_description_is_left_alone(self):
+        assert not self._desc(headlines=[], prices=[]).endswith("…")
+
+    def test_it_is_never_empty_for_a_user_who_has_weather(self):
+        """No name, no commute, no ticker, no headline is not an edge case —
+        it is a new user, whose page is built the moment their city lands. It
+        used to render an empty og:description."""
+        assert self._desc(headlines=[], prices=[], traffic={}).strip()
+
+    def test_with_no_name_it_adds_what_the_title_lacks(self):
+        """The title is already "81° in Kirkwood, MO", so the description
+        carries the condition and the range rather than repeating it."""
+        full = {"temp_now": 81.0, "description": "Overcast", "high": 83.0, "low": 64.0}
+        desc = self._desc(weather=full, headlines=[], prices=[], traffic={})
+        assert "Overcast" in desc and "H 83° L 64°" in desc
+        assert not desc.startswith("81°")
+
+
 class TestNameMissing:
     def test_neutral_header_instead_of_blank(self):
         assert "Your briefing" in _render()
@@ -188,13 +234,31 @@ class TestSectionLabelsAreOneWord:
         assert "News" in labels and "Watching" in labels
         assert "Today" not in labels
 
-    def test_the_card_image_uses_the_same_words(self):
+    def _card_labels(self) -> list[str]:
+        import inspect
+        import re
+        import cards
+        # The card draws its section words in caps. It deliberately carries
+        # FEWER sections than the page (see cards.MIN_LEGIBLE_PT — a preview
+        # is read at a quarter size and can hold about seven things), so this
+        # asserts agreement on the words it does draw, not a matching set.
+        # Anchored on `font=` so this reads only strings that are DRAWN —
+        # an unanchored match also caught `img.save(..., format="PNG")`.
+        src = inspect.getsource(cards.render_dashboard)
+        return re.findall(r'"([A-Z]{3,})",\s*font=', src)
+
+    def test_the_card_actually_has_labels_to_check(self):
+        assert self._card_labels(), "regex stopped matching the card's labels"
+
+    def test_every_card_label_the_page_also_uses(self):
         """cards.py and page.py render from one payload and must not disagree
         about what a section is called."""
-        import inspect
-        import cards
-        src = inspect.getsource(cards)
-        assert '"NEWS"' in src and '"TODAY"' not in src
+        page_words = {label.upper() for label in self._labels()}
+        for word in self._card_labels():
+            assert word in page_words, f"card says {word!r}, page has {sorted(page_words)}"
+
+    def test_the_card_does_not_use_a_renamed_word(self):
+        assert "TODAY" not in self._card_labels()
 
 
 class TestWatchingSection:

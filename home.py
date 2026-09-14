@@ -171,11 +171,11 @@ def _fetch_traffic(profile: dict) -> dict | None:
 
 
 # How many tickers the page's Markets section carries. Deliberately larger than
-# cards.MAX_PRICES: the card lays its rows out in columns across a fixed 1200px
-# and the sparklines start overdrawing the price text past three, while the page
-# is a vertical scrolling list with no such limit. The card slices this list
-# down to what it has room for, so the two never disagree — the card is a
-# summary of the payload, not a different payload.
+# cards.MAX_PRICES: the card is only ever read as a link preview, shrunk to
+# about a quarter size, so its rows are set large enough to survive that and it
+# has room for two — while the page is a vertical scrolling list with no such
+# limit. The card slices this list down to what it has room for, so the two
+# never disagree — the card is a summary of the payload, not a different one.
 MAX_PRICES = 6
 
 

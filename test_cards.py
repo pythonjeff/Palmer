@@ -77,32 +77,72 @@ class TestDegradesSection_by_section:
         assert _render(city="")
 
 
-class TestOpeningBand:
-    """Opening draws in the left column between the weather chips and the news
-    rule — the one band of the card that was empty."""
+class TestOpeningAndHeadlinesAreAcceptedButNotDrawn:
+    """Both used to render, at 20pt and 21pt on a canvas that is downscaled 4x
+    before anyone sees it — so they arrived as 5px of grey texture. They live
+    on the page now, where they can be read and tapped.
 
-    def test_the_card_renders_with_opening(self):
-        img = Image.open(io.BytesIO(_render(opening=OPENING)))
-        assert img.size == (cards.W, cards.H)
+    The arguments stay in the signature: callers are unchanged, and the point
+    is that passing them is harmless, not that it is an error."""
 
-    def test_it_changes_the_pixels(self):
-        """A section that draws nothing is a section that isn't there."""
-        assert _render(opening=OPENING) != _render(opening=None)
+    def test_opening_does_not_change_the_pixels(self):
+        assert _render(opening=OPENING) == _render(opening=None)
 
-    def test_absent_opening_is_fine(self):
-        assert _render(opening=None) and _render(opening=[])
+    def test_headlines_do_not_change_the_pixels(self):
+        assert _render(headlines=HEADS) == _render(headlines=None)
 
-    def test_more_rows_than_fit_do_not_overflow_into_the_news_band(self):
-        many = [{"kind": "event", "title": f"Act number {i}", "when": "Friday"}
-                for i in range(9)]
-        a = _render(opening=many)
-        b = _render(opening=many[:cards.CARD_OPENING_ROWS])
-        assert a == b, "rows past the cap must not be drawn at all"
+    def test_both_may_be_omitted_entirely(self):
+        """artifacts._card_inputs no longer supplies either, and it splats
+        straight into render_dashboard — so absent must mean absent, not a
+        missing required argument."""
+        assert cards.render_dashboard(city="Kirkwood, MO", weather=WEATHER,
+                                      traffic=TRAFFIC, prices=PRICES)
 
-    def test_a_very_long_title_is_clipped_rather_than_running_under_markets(self):
-        long = [{"kind": "local", "title": "A restaurant with an absurdly long name " * 4,
-                 "when": "Friday"}]
-        assert _render(opening=long)
+    def test_absurd_values_are_still_tolerated(self):
+        """They reach a live payload from news search and opening.py; not
+        drawing them must not mean not surviving them."""
+        assert _render(opening=[{"title": "x" * 400}] * 40, headlines=["y" * 400] * 40)
+
+
+class TestItIsLegibleAtTheSizeItIsRead:
+    """The card's only consumer is the og:image on the page link (page.py);
+    nothing sends it as MMS media. A link preview renders around 300pt wide, so
+    everything here is downscaled 4x before a human sees it.
+
+    The layout before this carried fourteen data points at 15-30pt, so thirteen
+    of them landed between 4px and 7px on screen, and ran its last row to
+    within 8px of the bottom edge while PAD is 60 everywhere else."""
+
+    def _last_inked_row(self, png: bytes) -> int:
+        img = Image.open(io.BytesIO(png)).convert("L")
+        w, h = img.size
+        px = img.load()
+        floor = cards.PAPER[1] - 25
+        return max(y for y in range(h)
+                   if any(px[x, y] < floor for x in range(0, w, 2)))
+
+    def test_nothing_is_drawn_into_the_bottom_margin(self):
+        """The old news band bottomed out 8px from the edge, which read as
+        clipped even though it technically fit."""
+        for kw in ({}, {"opening": OPENING}, {"prices": PRICES * 3}):
+            last = self._last_inked_row(_render(**kw))
+            assert last <= cards.H - 40, f"ink at y={last} crowds the bottom edge"
+
+    def test_no_type_is_drawn_below_the_texture_floor(self):
+        """Under about 26pt here is 6.5px on screen — texture, not
+        information. MIN_LEGIBLE_PT (44) is the bar for anything the preview
+        must actually convey; this is the absolute floor for supporting
+        detail like the date and the leave time."""
+        import inspect
+        import re
+        src = inspect.getsource(cards.render_dashboard)
+        sizes = [int(n) for n in re.findall(r"_(?:font|mono)\((\d+)", src)]
+        assert sizes, "no literal type sizes found — did the helpers get renamed?"
+        assert min(sizes) >= 26, f"{min(sizes)}pt is ~{min(sizes) * 0.25:.1f}px at preview scale"
+
+    def test_the_hero_clears_the_legibility_floor(self):
+        assert cards.HERO_PT >= cards.MIN_LEGIBLE_PT
+        assert cards.PREVIEW_SCALE == cards.PREVIEW_WIDTH_PT / cards.W
 
 
 class TestCardCacheKey:
@@ -132,15 +172,24 @@ class TestCardCacheKey:
     def test_every_drawn_section_moves_the_key(self):
         for field, value in (("city", "Denver, CO"),
                              ("traffic", dict(TRAFFIC, live_min=99)),
-                             ("prices", []),
-                             ("opening", []),
-                             ("headlines", [{"title": "something else"}])):
+                             ("prices", [])):
             assert self._fp(**{field: value}) != self._fp(), f"{field} must re-key"
 
     def test_something_not_drawn_does_not_move_the_key(self):
         """tracking and the token never reach the renderer, so they must not
         cost a re-render."""
         assert self._fp(tracking={"topics": ["new"]}) == self._fp()
+
+    def test_undrawn_sections_do_not_move_the_key(self):
+        """opening and headlines are no longer drawn (cards.MIN_LEGIBLE_PT).
+
+        This is not tidiness. The fingerprint is stamped onto the og:image as
+        ?v=, so a headline rotating at noon would hand every link-preview cache
+        a brand new URL for a byte-identical image — paying the full re-scrape
+        this stamp exists to ration."""
+        for field, value in (("opening", []),
+                             ("headlines", [{"title": "something else"}])):
+            assert self._fp(**{field: value}) == self._fp(), f"{field} must not re-key"
 
     def test_render_png_reuses_the_image_for_identical_content(self):
         import artifacts
@@ -156,9 +205,21 @@ class TestCardCacheKey:
         b = artifacts.render_png("tok", dict(self.PAYLOAD, weather=dict(WEATHER, temp_now=12.0)))
         assert a != b
 
-    def test_opening_reaches_the_renderer(self):
+    def test_card_inputs_are_exactly_what_is_drawn(self):
+        """The key must track the drawn image and nothing else — in both
+        directions, which is why this asserts the whole key set rather than
+        one membership."""
         import artifacts
-        assert "opening" in artifacts._card_inputs(self.PAYLOAD)
+        got = set(artifacts._card_inputs(self.PAYLOAD))
+        assert got == {"city", "weather", "traffic", "prices", "_date"}
+
+    def test_card_inputs_feed_the_renderer_directly(self):
+        """render_png splats _card_inputs into render_dashboard, so a field
+        added to one and not the other is a TypeError in production and
+        nowhere else. headlines/opening are accepted-but-undrawn, so the
+        signature has to keep tolerating their absence."""
+        import artifacts
+        assert artifacts.render_png("sig-check", dict(self.PAYLOAD))
 
 
 class TestMeter:
@@ -179,16 +240,26 @@ class TestMeter:
         assert self._ratio_colour(9.0) == cards.DOWN
 
 
-class TestSparkline:
-    def test_too_few_points_is_a_noop(self):
-        img = Image.new("RGB", (100, 40))
-        before = img.tobytes()
-        cards._sparkline(cards.ImageDraw.Draw(img), 0, 0, 90, 30, [1.0], cards.UP)
-        assert img.tobytes() == before
+class TestSparklinesAreThePagesJobNow:
+    """cards._sparkline is gone — half a pixel wide once the card is downscaled
+    into a bubble, and it overdrew the price text beside it. The equivalent
+    edge cases still matter on page.py's SVG `_spark`, which is the surface
+    with the resolution to draw one."""
 
-    def test_flat_series_does_not_divide_by_zero(self):
-        img = Image.new("RGB", (100, 40))
-        cards._sparkline(cards.ImageDraw.Draw(img), 0, 0, 90, 30, [5.0, 5.0, 5.0], cards.UP)
+    def test_the_card_no_longer_draws_one(self):
+        assert not hasattr(cards, "_sparkline")
+
+    def test_the_page_still_does(self):
+        import page
+        assert page._spark([1.0, 2.0, 3.0], "#1f6e3a")
+
+    def test_too_few_points_is_a_noop_on_the_page(self):
+        import page
+        assert page._spark([1.0], "#1f6e3a") == ""
+
+    def test_flat_series_does_not_divide_by_zero_on_the_page(self):
+        import page
+        assert page._spark([5.0, 5.0, 5.0], "#1f6e3a")
 
 
 class TestFontResolution:

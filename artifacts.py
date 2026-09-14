@@ -93,14 +93,18 @@ def _card_now(payload: dict):
 
 
 def _card_inputs(payload: dict) -> dict:
-    """Exactly what render_dashboard draws — nothing else."""
+    """Exactly what render_dashboard draws — nothing else.
+
+    `opening` and `headlines` left this dict when the card stopped drawing
+    them (see cards.MIN_LEGIBLE_PT). Keeping them would have been worse than
+    untidy: the fingerprint is what stamps ?v= onto the og:image URL, so a
+    headline rotating at noon would mint a fresh URL — and therefore a fresh
+    scrape from every cache that honours it — for a byte-identical image."""
     return {
         "city": payload.get("city", ""),
         "weather": payload.get("weather"),
         "traffic": payload.get("traffic"),
         "prices": payload.get("prices"),
-        "opening": payload.get("opening"),
-        "headlines": [h.get("title", "") for h in (payload.get("headlines") or [])],
         # The masthead prints the date, so a new day is a different card even
         # when every other input is byte-identical — and it must be the
         # reader's day, or the cache holds yesterday's card past their midnight.
