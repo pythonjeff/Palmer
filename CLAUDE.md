@@ -79,7 +79,7 @@ Dependencies run strictly downward: `llm`/`netutil`/`sources` ← `smstext`/`wea
 
 Underscore prefixes still mean "internal to Palmer", not "private to this module" — `smstext._sms_clean` is imported by six modules. Grep before renaming.
 
-**Patching in tests follows the code, not the name.** `patch("agent.client")` stopped working when functions moved out; patch the module the function actually lives in (`patch("userprofile.client")`). A dead patch target does not fail loudly — it lets the test make real API calls. Watch the suite runtime: ~1,400 tests in ~6s, and a jump means something is hitting the network.
+**Patching in tests follows the code, not the name.** `patch("agent.client")` stopped working when functions moved out; patch the module the function actually lives in (`patch("userprofile.client")`). A dead patch target used to fail silently by letting the test make a real API call; `tests/conftest.py` now refuses any socket connection and any unpatched Anthropic call, so it fails by name instead. The suite is ~1,430 tests in ~5s, in 15 files grouped by the module under test, with shared fakes in `tests/helpers.py`.
 
 ### Scheduler cadence (main.py)
 ```
