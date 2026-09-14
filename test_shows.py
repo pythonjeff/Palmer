@@ -251,7 +251,7 @@ class TestFollowing:
         import agent
         src = inspect.getsource(agent.get_reply)
         block = src.split('"follow_show"')[1].split("elif b.name")[0]
-        assert "resolve_show" in block
+        assert "find_shows" in block
 
     def test_an_unresolvable_title_asks_rather_than_guessing(self):
         import inspect
@@ -280,3 +280,44 @@ class TestFollowing:
         with patch.object(shows, "_key", return_value="k"), \
              patch.object(shows, "_get", return_value={"results": []}):
             assert shows.resolve_show("asdfqwer") is None
+
+
+class TestAnAmbiguousTitleIsAskedAboutNotGuessed:
+    """sports.find_teams returns a LIST because "Cardinals" is two teams, and
+    its comment says naming a show is not ambiguous the same way. That is true
+    of Reacher and false of The Office, Shameless, Skins and Ghosts. Taking
+    results[0] meant Palmer confirmed a pick as though the user had made it,
+    and the mistake stays silent until the episode rows are for a series they
+    don't watch."""
+
+    US = {"id": 1, "name": "The Office", "year": "2005", "country": "US"}
+    GB = {"id": 2, "name": "The Office", "year": "2001", "country": "GB"}
+    OTHER = {"id": 3, "name": "The Office Deep Dive", "year": "2022", "country": "US"}
+
+    def test_two_series_with_one_title_is_a_question(self):
+        assert shows.ambiguous_shows([self.US, self.GB]) == [self.US, self.GB]
+
+    def test_a_different_title_is_not(self):
+        """"Reacher" also matching "Reacher: Behind the Scenes" is the search
+        working, not two things the user might have meant."""
+        assert shows.ambiguous_shows([self.US, self.OTHER]) == []
+
+    def test_one_match_is_not(self):
+        assert shows.ambiguous_shows([self.US]) == []
+
+    def test_the_description_separates_them_for_a_person(self):
+        assert shows.describe_show(self.GB) == "The Office (2001, GB)"
+
+    def test_resolve_show_still_answers_with_one(self):
+        with patch.object(shows, "_get", return_value={"results": [
+                {"id": 1, "name": "Reacher", "first_air_date": "2022-02-04",
+                 "origin_country": ["US"]}]}), \
+             patch.object(shows, "_key", return_value="k"):
+            assert shows.resolve_show("Reacher") == {"id": 1, "name": "Reacher"}
+
+    def test_the_dispatch_refuses_to_pick(self):
+        import inspect, agent
+        block = inspect.getsource(agent.get_reply).split('"follow_show"')[1] \
+                                                  .split("elif b.name")[0]
+        assert "ambiguous_shows" in block
+        assert "Do NOT pick one yourself" in block

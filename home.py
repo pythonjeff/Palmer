@@ -7,6 +7,7 @@ stale, each class behind its own cooldown:
     weather   Open-Meteo    free    refresh if >10 min stale
     commute   TomTom        free    refresh if  >5 min stale
     prices    CoinGecko/yf  free    refresh if  >5 min stale
+    scores    ESPN          free    refresh if >10 min stale, shared per league
     identity  local DB      free    refresh every view
     headlines Tavily        $0.008  refresh if  >6 hr stale
     opening   Tavily+TM+TMDB $0.008 refresh if >24 hr stale, shared per metro
@@ -61,7 +62,7 @@ TTL_HOURS = 24 * 400          # effectively permanent; refreshed on every write
 # anyway — opening.py caches by metro and week, so a "refresh" inside the same
 # week is a dict lookup.
 STALE = {"weather": 600, "weather_extra": 600, "traffic": 300, "prices": 300,
-         "headlines": 6 * 3600, "opening": 20 * 3600}
+         "scores": 600, "headlines": 6 * 3600, "opening": 20 * 3600}
 
 # Score a story must clear to reach the page from OUTSIDE the trusted list.
 # Higher than the trusted floor (0.5) on purpose: an unvetted source has to earn
@@ -127,12 +128,50 @@ def _fetch_weather_extra(profile: dict) -> list[dict]:
     return out
 
 
+# How far ahead the leave time has to be for the commute to be routed FOR it.
+# Closer than this (or already past) and the number is live traffic — the user
+# is about to walk out the door, or already has, and "right now" is the honest
+# answer. After the leave time passes, every view that day shows live traffic
+# under the Commute label, and the page's sub-line says so.
+COMMUTE_PREDICT_MIN_LEAD = 300
+
+
+def _commute_depart_at(commute: dict, tz_name: str | None, now=None):
+    """Today at the commute's `leave_time` in the user's zone, if that is still
+    at least COMMUTE_PREDICT_MIN_LEAD ahead. None otherwise — and None when no
+    leave time is stored, which routes live exactly as before the field existed.
+
+    Pure given `now`, so it is testable without freezing a clock."""
+    from datetime import timedelta
+    from smstext import _normalize_hhmm
+    from timeutil import local_now, valid_zone
+    leave = _normalize_hhmm((commute or {}).get("leave_time") or "")
+    if not leave:
+        return None
+    h, m = leave.split(":")
+    if now is None:
+        # No zone means no local clock to put "08:30" on: local_now would fall
+        # back to UTC, the route would be predicted for 08:30Z, and every
+        # surface would label it "8:30am". Live is the honest answer.
+        if not valid_zone(tz_name):
+            return None
+        now = local_now(tz_name)
+    target = now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+    if target - now < timedelta(seconds=COMMUTE_PREDICT_MIN_LEAD):
+        return None
+    return target
+
+
 def _fetch_traffic(profile: dict) -> dict | None:
     from traffic import traffic_snapshot
     c = profile.get("commute") or {}
     if not (c.get("origin") and c.get("destination")):
         return None
-    return traffic_snapshot(c["origin"], c["destination"])
+    tz = profile.get("timezone")
+    return traffic_snapshot(c["origin"], c["destination"],
+                            depart_at=_commute_depart_at(c, tz),
+                            origin_ll=c.get("origin_ll"), dest_ll=c.get("dest_ll"),
+                            tz_name=tz)
 
 
 # How many tickers the page's Markets section carries. Deliberately larger than
@@ -180,6 +219,36 @@ def _fetch_prices(profile: dict, previous: list[dict] | None = None) -> list[dic
         out.sort(key=lambda p: abs(p.get("pct_24h") or 0.0), reverse=True)
     elif sort == "alpha":
         out.sort(key=lambda p: (p.get("label") or "").lower())
+    return out
+
+
+def _fetch_scores(profile: dict) -> list[dict]:
+    """The Scores section: one row per followed team, carrying yesterday's
+    result and today's game in whatever state it is in.
+
+    This is the same read the morning update and the check-in make
+    (sports.team_day), so the text and the page cannot disagree about a score.
+    Free — ESPN, cached per league per day inside sports.py, so two users
+    following the same league cost one fetch. A team with no game on either
+    day produces no row rather than a permanent placeholder."""
+    teams = [t for t in (profile.get("followed_teams") or []) if t.get("abbrev")]
+    if not teams:
+        return []
+    from sports import team_day
+    from timeutil import local_today
+    today = local_today(profile.get("timezone"))
+    out = []
+    for team in teams:
+        try:
+            day = team_day(team, today)
+        except Exception as e:
+            print(f"home scores failed for {team.get('name')!r}: {type(e).__name__}: {e}")
+            continue
+        if not (day.get("last") or day.get("today")):
+            continue
+        out.append({"team": team.get("name"), "abbrev": team.get("abbrev"),
+                    "league": team.get("league"),
+                    "last": day.get("last"), "today": day.get("today")})
     return out
 
 
@@ -363,6 +432,7 @@ def rebuild(phone: str, refresh_news: bool = True) -> dict:
         "weather_extra": _fetch_weather_extra(profile),
         "traffic": _fetch_traffic(profile),
         "prices": _fetch_prices(profile, previous.get("prices")),
+        "scores": _fetch_scores(profile),
         "headlines": _fetch_headlines(profile) if refresh_news
                      else (previous.get("headlines") or []),
         "opening": _fetch_opening(profile) if refresh_news
@@ -371,6 +441,7 @@ def rebuild(phone: str, refresh_news: bool = True) -> dict:
         "episode_alerts": bool((profile.get("morning_prefs") or {}).get("episode_alerts")),
         "page_prefs": _page_prefs(profile),
         "fetched": {"weather": now, "weather_extra": now, "traffic": now, "prices": now,
+                    "scores": now,
                     "headlines": now if refresh_news
                                  else (previous.get("fetched", {}).get("headlines") or now),
                     "headlines_tried": now if refresh_news
@@ -456,11 +527,17 @@ def refresh_stale(token: str, payload: dict) -> dict:
     for section, fetcher in (("weather", _fetch_weather),
                              ("weather_extra", _fetch_weather_extra),
                              ("traffic", _fetch_traffic),
-                             ("prices", lambda p: _fetch_prices(p, payload.get("prices")))):
+                             ("prices", lambda p: _fetch_prices(p, payload.get("prices"))),
+                             ("scores", _fetch_scores)):
         window = STALE.get(section)
         if window is None:
             continue
         if now - (fetched.get(section) or 0) < window:
+            continue
+        if section == "scores" and not profile.get("followed_teams") and not payload.get("scores"):
+            # Nothing to fetch and nothing to clear. Skipping here is what
+            # keeps a payload written before this section existed from being
+            # rewritten on every view for a user who follows no team.
             continue
         try:
             payload[section] = fetcher(profile)

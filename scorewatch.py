@@ -1,15 +1,23 @@
-"""The job that decides a game moment is worth interrupting someone for.
+"""Live game texts for people who asked for them, at the level they asked for.
 
-Palmer spends most of its code rationing proactive texts — `_is_duplicate_subject`,
-`DAILY_ALERT_MAX`, the reaction pacing factor, the repetition guards. A live
-scoring feed runs against all of it: an NFL game has six to ten scoring plays,
-and two followed teams on a Sunday is twenty texts in an afternoon.
+This is the one job in Palmer built to interrupt, and it is opt-in twice over:
+a followed team gets no live texts unless its `live` level is set, and the
+level decides how much. `sports.live_mode`:
 
-So this is the first thing in Palmer built to interrupt, and it is built to
-interrupt rarely. `sports.alert_reason` allows three moments — the lead changing
-hands, a score inside the last five minutes, and the final — and
-`MAX_ALERTS_PER_GAME` is the backstop when a game is genuinely wild. Everything
-else updates the stored state silently so the next comparison is honest.
+  off   the default — the team rides the morning update and the page only
+  key   the lead changing hands, a score in the closing stretch, the final
+  all   every score, plus the final; a lead change still reads as one
+
+Even "all" is not a firehose: a basket lands every thirty seconds, so for the
+NBA it falls back to key moments (`sports.EVERY_SCORE_LEAGUES`), and
+`sports.alert_cap` is the backstop per game. The final is never swallowed by
+the cap — a game wild enough to spend the budget is exactly the one whose
+result they want.
+
+Everything not texted still updates the stored state, silently: the next
+comparison is against what the user was last TOLD, so a score arriving in the
+same tick as a lead change is one event rather than two, and a suppressed
+score does not make the next one look bigger than it was.
 
 Two-speed polling. Checking every couple of minutes around the clock would be
 thousands of calls a day against an unofficial API to learn that nothing is
@@ -28,38 +36,49 @@ from db import get_all_profiles, get_game_alert, record_game_alert
 _live_leagues: set[str] = set()
 
 
-def followed_teams(profile: dict) -> list[dict]:
-    return [t for t in ((profile or {}).get("followed_teams") or []) if t.get("abbrev")]
+def live_teams(profile: dict) -> list[dict]:
+    """Followed teams the user asked live texts for. Following alone is not asking."""
+    return [t for t in ((profile or {}).get("followed_teams") or [])
+            if t.get("abbrev") and sports.live_mode(t) != "off"]
 
 
-def _draft(phone: str, game: dict, team: dict, reason: str) -> str:
+def _draft(phone: str, game: dict, team: dict, reason: str, prev: dict | None = None) -> str:
     """The alert, in Palmer's voice. Falls back to the plain line."""
     plain = _plain(game, team, reason)
     try:
         from agent import _build_system
         from llm import client, SONNET_MODEL
         from smstext import _sms_clean
-        cue = {
-            "lead": "the lead just changed hands",
-            "late": "someone scored in the closing stretch",
-            "tied": "the game is level again",
-            "final": "the game just ended",
-        }[reason]
+        side = sports.side_of(game, team["abbrev"])
+        other = "away" if side == "home" else "home"
+        mine, theirs = game[side]["score"], game[other]["score"]
+        if reason == "score":
+            who = sports.scorer(prev, game)
+            cue = (f"{team['name']} just scored" if who == side
+                   else f"{game[other]['name']} just scored")
+        else:
+            cue = {
+                "lead": "the lead just changed hands",
+                "late": "someone scored in the closing stretch",
+                "tied": "the game is level again",
+                "final": "the game just ended",
+            }[reason]
         # Say outright whose side they are on and by how much, rather than
         # leaving the model to work it out from "CIN 17, PHI 21". It managed
         # that most of the time, but a buddy does not deduce who you support,
         # and the margin is what sets the tone — a one-point game and a
         # twenty-point game are not the same text.
-        side = sports.side_of(game, team["abbrev"])
-        other = "away" if side == "home" else "home"
-        mine, theirs = game[side]["score"], game[other]["score"]
         standing = ("ahead by" if mine > theirs else
                     "behind by" if mine < theirs else "level, tied at")
         margin = abs(mine - theirs) or mine
         resp = client.messages.create(
-            model=SONNET_MODEL, max_tokens=90, system=_build_system(phone),
+            # include_recent, like every other Sonnet drafter. Without it this
+            # path — the one most likely to send several texts in one hour —
+            # had no way to see it had just said something similar.
+            model=SONNET_MODEL, max_tokens=90,
+            system=_build_system(phone, include_recent=True),
             messages=[{"role": "user", "content":
-                       f"""Their team is {team['name']}, playing {game[other]['name']}. {cue.capitalize()}.
+                       f"""Their team is {team['name']}, playing {game[other]['name']}. {cue[0].upper() + cue[1:]}.
 
 {team['name']} {standing} {margin}. Score: {sports.describe(game)}
 
@@ -90,17 +109,17 @@ def _plain(game: dict, team: dict, reason: str) -> str:
 
 
 def run_score_alerts() -> None:
-    """One pass over every followed team. Never raises."""
+    """One pass over every team someone asked live texts for. Never raises."""
     from sms_util import send_sms
     try:
-        profiles = [(p, prof) for p, prof in get_all_profiles() if followed_teams(prof)]
+        profiles = [(p, prof) for p, prof in get_all_profiles() if live_teams(prof)]
     except Exception as e:
         print(f"scorewatch: could not load profiles: {type(e).__name__}: {e}")
         return
     if not profiles:
         return
 
-    wanted = {t["league"] for _p, prof in profiles for t in followed_teams(prof)}
+    wanted = {t["league"] for _p, prof in profiles for t in live_teams(prof)}
     boards: dict[str, list[dict]] = {}
     for league in wanted:
         ttl = sports.LIVE_POLL_SECONDS if league in _live_leagues else sports.IDLE_POLL_SECONDS
@@ -112,13 +131,13 @@ def run_score_alerts() -> None:
 
     sent = 0
     for phone, profile in profiles:
-        for team in followed_teams(profile):
+        for team in live_teams(profile):
             try:
-                game = next((g for g in boards.get(team["league"], [])
-                             if team["abbrev"] in (g["home"]["abbrev"], g["away"]["abbrev"])),
-                            None)
+                game = sports._game_for(team, boards.get(team["league"], []))
                 if not game or game["state"] == "pre":
                     continue
+                mode = sports.live_mode(team)
+
                 def remember(texted: bool) -> None:
                     """Move the baseline to what they now know.
 
@@ -130,19 +149,19 @@ def run_score_alerts() -> None:
                                       game["state"], sent=texted)
 
                 prev = get_game_alert(phone, game["id"])
-                reason = sports.alert_reason(prev, game)
+                reason = sports.alert_reason(prev, game, mode)
                 # The cap never swallows the final. A game wild enough to spend
-                # four alerts is exactly the one whose result they want, and
+                # the budget is exactly the one whose result they want, and
                 # ending on a mid-game score with no result reads as Palmer
                 # losing interest.
                 capped = (reason != "final"
-                          and (prev or {}).get("alert_count", 0) >= sports.MAX_ALERTS_PER_GAME)
+                          and (prev or {}).get("alert_count", 0) >= sports.alert_cap(mode))
                 if not reason or capped:
                     remember(texted=False)
                     continue
                 # Only a text that actually went out counts against the cap or
                 # consumes the moment; a Twilio failure leaves it to retry.
-                delivered = bool(send_sms(phone, _draft(phone, game, team, reason)))
+                delivered = bool(send_sms(phone, _draft(phone, game, team, reason, prev)))
                 sent += delivered
                 remember(texted=delivered)
             except Exception as e:

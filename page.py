@@ -17,6 +17,8 @@ import os
 from datetime import datetime
 from urllib.parse import quote
 
+from timeutil import friendly_hhmm
+
 # A newspaper page, not a dashboard: flat paper white, ink-black type, thin
 # hairline rules instead of glass panels. Color is rationed to the two places
 # a reader actually needs it at a glance — the temperature and the commute
@@ -133,13 +135,20 @@ def _ago(ts: float | None, now: float | None = None) -> str:
 
 
 def _local_day(tz_name: str | None) -> str:
-    from timeutil import local_now
+    """Their day, or nothing at all.
+
+    This used to fall back to datetime.utcnow() and print it unlabelled as
+    theirs — which is exactly what clock_block was rewritten to stop doing.
+    A user west of UTC with no zone on file saw tomorrow's date on their own
+    page from 5pm. The subhead drops an empty string, so the honest form here
+    is simply to say nothing."""
+    from timeutil import valid_zone, local_now
+    if not valid_zone(tz_name):
+        return ""
     try:
-        if tz_name:
-            return local_now(tz_name).strftime("%A, %B %d")
+        return local_now(tz_name).strftime("%A, %B %d")
     except Exception:
-        pass
-    return datetime.utcnow().strftime("%A, %B %d")
+        return ""
 
 
 def _price_link(p: dict) -> str:
@@ -180,7 +189,7 @@ CHIP_TEXT_MAX = 40
 # and the footer are deliberately not in the list: they are the page's
 # identity, not cards. "weather" is the extra-locations card — the hero always
 # shows the primary city.
-DEFAULT_SECTION_ORDER = ("weather", "commute", "markets", "news", "opening", "watching")
+DEFAULT_SECTION_ORDER = ("weather", "commute", "scores", "markets", "news", "opening", "watching")
 
 # The words users actually reach for, folded to canonical section names.
 # Same contract as opening.KIND_WORDS: an unknown word is surfaced by the
@@ -191,6 +200,8 @@ DEFAULT_SECTION_ORDER = ("weather", "commute", "markets", "news", "opening", "wa
 SECTION_WORDS = {
     "weather": "weather", "weather locations": "weather", "temps": "weather",
     "commute": "commute", "traffic": "commute", "drive": "commute",
+    "scores": "scores", "score": "scores", "sports": "scores", "games": "scores",
+    "teams": "scores", "my team": "scores",
     "markets": "markets", "market": "markets", "stocks": "markets",
     "prices": "markets", "tickers": "markets", "crypto": "markets",
     "news": "news", "headlines": "news", "stories": "news",
@@ -247,7 +258,8 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
                      else f"{where}".capitalize())
     bits = []
     if t.get("live_min"):
-        bits.append(f"{t['live_min']} min commute")
+        bits.append(f"{t['live_min']} min commute"
+                    + (f" at {friendly_hhmm(t['depart_at'])}" if t.get("depart_at") else ""))
     if prices:
         p0 = prices[0]
         bits.append(f"{p0.get('label')} {p0.get('pct_24h', 0):+.1f}%")
@@ -350,12 +362,46 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         delay = t.get("delay_min") or 0
         tier, span = _traffic_tier(t.get("ratio") or 1.0)
         note = "clear" if tier == "up" else f"+{delay} min vs normal"
+        # Which moment the number is for. Routed for their leave time it is a
+        # forecast for that departure; otherwise it is live. Times only —
+        # the origin and destination are someone's home and office, and this
+        # page has no auth beyond its token, so they never render here.
+        if t.get("depart_at"):
+            when = (f"leaves {e(friendly_hhmm(t['depart_at']))} &middot; "
+                    f"arrives ~{e(friendly_hhmm(t.get('arrive_at')))}")
+        else:
+            when = "right now"
         sections["commute"] = "".join(
             [f'<div class=card><div class=label>Commute'
              f'<span class=as>{e(_ago(fetched.get("traffic")))}</span></div>',
              f'<div class=big>{e(t.get("live_min", 0))} min '
              f'<span class="note {tier}">{e(note)}</span></div>',
+             f'<div class=src>{when}</div>',
              _gauge(t.get("ratio") or 1.0, tier, span), "</div>"])
+
+    scores = payload.get("scores") or []
+    if scores:
+        # Yesterday's result and today's game, one row per followed team. The
+        # same rows the morning and evening texts are drafted from; a team
+        # with nothing on either day is simply absent (home._fetch_scores).
+        from sports import result_line
+        sec = ['<div class=card><div class=label>Scores'
+               f'<span class=as>{e(_ago(fetched.get("scores")))}</span></div>']
+        for row in scores:
+            team = {"abbrev": row.get("abbrev"), "name": row.get("team")}
+            lines = []
+            if row.get("today"):
+                lines.append(("Today", result_line(row["today"], team)))
+            if row.get("last"):
+                lines.append(("Yesterday", result_line(row["last"], team)))
+            inner = f'<div><div class=tick style="font-weight:700">{e(row.get("team") or "")}</div>'
+            for when, text in lines:
+                inner += f'<div class=src>{e(when)} &middot; {e(text)}</div>'
+            inner += "</div>"
+            sec.append(f'<div class=row style="display:flex;padding:14px 0;'
+                       f'border-top:1px solid var(--rule)">{inner}</div>')
+        sec.append("</div>")
+        sections["scores"] = "".join(sec)
 
     if prices:
         sec = ['<div class=card><div class=label>Markets'

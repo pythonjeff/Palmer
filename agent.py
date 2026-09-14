@@ -11,6 +11,7 @@ import json
 import os
 import re
 import threading
+import traceback
 from datetime import datetime, timedelta, timezone
 
 from db import (
@@ -122,8 +123,14 @@ def _prompt_safe_profile(profile: dict) -> dict:
     # Volatile facts are dropped once stale and dated once they are a few days
     # old, so the model stops reading "Based in LA" and "active fire emergency"
     # as things that are true right now.
+    # On the READER's calendar. _stamp_volatile writes field_dates with
+    # local_today, and this defaulted to date.today() — the dyno's UTC day — so
+    # the two ends of one subtraction used different calendars. After 17:00
+    # Pacific a fact asserted minutes ago came back to the model as
+    # days_old: 1, and a volatile field was dropped a day before its life ran out.
+    from timeutil import local_today
     from userprofile import fresh_profile_for_prompt
-    safe = fresh_profile_for_prompt(profile)
+    safe = fresh_profile_for_prompt(profile, local_today((profile or {}).get("timezone")))
     topics = safe.get("morning_topics")
     if topics:
         from morning import _is_directive
@@ -224,6 +231,24 @@ def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = 
                 "not a form, not your opener. Don't mention their page or send any link here — "
                 "that comes later, on request or with their first morning update."
             )
+    if (not is_new_user and (profile or {}).get("intro_sent")
+            and (profile or {}).get("sports_teams") and not (profile or {}).get("followed_teams")
+            and not (profile or {}).get("score_offer_sent")):
+        # They have told Palmer about a team and nothing is set up for it. Offer
+        # once — userprofile._update_profile marks score_offer_sent under this
+        # same condition after the turn, so this never becomes a nag.
+        teams = profile.get("sports_teams")
+        teams = ", ".join(teams) if isinstance(teams, list) else str(teams)
+        system += (
+            "\n\nLIVE SCORES OFFER\n"
+            f"They've mentioned a team they follow ({teams}) and nothing is set up for it. "
+            "Somewhere natural in this reply — after answering what they actually said — "
+            "offer once, in one line, to put their team in their morning text and on their "
+            "page, and ask whether they also want live game texts: key moments only (lead "
+            "changes, a score in the closing stretch, the final) or every score. Not your "
+            "opener, not a menu. If they say yes, call follow_team with the live level they "
+            "chose; if they don't answer, drop it and never bring it up again unprompted."
+        )
     if include_recent:
         recent = get_history(phone, limit=8)
         if recent:
@@ -248,6 +273,44 @@ def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = 
             f"stuff out of your mornings, you kept giving it the thumbs down.' Then let it go. "
             f"If they say they want it back, call update_morning_briefing. Never let a topic "
             f"disappear without them knowing why."
+        )
+
+    # Reminders were the one table-backed thing the model could not see. Watches
+    # and price watches are both listed below; a reminder — the thing the user
+    # explicitly asked to happen at a named time — was invisible, so "what have
+    # I got on" had nothing to answer from and "cancel my 4pm one" was a guess
+    # against twenty messages of history, against a tool that deletes.
+    try:
+        from db import get_pending_reminders
+        from timeutil import valid_zone, _zone
+        pending = get_pending_reminders(phone)
+    except Exception as e:
+        print(f"_build_system: could not read reminders for {phone}: {e}")
+        pending = []
+    if pending:
+        tz = valid_zone((profile or {}).get("timezone"))
+        lines = []
+        for r in pending[:10]:
+            when = r["due_at"]
+            try:
+                dt = datetime.fromisoformat(when)
+                if tz:
+                    dt = dt.astimezone(_zone(tz))
+                # Their clock, never UTC — the same rule the set_reminder
+                # confirmation follows, for the same reason.
+                when = dt.strftime("%A, %B %d at %-I:%M %p").replace(" 0", " ")
+            except Exception:
+                pass
+            repeat = f", repeats {r['recurrence']}" if r.get("recurrence") else ""
+            lines.append(f"- {r['text']} — {when}{repeat}")
+        system += (
+            "\n\nReminders they have set (their local time, not yours to convert):\n"
+            + "\n".join(lines)
+            + "\n\nThis is what is actually pending — it beats anything you remember from "
+            "the thread. If they ask what they have on, read from this. Before cancelling, "
+            "check it against what they said: cancel_reminders with no text_match takes "
+            "ALL of these, and a text_match is a substring, so a short one takes more than "
+            "they probably meant. If more than one matches, ask which."
         )
 
     watches = get_user_watches(phone)
@@ -326,8 +389,8 @@ def _resolve_asset(asset: str) -> str:
     It passes company names — "SpaceX", "Nvidia" — and yfinance 404s on those.
     Worse than the failed lookup is what the model concluded from it: that the
     company must be private. Resolution goes through tickers.py so the tool and
-    the page's Markets section agree on what a name means, with the verified
-    Haiku pass as the fallback for names the map doesn't carry."""
+    the page's Markets section agree on what a name means, with Yahoo's own
+    search as the fallback for names the curated map doesn't carry."""
     from tickers import resolve_asset_name, resolve_company_ticker
     if not asset:
         return asset
@@ -475,6 +538,42 @@ def _normalize_due_at(phone: str, raw: str) -> tuple[str | None, str, str | None
     return canonical, label, None
 
 
+def _tool_error(name: str, exc: Exception) -> str:
+    """What the model is told when a tool raises.
+
+    Nothing wrapped the dispatch chain, so a raise from anywhere in it escaped
+    `get_reply` entirely, `main.py` answered the falsy reply with FALLBACK_SMS,
+    and every tool result already gathered that turn went with it. That is the
+    same failure TOOL_ITERATION_CAP was fixed for — a turn dying on machinery
+    rather than on anything the user did — and it was never fixed for exceptions.
+
+    Deliberately NOT the raw exception text. `netutil._http_get_json_retry`
+    re-raises the underlying urllib error on its last attempt, and that message
+    carries the full request URL — which for SerpAPI carries the API key.
+    `netutil` already logs `url.split("?")[0]` for exactly this reason. Argument
+    errors are our own strings, carry no secrets, and are the only ones the model
+    can actually act on, so those pass through and nothing else does.
+
+    The wording is load-bearing in three directions. "Not a missing capability"
+    stops this string doing what `flights.py`'s old bare "unavailable" did — get
+    paraphrased into a refusal, then into a competitor. "Do not invent" covers
+    the other way it can go wrong. And the phrasing it hands the model is
+    transient ("couldn't pull this one right now"), which is the sanctioned
+    failure line in SYSTEM_PROMPT rather than a claim about what Palmer is."""
+    detail = (f"{type(exc).__name__}: {exc}"[:160]
+              if isinstance(exc, (KeyError, ValueError, TypeError))
+              else type(exc).__name__)
+    return (
+        f"{name} errored this turn ({detail}). This is a fault on my side, not a "
+        f"missing capability — the tool exists and normally works. Do NOT tell them "
+        f"you can't do this, do NOT name another app or site, and do NOT invent or "
+        f"guess the result. If that reads like a bad argument, fix it and call "
+        f"{name} once more. Otherwise answer the rest of what they asked and say "
+        f"plainly, in your own voice, that you couldn't pull this one right now and "
+        f"will try again."
+    )
+
+
 # One more than the six it was, because the ceiling was reachable in ordinary
 # use: adding three tickers and asking for the commute is five calls before the
 # model has said anything. Kept low deliberately — this bounds a live reply.
@@ -540,13 +639,23 @@ def _finalize(text: str, system: str, messages: list, gif_url):
     on a REPLY the user is waiting on an answer, and a block there means
     main.py's falsy-send path hands them FALLBACK_SMS instead. Redrafting keeps
     the answer; the send_sms block stays as the last resort behind it."""
-    from guards import (redirects_elsewhere, leaks_deliberation,
-                        REDIRECT_CORRECTION, DELIBERATION_CORRECTION)
+    from guards import (redirects_elsewhere, leaks_deliberation, denies_capability,
+                        REDIRECT_CORRECTION, DELIBERATION_CORRECTION, DENIAL_CORRECTION)
     reply = _sms_clean(text)
 
+    # Redirect first: two of the real violations fail both checks, and
+    # REDIRECT_CORRECTION already tells the model to check its tools, so the
+    # first redraft usually fixes the denial for free.
+    #
+    # denies_capability is deliberately NOT added to sms_util.send_sms. A
+    # deliberation block there is right, because the drafter was announcing it
+    # had decided not to send. A capability denial is a reply the user is
+    # waiting on, and blocking it hands them FALLBACK_SMS — worse than an
+    # imperfect answer. Redraft only.
     for failed, correction, label in (
         (redirects_elsewhere, REDIRECT_CORRECTION, "handed off to a competitor"),
         (leaks_deliberation, DELIBERATION_CORRECTION, "narrated its own filtering"),
+        (denies_capability, DENIAL_CORRECTION, "denied a capability it has"),
     ):
         if not failed(reply):
             continue
@@ -560,6 +669,17 @@ def _finalize(text: str, system: str, messages: list, gif_url):
         # every occurrence.
         print(f"GUARD: redraft still {label}; shipping the original")
     return reply, gif_url
+
+
+def _live_desc(mode: str) -> str:
+    """What a live-text level means, in the words the dispatch hands the model."""
+    return {
+        "off": "no live texts during games",
+        "key": ("live texts at key moments — the lead changing hands, a score in the "
+                "closing stretch, and the final; a few a game, not every play"),
+        "all": ("a text on every score, and the final (key moments only in the NBA, "
+                "where a basket lands every thirty seconds)"),
+    }.get(mode, "no live texts during games")
 
 
 def get_reply(phone_number: str, message: str, media_url: str = None, history: list[dict] | None = None, is_new_user: bool = False) -> tuple[str, str | None]:
@@ -612,10 +732,15 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
             # end_turn with no text — unlikely but guard anyway
             raise RuntimeError(f"stop_reason={response.stop_reason} but no text block in response")
 
-        tool_results = []
-        for b in response.content:
-            if b.type != "tool_use":
-                continue
+        def _dispatch(b):
+            """Run one tool_use block and return its result string.
+
+            Every branch lives in here for one reason: so the caller can put a
+            single try/except around the lot. Nested rather than module-level
+            because it is still `get_reply`'s body either way, and a dozen tests
+            read `inspect.getsource(get_reply)` to assert a branch says what it
+            should. `nonlocal` is for send_gif, the one branch that writes back."""
+            nonlocal gif_url
             if b.name == "web_search":
                 result = _search(b.input["query"])
             elif b.name == "get_weather":
@@ -623,19 +748,29 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
             elif b.name == "get_price":
                 result = _get_price(_resolve_asset(b.input["asset"]))
             elif b.name == "add_weather_location":
-                from weather import resolve_weather_location, WEATHER_LOCATIONS_MAX
+                from weather import (resolve_weather_location, ambiguous_location,
+                                     same_place, WEATHER_LOCATIONS_MAX)
                 profile = get_profile(phone_number)
                 current = list(profile.get("weather_locations") or [])
                 asked = (b.input.get("location") or "").strip()
                 # Resolve on the WRITE path, once — never on read, which runs
                 # on every page view. Same terms as resolve_show/_normalize_price_topic.
                 resolved = resolve_weather_location(asked)
+                choices = ambiguous_location(asked)
                 if not resolved:
                     result = (f"Couldn't find a location matching {asked!r}. Ask them to "
                               f"confirm the city and state — do not guess one.")
+                elif choices:
+                    # Same posture as find_teams: several real places share this
+                    # name, so pinning one silently signs them up for the wrong
+                    # city's forecast on their own page.
+                    result = (f"{asked!r} matches more than one place: {', '.join(choices)}. "
+                              f"Ask which they mean in one short line, then call "
+                              f"add_weather_location again with the fuller name. Do NOT "
+                              f"pick one yourself.")
                 elif resolved.lower() == (profile.get("city") or "").lower():
                     result = f"{resolved} is already their primary city."
-                elif any(loc.lower() == resolved.lower() for loc in current):
+                elif any(same_place(loc, resolved) for loc in current):
                     result = f"{resolved} is already on their page."
                 elif len(current) >= WEATHER_LOCATIONS_MAX:
                     result = (f"They already have {WEATHER_LOCATIONS_MAX} extra weather "
@@ -666,11 +801,92 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                         print(f"home.invalidate after remove_weather_location failed: {e}")
                 result = (f"Removed {dropped} location(s)." if dropped
                           else "No extra weather location matched that.")
+            elif b.name == "set_commute":
+                import traffic as _traffic
+                origin = (b.input.get("origin") or "").strip()
+                destination = (b.input.get("destination") or "").strip()
+                leave_raw = (b.input.get("leave_time") or "").strip()
+                leave_time = _normalize_hhmm(leave_raw) if leave_raw else None
+                if not _traffic.TOMTOM_API_KEY:
+                    # Without a key the geocoder returns None, which would read
+                    # as "address not found" — the wrong thing to tell someone.
+                    result = ("Can't set up a commute right now — routing is unavailable "
+                              "on my end. Nothing saved. Say so plainly and offer to try "
+                              "again later; do not name a maps app.")
+                elif not origin or not destination:
+                    result = "Need both a starting and an ending address. Nothing saved. Ask for the missing one."
+                elif leave_raw and not leave_time:
+                    result = (f"Nothing saved. Invalid leave time {leave_raw!r} — must be "
+                              f"24-hour HH:MM, e.g. 08:30. Fix it and call again.")
+                else:
+                    # Resolve on the WRITE path, once — the read path is every
+                    # page view, and coordinates stored here mean it geocodes
+                    # nothing. Same terms as add_weather_location.
+                    orig_ll = _traffic._geocode_address(origin)
+                    dest_ll = _traffic._geocode_address(destination) if orig_ll else None
+                    missing = origin if not orig_ll else (destination if not dest_ll else None)
+                    if missing:
+                        result = (f"Couldn't find a street address matching {missing!r}. Ask "
+                                  f"them to confirm the address — do not guess one. Nothing saved.")
+                    else:
+                        commute = {"origin": origin, "destination": destination,
+                                   "origin_ll": [orig_ll[0], orig_ll[1]],
+                                   "dest_ll": [dest_ll[0], dest_ll[1]]}
+                        if leave_time:
+                            commute["leave_time"] = leave_time
+                        upsert_profile(phone_number, {"commute": commute})
+                        try:
+                            from home import invalidate
+                            invalidate(phone_number, ("traffic",))
+                        except Exception as e:
+                            print(f"home.invalidate after set_commute failed: {e}")
+                        if leave_time:
+                            result = (f"Saved their commute, leaving at {leave_time} local. Their "
+                                      f"page and morning text now carry the drive time routed for "
+                                      f"that departure. Confirm in one line, in your own voice, "
+                                      f"without reading the addresses back.")
+                        else:
+                            result = ("Saved their commute. Their page and morning text now carry "
+                                      "the drive time, as live traffic since no leave time was "
+                                      "given. Confirm in one line without reading the addresses "
+                                      "back; you may ask when they usually head out, once, only if "
+                                      "it fits naturally — it is optional.")
+            elif b.name == "clear_commute":
+                upsert_profile(phone_number, {"commute": None})
+                try:
+                    from home import invalidate
+                    invalidate(phone_number, ("traffic",))
+                except Exception as e:
+                    print(f"home.invalidate after clear_commute failed: {e}")
+                result = "Commute cleared. It's off their page and out of the morning text."
             elif b.name == "send_gif":
                 gif_url = _get_gif(b.input["query"])
                 result = f"GIF queued: {gif_url}" if gif_url else "No GIF found for that query."
             elif b.name == "set_reminder":
                 recurrence = b.input.get("recurrence")
+                # A JSON-schema enum is guidance to the model, not a constraint
+                # the API enforces, and nothing downstream checked either:
+                # save_reminder stores whatever string arrives, the dispatch
+                # confirmed "It repeats (monthly)", and then next_occurrence
+                # returned None for anything outside RECURRENCES so the row was
+                # never re-armed. The user was told it repeats and got exactly
+                # one text — the precise outcome SYSTEM_PROMPT and the tool
+                # description both promise will never happen. Refuse on the
+                # write path, where the model can still fix it this turn.
+                from timeutil import RECURRENCES
+                if recurrence:
+                    # Normalize the same way next_occurrence does, so what is
+                    # stored is what the send path will accept.
+                    recurrence = recurrence.strip().lower()
+                    if recurrence not in RECURRENCES:
+                        return (
+                            f"Didn't save that reminder — {b.input.get('recurrence')!r} isn't a "
+                            f"repeat I can keep. The ones that work are: {', '.join(RECURRENCES)}. "
+                            f"Either call set_reminder again with the nearest one that honestly "
+                            f"matches what they asked for and say plainly what you set, or, if "
+                            f"none of them does, set it as a one-time reminder and tell them it "
+                            f"won't repeat — so they aren't left believing it's still running."
+                        )
                 due_utc, when_local, err = _normalize_due_at(phone_number, b.input["due_at"])
                 if err:
                     # Nothing saved. Hand the model the problem rather than a
@@ -848,8 +1064,20 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 else:
                     result = f"Invalid time {b.input.get('time')!r} — must be 24-hour HH:MM, e.g. 07:00."
             elif b.name == "cancel_reminders":
-                count = cancel_reminders(phone_number, b.input.get("text_match"))
-                result = f"Cancelled {count} reminder(s)."
+                from db import cancel_reminders_named
+                match = b.input.get("text_match")
+                gone = cancel_reminders_named(phone_number, match)
+                if not gone:
+                    result = ("Nothing pending matched that, so nothing was cancelled. "
+                              "Tell them plainly rather than confirming a cancellation.")
+                else:
+                    listed = "; ".join(gone[:5])
+                    # Name what went. text_match is a substring, so "call" takes
+                    # "call mom" and "call the vet" together, and a bare count
+                    # left the user to work out which ones they had lost.
+                    result = (f"Cancelled {len(gone)}: {listed}. Say which ones went — "
+                              f"not just how many — so they can tell you if you took "
+                              f"one they wanted.")
             elif b.name == "add_watch":
                 watch_id = save_watch(phone_number, b.input["description"], b.input["queries"], b.input.get("cooldown_hours", 4))
                 result = f"Watch set (id={watch_id}). I'll check every 30 minutes and only text if something major breaks."
@@ -876,33 +1104,60 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     b.input.get("return_date"),
                 )
             elif b.name == "follow_team":
-                from sports import find_teams, FOLLOW_MAX as TEAM_MAX
+                from sports import find_teams, live_mode, LIVE_MODES, FOLLOW_MAX as TEAM_MAX
                 profile = get_profile(phone_number)
-                current = list(profile.get("followed_teams") or [])
+                current = [dict(t) for t in (profile.get("followed_teams") or [])]
                 asked = (b.input.get("name") or "").strip()
+                live = b.input.get("live")
+                live = live if live in LIVE_MODES else None
                 matches = find_teams(asked)
                 if not matches:
                     result = (f"No team matches {asked!r}. Ask them to confirm the team — "
                               f"do not guess one, and do not send them elsewhere to look it up.")
                 elif len(matches) > 1:
-                    # "Cardinals" is two teams in two sports. Guessing signs them
-                    # up for alerts about the wrong one, in the wrong season.
+                    # "Cardinals" is two teams in two sports. Guessing puts the
+                    # wrong one, in the wrong season, in their morning and on their page.
                     listed = ", ".join(f"{m['name']} ({m['league'].upper()})" for m in matches)
                     result = (f"{asked!r} matches more than one team: {listed}. Ask which they "
                               f"mean in one short line, then call follow_team again with the "
                               f"fuller name. Do NOT pick one yourself.")
-                elif any(t.get("abbrev") == matches[0]["abbrev"]
-                         and t.get("league") == matches[0]["league"] for t in current):
-                    result = f"They already follow {matches[0]['name']}."
+                elif (found := next((t for t in current
+                                     if t.get("abbrev") == matches[0]["abbrev"]
+                                     and t.get("league") == matches[0]["league"]), None)):
+                    if live is not None and live_mode(found) != live:
+                        found["live"] = live
+                        upsert_profile(phone_number, {"followed_teams": current})
+                        result = (f"They already follow {found['name']}; live texts changed to: "
+                                  f"{_live_desc(live)}.")
+                    else:
+                        result = (f"They already follow {found['name']} — currently "
+                                  f"{_live_desc(live_mode(found))}.")
                 elif len(current) >= TEAM_MAX:
                     result = (f"They already follow {TEAM_MAX} teams, which is the limit. "
                               f"Tell them and offer to drop one.")
                 else:
-                    current.append(matches[0])
+                    entry = dict(matches[0])
+                    if live:
+                        entry["live"] = live
+                    current.append(entry)
                     upsert_profile(phone_number, {"followed_teams": current})
-                    result = (f"Now following {matches[0]['name']}. They get a text when the lead "
-                              f"changes, when someone scores in the last five minutes, and at the "
-                              f"final — a few a game, not every play. Say that plainly.")
+                    try:
+                        from home import invalidate
+                        invalidate(phone_number, ("scores",))
+                    except Exception as e:
+                        print(f"home.invalidate after follow_team failed: {e}")
+                    result = (f"Now following {matches[0]['name']}. Their game rides in the "
+                              f"morning update — last night's result and tonight's game — and "
+                              f"the Scores section of their page has both. ")
+                    if live:
+                        result += f"Live texts: {_live_desc(live)}. Say that plainly."
+                    else:
+                        # Live texts are opt-in, and this is the moment to ask.
+                        result += ("No live texts are set — the default. Offer them in one clause: "
+                                   "key moments only (lead changes, a score in the closing stretch, "
+                                   "the final) or every score. If they want one, call "
+                                   "set_score_updates with mode 'key' or 'all'. "
+                                   "Do not promise live texts they have not chosen.")
             elif b.name == "unfollow_team":
                 profile = get_profile(phone_number)
                 current = list(profile.get("followed_teams") or [])
@@ -917,8 +1172,37 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 dropped = len(current) - len(kept)
                 if dropped:
                     upsert_profile(phone_number, {"followed_teams": kept})
-                result = (f"Stopped score alerts for {dropped} team(s)." if dropped
-                          else "No followed team matched that.")
+                    try:
+                        from home import invalidate
+                        invalidate(phone_number, ("scores",))
+                    except Exception as e:
+                        print(f"home.invalidate after unfollow_team failed: {e}")
+                result = (f"Unfollowed {dropped} team(s); their games leave the morning and the page."
+                          if dropped else "No followed team matched that.")
+            elif b.name == "set_score_updates":
+                from sports import LIVE_MODES
+                profile = get_profile(phone_number)
+                current = [dict(t) for t in (profile.get("followed_teams") or [])]
+                mode = (b.input.get("mode") or "").strip().lower()
+                match = (b.input.get("text_match") or b.input.get("name") or "").strip().lower()
+                if mode not in LIVE_MODES:
+                    result = f"Unknown level {mode!r} — must be one of off, key, all."
+                elif not current:
+                    result = ("They don't follow any team yet. Call follow_team first, with "
+                              "`live` set to the level they want.")
+                else:
+                    hit = [t for t in current
+                           if not match or match in (t.get("name") or "").lower()]
+                    if not hit:
+                        names = ", ".join(t.get("name") or "" for t in current)
+                        result = f"No followed team matched that. They follow: {names}."
+                    else:
+                        for t in hit:
+                            t["live"] = mode
+                        upsert_profile(phone_number, {"followed_teams": current})
+                        names = ", ".join(t.get("name") or "" for t in hit)
+                        result = (f"{names}: {_live_desc(mode)}. They still follow the team — "
+                                  f"it stays in the morning update and on their page.")
             elif b.name == "get_score":
                 from sports import find_teams, team_game, describe
                 matches = find_teams(b.input.get("team", ""))
@@ -932,16 +1216,27 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                     result = (f"{matches[0]['name']}: {describe(game)}" if game
                               else f"{matches[0]['name']} have no game today.")
             elif b.name == "follow_show":
-                from shows import resolve_show, FOLLOW_MAX
+                from shows import find_shows, ambiguous_shows, describe_show, FOLLOW_MAX
                 profile = get_profile(phone_number)
                 current = list(profile.get("shows") or [])
                 asked = (b.input.get("name") or "").strip()
                 # Resolve on the WRITE path, once — never on read, which runs on
                 # every page view. Same terms as _normalize_price_topic.
-                found = resolve_show(asked)
+                matches = find_shows(asked)
+                choices = ambiguous_shows(matches)
+                found = matches[0] if matches else None
                 if not found:
                     result = (f"No series matches {asked!r}. Ask them to confirm the title — "
                               f"do not guess one, and do not send them elsewhere to look it up.")
+                elif choices:
+                    # Same posture as find_teams. The Office, Shameless, Skins
+                    # and Ghosts are each two series, and following the wrong
+                    # one is silent until the episode rows are for a show they
+                    # don't watch.
+                    listed = " or ".join(describe_show(c) for c in choices)
+                    result = (f"{asked!r} matches more than one series: {listed}. Ask which "
+                              f"they mean in one short line, then call follow_show again with "
+                              f"the year or country in the title. Do NOT pick one yourself.")
                 elif any(sh.get("id") == found["id"] for sh in current):
                     result = f"They already follow {found['name']}."
                 elif len(current) >= FOLLOW_MAX:
@@ -1023,9 +1318,19 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 current = shopping.check_price(product_name)
                 if current:
                     set_price_watch_baseline(watch_id, current["price"], current["url"], current["merchant"])
+                    # Name the LISTING that was matched, not the words they
+                    # typed. The match is picked by a model with no confidence
+                    # floor, so "AirPods" can baseline on Gen 2, Gen 4 or Pro —
+                    # and echoing their own phrasing back made a wrong pick
+                    # invisible until an alert arrived about the wrong thing.
+                    # The Amazon path already does this; this one did not.
+                    matched = (current.get("title") or "").strip()
                     result = (
                         f"Price watch set (id={watch_id}) for {product_name}. "
-                        f"Currently ${current['price']:.2f} at {current['merchant'] or 'a store I found'}. "
+                        f"It matched: {matched or product_name} — "
+                        f"${current['price']:.2f} at {current['merchant'] or 'a store I found'}. "
+                        f"Name what it matched in your reply, in your own voice, so they can "
+                        f"correct you if it's the wrong version. "
                         f"I'll check every 12 hours and text if it hits{target_str}."
                     )
                 else:
@@ -1102,11 +1407,50 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 from traffic import get_travel_time
                 result = get_travel_time(b.input["origin"], b.input["destination"])
             elif b.name == "get_city_traffic":
-                from traffic import get_city_traffic
-                line = get_city_traffic(b.input["city"])
-                result = line if line else f"No live traffic data available for {b.input['city']!r} right now."
+                from traffic import city_traffic
+                asked_city = b.input["city"]
+                line, why = city_traffic(asked_city)
+                if line:
+                    result = line
+                elif why == "unknown_city":
+                    result = (f"Couldn't find a city matching {asked_city!r}. Ask them to "
+                              f"confirm it (state or country if it's ambiguous) — do not "
+                              f"guess conditions and do not name a maps app.")
+                elif why == "no_key":
+                    # Deployment problem, not a blip: "try again" would be a
+                    # promise nothing can keep until someone sets the key.
+                    print("get_city_traffic: TOMTOM_API_KEY is not set")
+                    result = (f"Traffic for {asked_city!r} isn't reachable from here right "
+                              f"now. Say you couldn't pull it and move on — do not offer to "
+                              f"try again, do not guess conditions, and do not name a maps "
+                              f"app.")
+                else:
+                    # A bare "no data available" was all this said, so a
+                    # transient outage and an unknown city read identically to
+                    # the model and both got paraphrased the same way.
+                    result = (f"Traffic didn't come back for {asked_city!r} just now. You DO "
+                              f"have live traffic — say plainly you couldn't pull it this "
+                              f"second and offer to try again. Do not guess conditions and "
+                              f"do not name a maps app.")
             else:
                 result = "Unknown tool."
+            return result
+
+        tool_results = []
+        for b in response.content:
+            if b.type != "tool_use":
+                continue
+            try:
+                result = _dispatch(b)
+            except Exception as e:
+                # A bug still has to look like a bug here: full type, message
+                # and stack. Only the model's copy is redacted (see _tool_error).
+                print(f"TOOL {b.name} raised: {type(e).__name__}: {e}")
+                traceback.print_exc()
+                result = _tool_error(b.name, e)
+            # Every tool_use block must come back with a matching tool_result or
+            # the next messages.create rejects the turn — which is why the except
+            # wraps one block rather than the whole loop.
             tool_results.append({"type": "tool_result", "tool_use_id": b.id, "content": result})
 
         if not tool_results:

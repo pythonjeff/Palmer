@@ -1,6 +1,6 @@
 """Tests for cross-job subject-dedup: userprofile._is_duplicate_subject and its wiring
-into watches.py, alerts.py, and followup.py. Pure logic + mocked LLM/DB — no real
-network or LLM calls. Run: pytest test_subject_dedup.py"""
+into watches.py and followup.py. Pure logic + mocked LLM/DB — no real network
+or LLM calls. Run: pytest test_subject_dedup.py"""
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -8,7 +8,6 @@ from unittest.mock import patch, MagicMock
 
 import userprofile
 import watches
-import alerts
 import followup
 
 
@@ -86,11 +85,14 @@ class TestWatchesSubjectDedup:
              patch("watches._best_result", return_value=_RAW_RESULTS[0]), \
              patch("watches._is_duplicate_subject", return_value=False), \
              patch("watches.claim_watch_alert", return_value=True), \
+             patch("watches._draft_alert", return_value="Hurts is out. https://example.com/a"), \
              patch("watches.update_watch_alerted") as mock_update, \
              patch("sms_util.send_sms") as mock_send:
             watches.run_watches()
         mock_send.assert_called_once()
         mock_update.assert_called_once()
+        # What goes out is the drafted line, not the raw headline.
+        assert mock_send.call_args[0][1] == "Hurts is out. https://example.com/a"
 
     def test_alert_persists_the_fired_url_and_domain(self):
         """The 'Watching' page section links a watch to the article
@@ -102,58 +104,13 @@ class TestWatchesSubjectDedup:
              patch("watches._best_result", return_value=_RAW_RESULTS[0]), \
              patch("watches._is_duplicate_subject", return_value=False), \
              patch("watches.claim_watch_alert", return_value=True), \
+             patch("watches._draft_alert", return_value="drafted line https://example.com/a"), \
              patch("watches.update_watch_alerted") as mock_update, \
              patch("sms_util.send_sms"):
             watches.run_watches()
         _, kwargs = mock_update.call_args
         assert kwargs["url"] == "https://example1.com/a"
         assert kwargs["domain"] == "example1.com"
-
-
-class TestAlertsSubjectDedup:
-    def _profile(self):
-        return {"morning_onboarded": True, "timezone": "America/Chicago"}
-
-    def test_skips_send_and_releases_claim_when_duplicate(self):
-        with patch("alerts.get_all_profiles",
-                   return_value=[("+15551234567", self._profile())]), \
-             patch("alerts._in_alert_window", return_value=True), \
-             patch("alerts.claim_daily_guard", return_value=True), \
-             patch("alerts._get_alert_queries", return_value=["some query"]), \
-             patch("alerts._search_raw", return_value=[
-                 {"url": "https://apnews.com/x", "title": "t", "content": "c", "published_date": "Tue, 18 Aug 2026 12:00:00 GMT"},
-                 {"url": "https://reuters.com/y", "title": "t", "content": "c", "published_date": "Tue, 18 Aug 2026 12:00:00 GMT"},
-             ]), \
-             patch("alerts._check_significance", return_value=(9, "Big breaking news")), \
-             patch("alerts._draft_alert", return_value="Breaking: big news happened"), \
-             patch("alerts._is_duplicate_subject", return_value=True) as dedup, \
-             patch("alerts.upsert_profile") as mock_upsert, \
-             patch("sms_util.send_sms") as mock_send:
-            alerts.run_alert_checks()
-        dedup.assert_called_once()
-        mock_send.assert_not_called()
-        assert any(
-            c.args[1] == {"alert_sent_date": None} for c in mock_upsert.call_args_list
-        ), "expected the daily claim to be released"
-
-    def test_sends_normally_when_not_duplicate(self):
-        with patch("alerts.get_all_profiles",
-                   return_value=[("+15551234567", self._profile())]), \
-             patch("alerts._in_alert_window", return_value=True), \
-             patch("alerts.claim_daily_guard", return_value=True), \
-             patch("alerts._get_alert_queries", return_value=["some query"]), \
-             patch("alerts._search_raw", return_value=[
-                 {"url": "https://apnews.com/x", "title": "t", "content": "c", "published_date": "Tue, 18 Aug 2026 12:00:00 GMT"},
-                 {"url": "https://reuters.com/y", "title": "t", "content": "c", "published_date": "Tue, 18 Aug 2026 12:00:00 GMT"},
-             ]), \
-             patch("alerts._check_significance", return_value=(9, "Big breaking news")), \
-             patch("alerts._draft_alert", return_value="Breaking: big news happened"), \
-             patch("alerts._is_duplicate_subject", return_value=False), \
-             patch("alerts.save_message") as mock_save, \
-             patch("sms_util.send_sms") as mock_send:
-            alerts.run_alert_checks()
-        mock_send.assert_called_once()
-        mock_save.assert_called_once()
 
 
 class TestFollowupSubjectDedup:
@@ -167,7 +124,8 @@ class TestFollowupSubjectDedup:
              patch("followup._should_send_followup", return_value=True), \
              patch("followup.claim_daily_guard", return_value=True), \
              patch("followup.get_history", return_value=[]), \
-             patch("followup._pick_thread", return_value="a big life event"), \
+             patch("followup._candidates", return_value=[followup.Subject("thread", "a big life event")]), \
+             patch("followup._pick_subject", return_value=followup.Subject("thread", "a big life event")), \
              patch("followup._draft_followup", return_value="hey how'd that go?"), \
              patch("followup._is_duplicate_subject", return_value=True) as dedup, \
              patch("followup.upsert_profile") as mock_upsert, \
@@ -187,7 +145,8 @@ class TestFollowupSubjectDedup:
              patch("followup._should_send_followup", return_value=True), \
              patch("followup.claim_daily_guard", return_value=True), \
              patch("followup.get_history", return_value=[]), \
-             patch("followup._pick_thread", return_value="a big life event"), \
+             patch("followup._candidates", return_value=[followup.Subject("thread", "a big life event")]), \
+             patch("followup._pick_subject", return_value=followup.Subject("thread", "a big life event")), \
              patch("followup._draft_followup", return_value="hey how'd that go?"), \
              patch("followup._is_duplicate_subject", return_value=False), \
              patch("followup.save_message") as mock_save, \

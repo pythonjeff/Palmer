@@ -46,6 +46,23 @@ def _block(tool_name: str) -> str:
     return src.split(f'"{tool_name}"')[1].split("elif b.name")[0]
 
 
+class TestSamePlace:
+    """_label appends the country outside the US now. Rows pinned before that
+    read "Paris, Île-de-France"; a strict compare pinned the same city twice."""
+
+    def test_a_legacy_label_matches_its_country_suffixed_form(self):
+        assert weather.same_place("Paris, Île-de-France", "Paris, Île-de-France, France")
+        assert weather.same_place("paris, île-de-france, france", "Paris, Île-de-France")
+
+    def test_a_different_place_with_the_same_name_does_not(self):
+        assert not weather.same_place("Paris, Texas", "Paris, Île-de-France, France")
+        assert not weather.same_place("Paris", "Paris, Île-de-France, France")
+        assert not weather.same_place("", "Paris, Île-de-France, France")
+
+    def test_the_dispatch_uses_it(self):
+        assert "same_place(loc, resolved)" in _block("add_weather_location")
+
+
 class TestAddDispatch:
     def test_resolution_happens_on_the_write_path(self):
         assert "resolve_weather_location" in _block("add_weather_location")
@@ -131,3 +148,62 @@ class TestPageRenders:
         the page must be one word."""
         html = self._render(weather_extra=[{"resolved": "Holiday Shores, IL", "temp_now": 82.0}])
         assert "<div class=label>Weather<" in html
+
+
+class TestAnAmbiguousPlaceIsAskedAboutNotGuessed:
+    """_geocode asked for count=1 and took results[0], so Springfield,
+    Portland, Columbus and Cambridge each resolved to whichever the geocoder
+    ranked first — silently, and then confirmed to the user as though they had
+    named it. resolve_weather_location's docstring already claimed "None means
+    the model should ask rather than guess", which was only ever true when
+    NOTHING matched."""
+
+    def _payload(self, *rows):
+        return {"results": list(rows)}
+
+    SPRINGFIELD_IL = {"name": "Springfield", "admin1": "Illinois",
+                      "country": "United States", "latitude": 39.8, "longitude": -89.6}
+    SPRINGFIELD_MO = {"name": "Springfield", "admin1": "Missouri",
+                      "country": "United States", "latitude": 37.2, "longitude": -93.3}
+    KIRKWOOD = {"name": "Kirkwood", "admin1": "Missouri",
+                "country": "United States", "latitude": 38.6, "longitude": -90.4}
+
+    def _clear(self):
+        weather._geocode_cache.clear()
+        weather._geocode_alts.clear()
+
+    def test_two_real_places_with_one_name_is_a_question(self):
+        self._clear()
+        with patch.object(weather, "_http_get_json_retry",
+                          return_value=self._payload(self.SPRINGFIELD_IL, self.SPRINGFIELD_MO)):
+            assert weather.ambiguous_location("Springfield") == [
+                "Springfield, Illinois", "Springfield, Missouri"]
+
+    def test_one_match_is_not(self):
+        self._clear()
+        with patch.object(weather, "_http_get_json_retry",
+                          return_value=self._payload(self.KIRKWOOD)):
+            assert weather.ambiguous_location("Kirkwood") == []
+
+    def test_a_qualified_name_is_not(self):
+        """They already told you which one. Asking again is the annoying kind
+        of careful."""
+        self._clear()
+        assert weather.ambiguous_location("Springfield, IL") == []
+
+    def test_the_read_path_still_takes_the_top_hit(self):
+        """count went 1 -> 5 on the same call. The extra rows are for the
+        write paths; nothing about resolution changed."""
+        self._clear()
+        with patch.object(weather, "_http_get_json_retry",
+                          return_value=self._payload(self.SPRINGFIELD_IL, self.SPRINGFIELD_MO)):
+            lat, lon, resolved = weather._geocode("Springfield")
+        assert resolved == "Springfield, Illinois"
+        assert (lat, lon) == (39.8, -89.6)
+
+    def test_the_dispatch_refuses_to_pick(self):
+        import inspect, agent
+        block = inspect.getsource(agent.get_reply).split('"add_weather_location"')[1] \
+                                                  .split("elif b.name")[0]
+        assert "ambiguous_location" in block
+        assert "Do NOT" in block and "pick one yourself" in block

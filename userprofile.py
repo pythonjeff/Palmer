@@ -28,20 +28,26 @@ PROFILE_FIELDS = frozenset({
     "follow_up", "ongoing_threads", "communication_style", "commute",
     # briefing / scheduling config
     "morning_topics", "morning_time", "morning_enabled", "morning_onboarded",
-    "morning_prefs", "morning_sent_date", "interest_genres", "home_token",
+    "morning_prefs", "morning_sent_date", "home_token",
     "shows", "followed_teams", "weather_locations",
     # bookkeeping the jobs and handlers read
     "intro_sent", "conversation_topics", "reactions", "reactions_folded_count",
     "pending_morning_suggestion", "pending_preference_notice",
-    "alert_sent_date", "followup_sent_date", "city_ask_sent_date",
-    "onboarding_ask_sent", "setup_link_sent", "setup_done",
-    # Which thread the last check-in was about, so the next one moves on, and
+    "followup_sent_date", "city_ask_sent_date",
+    "onboarding_ask_sent", "score_offer_sent", "setup_done",
+    # What the last check-in was about, so the next one moves on, and
     # the message count at the last consolidation, so it does not re-run every
     # turn. Both bookkeeping, NOT extraction fields — deliberately absent from
     # EXTRACT_PROMPT's schema so Haiku never writes them.
     "followup_last_thread", "consolidated_at_count",
     "field_dates",
 })
+
+# Fields a retired job wrote. Dropping a key from PROFILE_FIELDS only stops new
+# writes; the value already in a row stays there and is dumped into every
+# system prompt as a fact about the person. _normalize_profile nulls these on
+# the next inbound message, the same way it retires an alias.
+RETIRED_FIELDS = ("alert_sent_date", "interest_genres")
 
 # Volatile facts, and how many days they stay true by default.
 #
@@ -117,6 +123,9 @@ def _normalize_profile(phone: str, profile: dict) -> dict:
             if not profile.get(canonical):
                 migrations[canonical] = val
             migrations[alias] = None
+    for key in RETIRED_FIELDS:
+        if key in profile:
+            migrations[key] = None
     city = migrations.get("city") or profile.get("city")
     if city and not profile.get("timezone"):
         tz = _derive_timezone(city)
@@ -126,21 +135,6 @@ def _normalize_profile(phone: str, profile: dict) -> dict:
         upsert_profile(phone, migrations)
         return {**profile, **migrations}
     return profile
-
-def _all_interests(profile: dict) -> list[str]:
-    """Collect all interest signals — morning_topics, sports_teams, interests — deduplicated."""
-    seen_lower: set[str] = set()
-    result = []
-    for key in ["morning_topics", "sports_teams", "interests"]:
-        val = profile.get(key)
-        if not val:
-            continue
-        items = val if isinstance(val, list) else [str(val)]
-        for item in items:
-            if item.lower() not in seen_lower:
-                seen_lower.add(item.lower())
-                result.append(item)
-    return result
 
 def _derive_timezone(city: str) -> str | None:
     """Return an IANA timezone string for a city, or None if it can't be determined."""
@@ -287,6 +281,18 @@ def _apply_profile_updates(phone: str, profile: dict, updates: dict) -> dict:
             print(f"profile: dropping unresolvable timezone {updates['timezone']!r} for {phone!r}")
             updates.pop("timezone")
 
+    # `commute` is written by set_commute, which stores coordinates and a leave
+    # time the extractor knows nothing about. It left EXTRACT_PROMPT for that
+    # reason, but it is still a real field, so a Haiku write of {origin,
+    # destination} would replace the tool's dict and silently drop both. A
+    # legacy string-only commute has nothing to protect and may still be
+    # overwritten, as before.
+    stored = profile.get("commute")
+    if ("commute" in updates and isinstance(stored, dict)
+            and (stored.get("origin_ll") or stored.get("leave_time"))):
+        print(f"profile: keeping tool-written commute for {phone!r}; extractor write dropped")
+        updates.pop("commute")
+
     new_city = updates.get("city")
     old_city = profile.get("city")
     if new_city and old_city and new_city != old_city:
@@ -386,6 +392,12 @@ def _update_profile(phone: str, user_msg: str, reply: str):
     if (profile.get("intro_sent") and not profile.get("onboarding_ask_sent")
             and (not profile.get("name") or not profile.get("city"))):
         upsert_profile(phone, {"onboarding_ask_sent": True})
+    # Same shape for the LIVE SCORES OFFER: the block shows when they have named
+    # a team and follow none, and it is consumed the first time that holds
+    # after a turn, whether or not they took it up.
+    if (profile.get("intro_sent") and profile.get("sports_teams")
+            and not profile.get("followed_teams") and not profile.get("score_offer_sent")):
+        upsert_profile(phone, {"score_offer_sent": True})
     _track_conversation_topic(phone, user_msg, reply, profile)
 
 def _user_already_covered(phone: str, candidate: str, window_hours: float = 12) -> bool:

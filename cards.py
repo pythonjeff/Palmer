@@ -170,7 +170,8 @@ CARD_OPENING_ROWS = 3
 def render_dashboard(*, city: str, weather: dict | None, traffic: dict | None,
                      prices: list[dict] | None, headlines: list[str] | None,
                      opening: list[dict] | None = None,
-                     when: datetime | None = None) -> bytes:
+                     when: datetime | None = None,
+                     show_date: bool = True) -> bytes:
     """The briefing as a 1200x630 PNG. Returns encoded bytes.
 
     Flat paper, ink type, hairline rules — no gradients, no glass panels, no
@@ -180,13 +181,18 @@ def render_dashboard(*, city: str, weather: dict | None, traffic: dict | None,
     """
     img = _background()
     d = ImageDraw.Draw(img)
+    # `when` is the READER's clock. artifacts._card_now hands back None when
+    # there is no zone to read it in, and the masthead then carries no date at
+    # all rather than the dyno's — the page omits it for the same reason, and
+    # the two render from one payload and must not disagree about the day.
     now = when or datetime.now()
 
     # --- masthead -----------------------------------------------------------
     d.text((PAD, PAD - 24), (city or "Today").upper(), font=_font(30, True), fill=INK)
-    date_txt = now.strftime("%A, %B %-d").upper()
-    df = _mono(16)
-    d.text((W - PAD - _tw(d, date_txt, df), PAD - 6), date_txt, font=df, fill=MUTED)
+    if show_date:
+        date_txt = now.strftime("%A, %B %-d").upper()
+        df = _mono(16)
+        d.text((W - PAD - _tw(d, date_txt, df), PAD - 6), date_txt, font=df, fill=MUTED)
     _hrule(d, PAD, W - PAD, PAD + 22, fill=INK, width=3)
     _hrule(d, PAD, W - PAD, PAD + 28, fill=INK, width=1)
 
@@ -241,8 +247,19 @@ def render_dashboard(*, city: str, weather: dict | None, traffic: dict | None,
         note = "clear" if span < 0.34 else f"+{delay} min vs normal"
         d.text((right_x + _tw(d, mins, mf) + 16, content_top + 40), note,
                font=_mono(18), fill=tier_colour)
-        _meter(img, right_x, content_top + 88, right_w, traffic.get("ratio") or 1.0)
-        commute_bottom = content_top + 100
+        meter_y = content_top + 88
+        if traffic.get("depart_at"):
+            # The number is a forecast for their leave time; say which one.
+            # The 42pt figure runs to about +66, so the line sits at +72 and
+            # pushes the meter down by the same 10px; a live commute keeps the
+            # band exactly as it was.
+            from timeutil import friendly_hhmm
+            d.text((right_x, content_top + 72),
+                   f"{friendly_hhmm(traffic['depart_at'])} -> ~{friendly_hhmm(traffic.get('arrive_at'))}",
+                   font=_mono(15), fill=MUTED)
+            meter_y += 10
+        _meter(img, right_x, meter_y, right_w, traffic.get("ratio") or 1.0)
+        commute_bottom = meter_y + 12
         _hrule(d, right_x, right_x + right_w, commute_bottom + 20)
 
     # --- markets (right column, below commute) ------------------------------

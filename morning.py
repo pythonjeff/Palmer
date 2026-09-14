@@ -399,6 +399,26 @@ def _in_send_window(now_local: datetime, morning_time: str | None,
     return target <= now_local < target + timedelta(minutes=catchup_minutes)
 
 
+def score_lines(payload: dict) -> list[str]:
+    """Plain lines about each followed team, or [] when nothing is on.
+
+    Shared by the morning digest and the check-in job so the two describe a
+    game in the same words."""
+    from sports import result_line
+    out = []
+    for row in (payload.get("scores") or []):
+        team = {"abbrev": row.get("abbrev"), "name": row.get("team")}
+        name = row.get("team") or "Their team"
+        bits = []
+        if row.get("last"):
+            bits.append(f"yesterday {result_line(row['last'], team)}")
+        if row.get("today"):
+            bits.append(f"today {result_line(row['today'], team)}")
+        if bits:
+            out.append(f"Their team ({name}): " + "; ".join(bits))
+    return out
+
+
 def _payload_digest(payload: dict) -> str:
     """The page's contents as a few plain lines, for the drafter to pick from.
 
@@ -433,9 +453,26 @@ def _payload_digest(payload: dict) -> str:
         lines.append(f"Weather in {where}: " + ", ".join(bits))
     t = payload.get("traffic") or {}
     if t.get("live_min"):
+        from timeutil import friendly_hhmm
         delay = t.get("delay_min") or 0
-        lines.append(f"Commute: {t['live_min']} min"
-                     + (f", {delay} min slower than normal" if delay >= 2 else ", normal"))
+        # Say which moment the number is FOR. A commute routed for the user's
+        # leave time is a forecast for that departure, not current traffic,
+        # and the drafter is told so here rather than trusted to infer it.
+        if t.get("depart_at"):
+            lead = (f"Commute at {friendly_hhmm(t['depart_at'])} (their usual leave "
+                    f"time — predicted for that departure)")
+        else:
+            lead = "Commute right now"
+        arrive = f", arriving about {friendly_hhmm(t['arrive_at'])}" if t.get("arrive_at") else ""
+        lines.append(f"{lead}: {t['live_min']} min"
+                     + (f", {delay} min slower than normal" if delay >= 2 else ", normal")
+                     + arrive)
+    # Their team, from the same rows the page's Scores section renders. Two
+    # facts at most per team — yesterday's result and today's game — stated
+    # from the team's side so the drafter is never left to infer whose side
+    # the reader is on from "CIN 17, PHI 21".
+    for line in score_lines(payload):
+        lines.append(line)
     for p in (payload.get("prices") or [])[:3]:
         lines.append(f"{p.get('label')}: {p.get('pct_24h', 0):+.1f}% in 24h")
     for h in (payload.get("headlines") or [])[:4]:
@@ -486,8 +523,9 @@ def generate_morning_line(phone: str, payload: dict) -> str:
     """The short text that rides with the morning link.
 
     Every user gets the same shape: today's weather, the commute if they have
-    an address on file, and 1-2 things newly open or worth catching nearby
-    this week — then the link. Anything else they track (a price move, a
+    an address on file, their team's last result and next game if they follow
+    one, and 1-2 things newly open or worth catching nearby this week — then
+    the link. Anything else they track (a price move, a
     headline) is an optional bonus on top when it's genuinely notable, never
     a substitute for those three — the page is where the rest of what they
     asked to track lives.
@@ -507,6 +545,8 @@ def generate_morning_line(phone: str, payload: dict) -> str:
         required.append("today's weather")
     if (payload.get("traffic") or {}).get("live_min"):
         required.append("the commute")
+    if score_lines(payload):
+        required.append("their team — yesterday's result and/or today's game, with the score or the time")
     if payload.get("opening"):
         required.append("1-2 things newly open or worth catching near them this week, named specifically")
     required_block = (
@@ -532,6 +572,7 @@ Rules:
 - Write ONLY the text. The link is attached automatically after it. Do not write a URL, and do not leave a placeholder like [link] or (url) where you think one goes - anything like that ships to them as literal text.
 - Do not end with a question. The page is the ask.
 - Use the numbers from the data verbatim.
+- If the drive-time line names a leave time, that number is for THAT departure — say so ("your 8:30 drive is 34 min today"), never as if it were traffic right now. If it says "right now", it is live and you don't know when they leave, so don't invent a time.
 - If the weather data says the forecasts disagree, do NOT pick one and state it. Give the range or say "around", the way a person hedges out loud — "upper 90s to maybe 110", "somewhere around 100". Stating a precise high nobody can stand behind is how this went wrong before.
 - If you mention the weather, name the city exactly as the data writes it, and never pair a number with any other place. Their profile may call where they live something broader or narrower than the forecast does - the data wins. If the two disagree, the data is the one that was actually measured.
 - Palmer's voice. Plain ASCII, no emoji, no markdown, no bullets, no sign-off."""

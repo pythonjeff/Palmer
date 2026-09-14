@@ -69,7 +69,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "text": {"type": "string", "description": "What to remind the user about"},
-                "due_at": {"type": "string", "description": "ISO 8601 UTC datetime for the FIRST (or only) send, e.g. 2026-07-21T20:00:00Z"},
+                "due_at": {"type": "string", "description": "ISO 8601 UTC datetime for the FIRST (or only) send, e.g. 2026-07-21T20:00:00Z. If they named a weekday or a relative day, take its date from the dated list in the RIGHT NOW block rather than counting days yourself."},
                 "recurrence": {
                     "type": "string",
                     "enum": ["daily", "weekdays", "weekly"],
@@ -304,7 +304,7 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "get_travel_time",
-        "description": "Get driving time between two addresses using live traffic. Call this whenever the user asks how long a drive takes, when to leave, or ETA to a place ('how long to Fenway?', 'when should I leave for the airport?', 'time to my sister's from here?'). If the user names a destination but not an origin (or vice versa), ask them conversationally for the missing one in your own voice BEFORE calling this tool. We don't store addresses; ask fresh each time unless the user provides both in the same message.\n\nCRITICAL: Our geocoder is a mapping service, not a search engine — it does NOT reliably resolve famous landmarks, monuments, or business names. If the user gives a landmark, POI, monument, park, stadium, airport, or well-known building (e.g. 'The White House', 'Fenway Park', 'LAX', 'Times Square', 'the Golden Gate Bridge', 'Central Park', 'Wrigley Field'), YOU must convert it to the actual street address using your world knowledge before calling — pass '1600 Pennsylvania Ave NW, Washington DC 20500' not 'The White House'; pass '4 Jersey St, Boston MA 02215' not 'Fenway Park'; pass '1 World Way, Los Angeles CA 90045' not 'LAX'. Only pass raw landmark names as a last resort when you genuinely don't know the address (in which case ask the user for one). Never guess an address you don't actually know.",
+        "description": "Get driving time between two addresses using live traffic. Call this whenever the user asks how long a drive takes, when to leave, or ETA to a place ('how long to Fenway?', 'when should I leave for the airport?', 'time to my sister's from here?'). If the user names a destination but not an origin (or vice versa), ask them conversationally for the missing one in your own voice BEFORE calling this tool. This is for a ONE-OFF drive. Their regular commute — the drive they make every morning, which goes on their page and in their morning text — is set_commute, not this.\n\nCRITICAL: Our geocoder is a mapping service, not a search engine — it does NOT reliably resolve famous landmarks, monuments, or business names. If the user gives a landmark, POI, monument, park, stadium, airport, or well-known building (e.g. 'The White House', 'Fenway Park', 'LAX', 'Times Square', 'the Golden Gate Bridge', 'Central Park', 'Wrigley Field'), YOU must convert it to the actual street address using your world knowledge before calling — pass '1600 Pennsylvania Ave NW, Washington DC 20500' not 'The White House'; pass '4 Jersey St, Boston MA 02215' not 'Fenway Park'; pass '1 World Way, Los Angeles CA 90045' not 'LAX'. Only pass raw landmark names as a last resort when you genuinely don't know the address (in which case ask the user for one). Never guess an address you don't actually know.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -313,6 +313,24 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
             },
             "required": ["origin", "destination"],
         },
+    },
+    {
+        "name": "set_commute",
+        "description": "Save the user's REGULAR commute — the drive they make most mornings — so their page shows it as a live Commute card and their morning text carries the drive time. Use when they tell you their usual drive in any words: 'I drive from X to Y every day', 'my commute is home to the office on Main St', 'I leave for work around 8:30', 'track my drive to work'. A one-off 'how long to the airport' is get_travel_time, not this.\n\nleave_time is OPTIONAL: when they say when they usually head out, pass it as 24-hour HH:MM and the morning number is routed for that departure rather than for whatever traffic is doing when the text goes out. Without it the number is live. If they didn't say, you may ask once, in your own voice, later — never as a form and never as a condition of saving what they gave you. Calling this again replaces the saved commute; both addresses are geocoded for you and you are told if one can't be found.\n\nCRITICAL: Our geocoder is a mapping service, not a search engine — it does NOT reliably resolve famous landmarks, monuments, or business names. If the user gives a landmark, POI, monument, park, stadium, airport, or well-known building (e.g. 'The White House', 'Fenway Park', 'LAX', 'Times Square', 'the Golden Gate Bridge', 'Central Park', 'Wrigley Field'), YOU must convert it to the actual street address using your world knowledge before calling — pass '1600 Pennsylvania Ave NW, Washington DC 20500' not 'The White House'; pass '4 Jersey St, Boston MA 02215' not 'Fenway Park'; pass '1 World Way, Los Angeles CA 90045' not 'LAX'. Only pass raw landmark names as a last resort when you genuinely don't know the address (in which case ask the user for one). Never guess an address you don't actually know.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "origin": {"type": "string", "description": "Starting street address, usually home. Convert landmarks to street addresses first (see tool description)."},
+                "destination": {"type": "string", "description": "Ending street address, usually work. Convert landmarks to street addresses first (see tool description)."},
+                "leave_time": {"type": "string", "description": "Optional. When they usually leave, 24-hour local HH:MM, e.g. '08:30'. Omit if they didn't say."},
+            },
+            "required": ["origin", "destination"],
+        },
+    },
+    {
+        "name": "clear_commute",
+        "description": "Forget the user's saved commute — drops the Commute card from their page and the drive time from their morning text. Use for 'stop tracking my drive', 'forget my commute', 'I don't drive to work anymore'. Hiding the card while keeping the route is arrange_page, not this.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_city_traffic",
@@ -375,22 +393,35 @@ Match the register: confusion → 'John Travolta confused', celebration → 'con
     },
     {
         "name": "follow_team",
-        "description": "Follow a sports team for live score alerts. Use when they say they want score updates — 'follow the Eagles', 'text me Cardinals scores', 'track the Blues'. They get a text when the lead changes, when someone scores in the last five minutes, and at the final — a few a game, not every play. Team names are ambiguous ('Cardinals' is two teams, 'Rangers' is two), so if the result comes back with more than one match, ASK which they mean before following.",
+        "description": "Follow a sports team so its games ride in the user's morning update and the Scores section of their page. Use when they want to keep up with a team — 'follow the Eagles', 'keep me posted on the Cardinals', 'track the Blues', 'put my team in my morning'. Live game texts are OPT-IN via `live`: pass 'key' if they asked for the big moments (lead changes, a score in the closing stretch, the final), 'all' if they asked for every score, and leave it out if they did not say — the result will tell you to offer it in one clause. Team names are ambiguous ('Cardinals', 'Rangers' are each two teams), so when the result lists several matches, ask which — never pick.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Team as they said it, e.g. 'Eagles'. Add the sport or city if they gave one, e.g. 'St. Louis Cardinals'."},
+                "live": {"type": "string", "enum": ["off", "key", "all"], "description": "Live game texts. 'key' = lead changes, a score in the last five minutes, and the final. 'all' = every score (key moments only in the NBA). Omit unless they said."},
             },
             "required": ["name"],
         },
     },
     {
         "name": "unfollow_team",
-        "description": "Stop live score alerts for a team. Pass text_match with part of the team name; omit to stop all of them.",
+        "description": "Stop following a team — its games leave the morning update and the page. Pass text_match with part of the team name; omit to stop all of them.",
         "input_schema": {
             "type": "object",
             "properties": {"text_match": {"type": "string", "description": "Part of the team name. Omit to unfollow all."}},
             "required": [],
+        },
+    },
+    {
+        "name": "set_score_updates",
+        "description": "Change the LIVE game texts for a team the user already follows, without unfollowing it. mode 'off' stops live texts (the team stays in the morning update and on the page), 'key' = lead changes, a score in the closing stretch, and the final, 'all' = every score (key moments only in the NBA). Use for 'stop the live score texts', 'just the big moments', 'text me every score', 'turn on live updates for the Eagles'. Pass text_match with part of the team name; omit to apply to every team they follow. To drop a team entirely use unfollow_team instead.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["off", "key", "all"]},
+                "text_match": {"type": "string", "description": "Part of the team name. Omit to apply to all followed teams."},
+            },
+            "required": ["mode"],
         },
     },
     {

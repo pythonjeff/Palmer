@@ -361,6 +361,10 @@ class TestExpiredRowsDropOut:
         assert [r["title"] for r in rows] == ["Tonight"]
 
     def test_curate_stores_a_valid_date_from_the_model(self):
+        # Relative, not pinned: a hardcoded 2026-09-04 passed until the calendar
+        # reached it, then the row expired and the test went red on its own.
+        from datetime import date, timedelta
+        soon = (date.today() + timedelta(days=3)).isoformat()
         opening._clear_caches()
         with patch("weather._geocode", side_effect=lambda c: COORDS[c]), \
              patch("datafeeds._search_raw",
@@ -369,9 +373,9 @@ class TestExpiredRowsDropOut:
              patch.object(opening, "client") as cl:
             cl.messages.create.return_value = _resp({"rows": [
                 {"title": "Phoebe Bridgers", "subtitle": "Hollywood Bowl", "when": "Friday",
-                 "url": "https://t.com/1", "kind": "event", "date": "2026-09-04"}]})
+                 "url": "https://t.com/1", "kind": "event", "date": soon}]})
             rows = opening.opening_snapshot(LA)
-        assert rows[0]["date"] == "2026-09-04"
+        assert rows[0]["date"] == soon
 
     def test_curate_drops_a_malformed_date_rather_than_raising(self):
         opening._clear_caches()

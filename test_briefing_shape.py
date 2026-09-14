@@ -194,6 +194,13 @@ class TestCommuteRoute:
         assert not morning._route_line_ok(None)
         assert not morning._route_line_ok("Need both an origin and destination address to route.")
 
-    def test_commute_is_an_extracted_profile_field(self):
+    def test_commute_is_a_tool_not_an_extracted_field(self):
+        """set_commute stores coordinates and a leave time the extractor knows
+        nothing about, so the field left EXTRACT_PROMPT the way followed_teams
+        and shows did: a Haiku write of {origin, destination} would replace the
+        tool's dict and drop both."""
         import prompts
-        assert '"commute"' in prompts.EXTRACT_PROMPT
+        from tools_def import TOOLS
+        assert '"commute"' not in prompts.EXTRACT_PROMPT
+        assert "set_commute" in prompts.SYSTEM_PROMPT
+        assert any(t["name"] == "set_commute" for t in TOOLS)

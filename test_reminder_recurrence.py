@@ -246,3 +246,87 @@ def _force_insert(phone, text, due_at):
     )
     conn.commit()
     conn.close()
+
+
+class TestTheWritePathRefusesARecurrenceItCannotKeep:
+    """next_occurrence returning None guards the SEND path. Nothing guarded the
+    write path, and that is where the damage was done.
+
+    A tool-use `enum` is guidance to the model, not a constraint the API
+    enforces. So "monthly" reached db.save_reminder intact, the dispatch
+    confirmed "It repeats (monthly) at that same local time until they cancel",
+    and then the send path quietly declined to re-arm it. The user was told it
+    repeats, got exactly one text, and had no way to know it had stopped —
+    which is the outcome SYSTEM_PROMPT and the set_reminder description both
+    name as the thing never to let happen.
+    """
+
+    def _set_reminder(self, recurrence):
+        """Run one set_reminder tool call and return (result string, saved rows)."""
+        from unittest.mock import MagicMock
+        import agent
+
+        saved = []
+        block = MagicMock()
+        block.type = "tool_use"
+        block.name = "set_reminder"
+        block.id = "tu_1"
+        # Comfortably future but inside _normalize_due_at's 400-day bound, so
+        # this exercises the recurrence check and not the date check.
+        due = (datetime.now(timezone.utc) + timedelta(days=30)).replace(
+            microsecond=0).isoformat()
+        block.input = {"text": "take the bins out",
+                       "due_at": due,
+                       "recurrence": recurrence}
+
+        calls = []
+
+        def _create(**kw):
+            calls.append(kw)
+            if len(calls) == 1:
+                return MagicMock(stop_reason="tool_use", content=[block])
+            t = MagicMock(type="text", text="done")
+            return MagicMock(stop_reason="end_turn", content=[t])
+
+        with patch.object(agent.client.messages, "create", side_effect=_create), \
+             patch.object(agent, "_build_system", return_value="sys"), \
+             patch.object(agent, "get_profile", return_value={"timezone": "America/Chicago"}), \
+             patch.object(agent, "get_history", return_value=[]), \
+             patch.object(agent, "save_reminder",
+                          side_effect=lambda *a, **k: saved.append(a)):
+            agent.get_reply("+15550001111", "remind me", history=[])
+
+        results = [c for m in calls[-1]["messages"] for c in (m.get("content") or [])
+                   if isinstance(c, dict) and c.get("type") == "tool_result"]
+        return results[0]["content"], saved
+
+    def test_an_unsupported_recurrence_saves_nothing(self):
+        result, saved = self._set_reminder("monthly")
+        assert saved == [], "a repeat that can never re-arm must not be stored"
+        assert "Didn't save" in result
+
+    def test_the_model_is_told_what_it_can_use_instead(self):
+        """A refusal with no alternative is how the model ends up apologising."""
+        from timeutil import RECURRENCES
+        result, _ = self._set_reminder("every other tuesday")
+        for supported in RECURRENCES:
+            assert supported in result
+        assert "one-time reminder" in result
+
+    def test_a_supported_recurrence_still_saves(self):
+        _, saved = self._set_reminder("daily")
+        assert len(saved) == 1
+        assert saved[0][3] == "daily"
+
+    def test_it_normalizes_the_way_the_send_path_does(self):
+        """next_occurrence strips and lowercases; what is stored must match."""
+        _, saved = self._set_reminder("  Weekdays ")
+        assert saved[0][3] == "weekdays"
+
+    def test_every_enum_value_in_the_schema_is_one_the_send_path_keeps(self):
+        """The schema and timeutil cannot be allowed to drift apart."""
+        from timeutil import RECURRENCES
+        from tools_def import TOOLS
+        schema = next(t for t in TOOLS if t["name"] == "set_reminder")
+        enum = schema["input_schema"]["properties"]["recurrence"]["enum"]
+        assert set(enum) == set(RECURRENCES)

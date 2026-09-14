@@ -287,14 +287,24 @@ class TestBrowseShop:
         assert "someshop.com" in out
 
     def test_empty_organic_returns_no_result_string(self):
+        """Empty, and said as an empty result rather than a dead end.
+
+        This used to assert the literal "No browse result found", which told
+        the model nothing about what to do next — the shape that gets
+        paraphrased into a refusal and then into another store."""
+        import guards
         with patch("serpapi._http_get_json", return_value=self._serp()):
             out = browse_shop("Madewell tees")
-        assert out.startswith("No browse result found")
+        assert "DO have this" in out
+        assert "confirm the brand" in out
+        assert not guards.redirects_elsewhere(out)
 
     def test_serpapi_failure_returns_no_result_string(self):
+        import guards
         with patch("serpapi._http_get_json", return_value=None):
             out = browse_shop("Madewell tees")
-        assert out.startswith("No browse result found")
+        assert "DO have this" in out
+        assert not guards.redirects_elsewhere(out)
 
     def test_missing_api_key_returns_unavailable(self):
         with patch("serpapi.API_KEY", ""):

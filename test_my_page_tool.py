@@ -185,3 +185,98 @@ class TestAddingToTheSiteRefreshesIt:
         import prompts
         block = prompts.SYSTEM_PROMPT.lower()
         assert "one-off" in block and "update_morning_briefing" in block
+
+
+class TestPalmerCanSeeTheReminders:
+    """Watches and price watches were both listed in the system prompt.
+    Reminders — the one thing the user explicitly asked to happen at a named
+    time — were the table the model could not read at all. So "what have I got
+    on today" had nothing to answer from, and "cancel my 4pm one" was a guess
+    against twenty messages of history, against a tool that deletes."""
+
+    PHONE = "+15550009999"
+
+    def _system(self, pending):
+        from unittest.mock import patch
+        import agent
+        with patch.object(agent, "get_profile",
+                          return_value={"timezone": "America/Chicago"}), \
+             patch("db.get_pending_reminders", return_value=pending), \
+             patch.object(agent, "get_user_watches", return_value=[]), \
+             patch.object(agent, "get_user_price_watches", return_value=[]):
+            return agent._build_system(self.PHONE)
+
+    def test_pending_reminders_reach_the_prompt(self):
+        out = self._system([{"id": 1, "text": "move the car",
+                             "due_at": "2026-09-04T21:00:00+00:00", "recurrence": None}])
+        assert "move the car" in out
+
+    def test_they_are_shown_on_the_users_clock(self):
+        """21:00Z is 4pm in Chicago. Showing UTC is how a confirmation ends up
+        naming an hour the user never said."""
+        out = self._system([{"id": 1, "text": "move the car",
+                             "due_at": "2026-09-04T21:00:00+00:00", "recurrence": None}])
+        assert "4:00 PM" in out
+        assert "21:00" not in out
+
+    def test_a_repeat_says_so(self):
+        out = self._system([{"id": 1, "text": "take the bins out",
+                             "due_at": "2026-09-04T21:00:00+00:00", "recurrence": "weekly"}])
+        assert "repeats weekly" in out
+
+    def test_the_bulk_cancel_hazard_is_stated(self):
+        out = self._system([{"id": 1, "text": "move the car",
+                             "due_at": "2026-09-04T21:00:00+00:00", "recurrence": None}])
+        assert "no text_match takes" in out
+        assert "ask which" in out
+
+    def test_no_reminders_adds_nothing(self):
+        assert "Reminders they have set" not in self._system([])
+
+    def test_a_failed_read_does_not_break_the_turn(self):
+        from unittest.mock import patch
+        import agent
+        with patch.object(agent, "get_profile", return_value={}), \
+             patch("db.get_pending_reminders", side_effect=RuntimeError("db down")), \
+             patch.object(agent, "get_user_watches", return_value=[]), \
+             patch.object(agent, "get_user_price_watches", return_value=[]):
+            assert agent._build_system(self.PHONE)
+
+
+class TestACancelSaysWhatItTook:
+    """cancel_reminders returned a bare count on a tool whose no-argument form
+    deletes every pending reminder, and whose text_match is a substring — so
+    "call" takes "call mom" and "call the vet" together."""
+
+    PHONE = "+15550008888"
+
+    def _seed(self):
+        import db
+        db.cancel_reminders(self.PHONE)
+        for text in ("call mom", "call the vet", "move the car"):
+            db.save_reminder(self.PHONE, text, "2099-01-01T12:00:00+00:00")
+
+    def test_it_returns_the_texts_that_went(self):
+        import db
+        self._seed()
+        gone = db.cancel_reminders_named(self.PHONE, "call")
+        assert sorted(gone) == ["call mom", "call the vet"]
+
+    def test_the_unmatched_one_survives(self):
+        import db
+        self._seed()
+        db.cancel_reminders_named(self.PHONE, "call")
+        left = [r["text"] for r in db.get_pending_reminders(self.PHONE)]
+        assert left == ["move the car"]
+
+    def test_the_count_form_still_works(self):
+        import db
+        self._seed()
+        assert db.cancel_reminders(self.PHONE) == 3
+
+    def test_the_dispatch_names_them(self):
+        import inspect, agent
+        block = inspect.getsource(agent.get_reply).split('"cancel_reminders"')[1] \
+                                                  .split("elif b.name")[0]
+        assert "cancel_reminders_named" in block
+        assert "Say which ones went" in block
