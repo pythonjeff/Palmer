@@ -14,28 +14,28 @@ python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
 # Local dev — hot reload
-uvicorn main:app --reload
+uvicorn palmer.main:app --reload
 
 # Expose to Twilio for local dev
 ngrok http 8000     # point Twilio SMS webhook at https://<ngrok>/sms
 
-# Tests (pytest — no config file, discovers test_*.py)
+# Tests (config in pyproject.toml; all offline, a few seconds)
 pytest
-pytest test_morning_schedule.py::TestSendWindow::test_before_time_no_send   # single test
+pytest tests/test_morning_schedule.py::TestSendWindow::test_before_time_no_send   # single test
 
 # Preview a morning briefing without sending
 curl 'http://localhost:8000/preview?phone=+15551234567'
 
 # Trigger the morning job once (bypasses schedule; still respects per-user send window + per-day guard)
-python send_morning.py
+python -m scripts.send_morning
 
 # Trigger reminder delivery once
-python send_reminders.py
+python -m scripts.send_reminders
 
-# Import main without starting the job loop (tests, shells, one-off scripts).
+# Import palmer.main without starting the job loop (tests, shells, one-off scripts).
 # Without this, importing main starts APScheduler and send_due_reminders will
 # send REAL SMS on a 1-minute interval.
-PALMER_NO_SCHEDULER=1 python -c "import main"
+PALMER_NO_SCHEDULER=1 python -c "import palmer.main"
 ```
 
 `.env` variables (see README for full table): `ANTHROPIC_API_KEY`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`, `TAVILY_API_KEY`, `SERP_API_KEY`, `TMDB_API_KEY`, `TICKETMASTER_API_KEY`, `TOMTOM_API_KEY`, `GIPHY_API_KEY`, `APP_URL`, `DATABASE_URL` (optional locally — falls back to SQLite `palmer.db`).
@@ -100,7 +100,7 @@ Because the bar is low and fires both ways, the rate limits are what keep it civ
 
 **`run_price_watches` is on a cron trigger, and must stay one.** An APScheduler interval job's first run is scheduled at `start + interval`, and that clock restarts on every dyno boot — which means every deploy. At a twice-daily cadence it made the job a function of deploy history rather than of the clock: on a day with four deploys it never ran at all, and since a tick that finds no qualifying price change logs nothing, it failed invisibly. The two slots are 16h and 8h apart rather than evenly split, deliberately — the budget constraint is runs per day, while the hour is the part users feel, and no strict 12h split lands in waking hours for both timezones served. `test_price_watches.py::TestPriceWatchSchedule` guards the phase-independence property.
 
-Morning briefings are sent by APScheduler at each user's chosen local time (default 7:00). No Heroku Scheduler job is required; if one runs `send_morning.py`, the per-user sent-date guard prevents double-sends.
+Morning briefings are sent by APScheduler at each user's chosen local time (default 7:00). No Heroku Scheduler job is required; if one runs `scripts/send_morning.py`, the per-user sent-date guard prevents double-sends.
 
 ### Reminders repeat; morning topics are the other kind of repeating
 `reminders.recurrence` is NULL for a one-shot or one of `timeutil.RECURRENCES`
@@ -158,7 +158,7 @@ Two properties are load-bearing:
 
 `generate_morning_line` drafts the text on Sonnet through `_build_system` like every other user-facing message. It builds a REQUIRED list from what the payload actually has (weather is basically always there once a city is known; commute only when `traffic` is populated, which only happens when the profile has an address; opening only when `opening_snapshot` returned rows) and tells the model every item on that list must appear — with real specifics, not a vague gesture at the category — plus at most one more sentence about something else on the page if it's genuinely notable. Two rules are enforced in code rather than trusted to the prompt, because the model breaks both: `_strip_link_placeholder` removes "[link]"-style stand-ins and any invented URL, and `_NAMES_THE_LINK` triggers exactly one redraft when the line says "page"/"link"/"dashboard" — that phrasing turns a text from a friend into a push notification.
 
-Opening is no longer opt-in for this reason — `home._fetch_opening` fetches it by default for any user with a city (a user can still be excluded with `morning_prefs.opening = False`). It shipped off at first specifically so a bad metro's rows could be caught with `preview_opening.py` before anyone saw them; that review still matters, it just now happens after rollout instead of gating it.
+Opening is no longer opt-in for this reason — `home._fetch_opening` fetches it by default for any user with a city (a user can still be excluded with `morning_prefs.opening = False`). It shipped off at first specifically so a bad metro's rows could be caught with `scripts/preview_opening.py` before anyone saw them; that review still matters, it just now happens after rollout instead of gating it.
 
 Every failure falls back to the full text briefing (`generate_morning`, still used by `/preview?full=1`): no APP_URL, an empty page, or a failed draft. A user never gets a link to nothing.
 
@@ -628,7 +628,7 @@ It ships **on** by default — the morning text is required to carry 1-2 opening
 highlights for every user, so this can no longer be opt-in. `morning_prefs["opening"]
 is False` excludes a specific user, nested so it needs no `PROFILE_FIELDS` entry.
 The risk here is taste, not correctness, so a bad metro is still worth checking
-with `preview_opening.py` — that review now happens after rollout rather than
+with `scripts/preview_opening.py` — that review now happens after rollout rather than
 gating it.
 
 TMDB's terms require the notice *"This product uses the TMDB API but is not
@@ -1015,7 +1015,7 @@ A field written by tool dispatch also stays **out of `EXTRACT_PROMPT`**
 (`followed_teams`, `shows`, `commute`). Listed there, Haiku fills it with prose and the
 code reading it gets strings where it expects dicts.
 
-`migrate_profile_prune.py` cleans rows that grew before the allow-list existed. It folds the stray keys into canonical fields with a Sonnet pass before dropping them, so real facts survive. Dry run by default; `--apply` writes.
+`scripts/migrate_profile_prune.py` cleans rows that grew before the allow-list existed. It folds the stray keys into canonical fields with a Sonnet pass before dropping them, so real facts survive. Dry run by default; `--apply` writes.
 
 ### DB access patterns
 - `get_all_profiles()` returns every `(phone, profile)` in ONE query. The scheduler jobs use it. Do not loop over phones calling `get_profile(phone)` per user — `_conn()` opens a fresh connection per call, so that is N+1 per tick.

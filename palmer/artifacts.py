@@ -1,0 +1,149 @@
+"""Public, unguessable URLs for a briefing artifact.
+
+One token, one payload, two renderings:
+
+  /c/{token}       the interactive page — headlines and tickers are real links
+  /c/{token}.png   the same briefing as a flat card, for MMS and og:image
+
+Storing the *payload* rather than the pixels is what makes the page possible. An
+MMS image is a bitmap with no tap targets anywhere in it, so interactivity can
+only live on a page; keeping one source of truth means the card and the page can
+never disagree.
+
+Both URLs are public and unauthenticated by necessity — Twilio fetches MMS media
+and the recipient's phone fetches the og:image, neither of which can carry auth.
+So the token is the whole protection:
+
+  * 128 bits of CSPRNG entropy in the path
+  * a TTL, after which the row reads as missing
+  * nothing in a briefing that the user did not already receive over SMS
+
+These are read-only artifacts, not credentials. Nothing is consumed on fetch and
+no session is minted, so the link-prefetch problem that breaks magic links does
+not apply — that arrives later, if the page ever authenticates.
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime as _dt, timezone as _tz
+import os
+import secrets
+import threading
+
+from palmer.db import get_artifact
+
+_APP_URL = os.environ.get("APP_URL", "").rstrip("/")
+
+TTL_HOURS = 48
+
+# Rendered cards, keyed by token. The PNG is derived from the payload rather
+# than stored, so the two can't drift; this just avoids re-rendering on every
+# fetch, since Twilio and the phone both pull the same image.
+_png_cache: dict[str, bytes] = {}
+_cache_lock = threading.Lock()
+
+
+def new_token() -> str:
+    """128-bit URL-safe token."""
+    return secrets.token_urlsafe(16)
+
+
+def page_url(token: str) -> str:
+    return f"{_APP_URL}/c/{token}"
+
+
+def image_url(token: str) -> str:
+    # .png suffix because some carriers sniff the extension over the content type
+    return f"{_APP_URL}/c/{token}.png"
+
+
+def load(token: str) -> dict | None:
+    got = get_artifact(token)
+    if not got:
+        return None
+    kind, body = got
+    if kind != "briefing":
+        return None
+    try:
+        return json.loads(body.decode())
+    except Exception:
+        return None
+
+
+def _card_now(payload: dict):
+    """The masthead date, in the reader's timezone.
+
+    cards.py defaulted to datetime.now(), which is UTC on the dyno — so from
+    5pm Pacific onward the card printed tomorrow's date while page.py, which
+    has always used the user's zone, printed today's. Two surfaces of the same
+    briefing disagreeing about what day it is.
+
+    Returns None when there is no resolvable zone. The old fallback here was a
+    naive datetime.now() — UTC on the dyno — so a zoneless reader got a date
+    that was simply wrong for half of every day, and the page (which now omits
+    it) and the card would disagree besides."""
+    from palmer.timeutil import valid_zone, local_now
+    tz = payload.get("timezone")
+    if not valid_zone(tz):
+        return None
+    try:
+        return local_now(tz)
+    except Exception:
+        return None
+
+
+def _card_inputs(payload: dict) -> dict:
+    """Exactly what render_dashboard draws — nothing else."""
+    return {
+        "city": payload.get("city", ""),
+        "weather": payload.get("weather"),
+        "traffic": payload.get("traffic"),
+        "prices": payload.get("prices"),
+        "opening": payload.get("opening"),
+        "headlines": [h.get("title", "") for h in (payload.get("headlines") or [])],
+        # The masthead prints the date, so a new day is a different card even
+        # when every other input is byte-identical — and it must be the
+        # reader's day, or the cache holds yesterday's card past their midnight.
+        "_date": (_card_now(payload) or _dt.now(_tz.utc)).strftime("%Y-%m-%d"),
+    }
+
+
+def _card_fingerprint(payload: dict) -> str:
+    """A key that changes exactly when the drawn image would change.
+
+    The cache used to key on `built_at`, which only advances inside
+    home.rebuild() — and ensure_fresh calls rebuild only when there is no
+    payload at all. So after a user's very first build the key never changed
+    again: the card froze on that morning's weather and stayed frozen, while
+    the page beside it refreshed normally. Hashing the drawn inputs instead
+    means the image regenerates when it would look different and never
+    otherwise, which is what the cache was for."""
+    import hashlib
+    import json
+    body = json.dumps(_card_inputs(payload), sort_keys=True, default=str)
+    return hashlib.sha1(body.encode()).hexdigest()[:16]
+
+
+def render_png(token: str, payload: dict) -> bytes:
+    """The payload as a card, memoised on the token plus the drawn content.
+
+    The caller passes the bare token — deriving the rest here is deliberate,
+    since a caller composing its own key is exactly how the card came to be
+    cached against a value that never changed."""
+    key = f"{token}:{_card_fingerprint(payload)}"
+    with _cache_lock:
+        hit = _png_cache.get(key)
+    if hit is not None:
+        return hit
+    from palmer.cards import render_dashboard
+    inputs = _card_inputs(payload)
+    inputs.pop("_date", None)
+    # No resolvable zone means no day we can stand behind, so the masthead
+    # carries none — matching the page, which omits it for the same reason.
+    card_when = _card_now(payload)
+    png = render_dashboard(when=card_when, show_date=card_when is not None, **inputs)
+    with _cache_lock:
+        _png_cache[key] = png
+        if len(_png_cache) > 64:          # bounded; single dyno, low volume
+            _png_cache.pop(next(iter(_png_cache)))
+    return png
