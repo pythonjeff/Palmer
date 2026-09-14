@@ -1,16 +1,9 @@
 """Tests for _user_already_covered — suppresses proactive sends when the user
 already brought up the same story themselves in their recent messages."""
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from palmer import userprofile
-
-
-def _haiku_reply(text: str) -> MagicMock:
-    block = MagicMock()
-    block.text = text
-    resp = MagicMock()
-    resp.content = [block]
-    return resp
+from tests.helpers import llm_reply
 
 
 class TestUserAlreadyCovered:
@@ -25,7 +18,7 @@ class TestUserAlreadyCovered:
             "did you see the Iran thing?",
             "wild what's happening over there",
         ]), patch("palmer.userprofile.client") as mock_client:
-            mock_client.messages.create.return_value = _haiku_reply("YES")
+            mock_client.messages.create.return_value = llm_reply("YES")
             assert userprofile._user_already_covered(
                 "+15550000000",
                 "Iran launched missiles at a US base in Iraq."
@@ -36,7 +29,7 @@ class TestUserAlreadyCovered:
             "grocery list: milk, bread",
             "what's the weather tomorrow?",
         ]), patch("palmer.userprofile.client") as mock_client:
-            mock_client.messages.create.return_value = _haiku_reply("NO")
+            mock_client.messages.create.return_value = llm_reply("NO")
             assert userprofile._user_already_covered(
                 "+15550000000",
                 "Cardinals move into first place with 4-2 win."
@@ -55,7 +48,7 @@ class TestUserAlreadyCovered:
 
         def _create(**kwargs):
             captured.append(kwargs["messages"][0]["content"])
-            return _haiku_reply("NO")
+            return llm_reply("NO")
 
         with patch("palmer.db.get_recent_user_messages",
                    return_value=["did you see the Iran thing", "crazy"]), \

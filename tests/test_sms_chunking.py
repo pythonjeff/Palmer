@@ -1,5 +1,3 @@
-from dotenv import load_dotenv
-load_dotenv()
 
 from unittest.mock import patch, MagicMock
 

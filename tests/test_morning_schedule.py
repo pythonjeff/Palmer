@@ -1,6 +1,4 @@
 """Tests for morning send-window logic and time parsing. Run: pytest test_morning_schedule.py"""
-from dotenv import load_dotenv
-load_dotenv()
 
 from datetime import datetime
 from zoneinfo import ZoneInfo

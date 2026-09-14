@@ -4,17 +4,10 @@ shopping.py and amazon.py used to carry near-identical copies of this. These
 pin the behavior that has to stay identical across both sources, and the two
 places they legitimately differ (the price line, and whether a URL is appended).
 """
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from palmer import price_alert
-
-
-def _resp(text: str) -> MagicMock:
-    block = MagicMock()
-    block.text = text
-    r = MagicMock()
-    r.content = [block]
-    return r
+from tests.helpers import llm_reply
 
 
 CURRENT = {"price": 42.0, "merchant": "Zappos", "url": "https://www.amazon.com/dp/B0PROT"}
@@ -77,7 +70,7 @@ class TestDrafting:
     def _draft(self, **kw):
         with patch.object(price_alert, "_build_system", return_value="SYS"), \
              patch.object(price_alert.client.messages, "create",
-                          return_value=_resp("protein's down to $42")) as create:
+                          return_value=llm_reply("protein's down to $42")) as create:
             body = price_alert.draft_price_alert("Protein", CURRENT, WATCH, "drop", **kw)
         return body, create
 
@@ -106,7 +99,7 @@ class TestDrafting:
     def test_falls_back_to_the_base_prompt_without_a_phone(self):
         """A malformed row shouldn't cost the user their alert."""
         with patch.object(price_alert, "_build_system") as bs, \
-             patch.object(price_alert.client.messages, "create", return_value=_resp("x")) as create:
+             patch.object(price_alert.client.messages, "create", return_value=llm_reply("x")) as create:
             price_alert.draft_price_alert("Protein", CURRENT, {"baseline_price": 60.0}, "drop")
         bs.assert_not_called()
         # Used to assert NO system prompt at all, which meant a failed profile
@@ -134,13 +127,13 @@ class TestFailsSafe:
 
     def test_empty_model_output_falls_back(self):
         with patch.object(price_alert, "_build_system", return_value="SYS"), \
-             patch.object(price_alert.client.messages, "create", return_value=_resp("   ")):
+             patch.object(price_alert.client.messages, "create", return_value=llm_reply("   ")):
             body = price_alert.draft_price_alert("Protein", CURRENT, WATCH, "drop")
         assert body.strip(), "must never send an empty alert"
 
     def test_build_system_failure_does_not_lose_the_alert(self):
         with patch.object(price_alert, "_build_system", side_effect=RuntimeError("db down")), \
-             patch.object(price_alert.client.messages, "create", return_value=_resp("x")):
+             patch.object(price_alert.client.messages, "create", return_value=llm_reply("x")):
             body = price_alert.draft_price_alert("Protein", CURRENT, WATCH, "drop")
         assert body.strip()
 

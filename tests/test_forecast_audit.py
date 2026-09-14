@@ -23,11 +23,6 @@ from palmer import weather
 from palmer import wxaudit
 
 
-def _fresh_db(tmp_path, monkeypatch):
-    monkeypatch.setattr(db, "_DB_PATH", tmp_path / "wx.db")
-    db.init_db()
-
-
 def _om(*highs):
     """An Open-Meteo multi-model daily payload."""
     return {"daily": {f"temperature_2m_max_model{i}": [h] for i, h in enumerate(highs)}}
@@ -114,8 +109,7 @@ class TestTheHedgeReachesTheUser:
 
 
 class TestTheAuditLog:
-    def test_a_forecast_and_its_actual_score(self, tmp_path, monkeypatch):
-        _fresh_db(tmp_path, monkeypatch)
+    def test_a_forecast_and_its_actual_score(self, fresh_db):
         db.record_forecast("Woodland Hills", "2026-08-27", "nws", 111.0)
         db.record_forecast("Woodland Hills", "2026-08-27", "ecmwf_ifs025", 100.6)
         db.record_actual("Woodland Hills", "2026-08-27", 99.5)
@@ -123,25 +117,22 @@ class TestTheAuditLog:
         assert round(scores["nws"]["bias"], 1) == 11.5
         assert round(scores["ecmwf_ifs025"]["bias"], 1) == 1.1
 
-    def test_logging_the_same_day_twice_does_not_double_count(self, tmp_path, monkeypatch):
+    def test_logging_the_same_day_twice_does_not_double_count(self, fresh_db):
         """The job may be re-run or misfire-recovered; a duplicated day would
         silently weight one day twice in the average."""
-        _fresh_db(tmp_path, monkeypatch)
         for _ in range(3):
             db.record_forecast("Culver City", "2026-08-27", "nws", 90.0)
         db.record_actual("Culver City", "2026-08-27", 88.3)
         assert db.forecast_scores(days=3650)[0]["n"] == 1
 
-    def test_pending_actuals_lists_only_unfilled_past_days(self, tmp_path, monkeypatch):
-        _fresh_db(tmp_path, monkeypatch)
+    def test_pending_actuals_lists_only_unfilled_past_days(self, fresh_db):
         db.record_forecast("A", "2026-08-25", "nws", 100.0)
         db.record_forecast("A", "2026-08-26", "nws", 100.0)
         db.record_actual("A", "2026-08-25", 99.0)
         assert db.pending_actuals("2026-08-27") == [("A", "2026-08-26")]
 
-    def test_an_unscored_day_is_excluded_from_the_average(self, tmp_path, monkeypatch):
+    def test_an_unscored_day_is_excluded_from_the_average(self, fresh_db):
         """A forecast with no actual yet must not read as a zero-error day."""
-        _fresh_db(tmp_path, monkeypatch)
         db.record_forecast("A", "2026-08-26", "nws", 100.0)
         assert db.forecast_scores(days=3650) == []
 

@@ -5,18 +5,11 @@ Haiku is mocked; we're testing that:
   2. _watch_genre classifies + persists via set_watch_genre when missing.
   3. _check_watch_hit splices the correct rubric into the Haiku prompt.
 """
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from palmer import rubrics
 from palmer import watches as watches_mod
-
-
-def _haiku_reply(text: str) -> MagicMock:
-    block = MagicMock()
-    block.text = text
-    resp = MagicMock()
-    resp.content = [block]
-    return resp
+from tests.helpers import llm_reply
 
 
 class TestWatchGenre:
@@ -57,7 +50,7 @@ class TestCheckWatchHitPrompt:
 
         def _create(**kwargs):
             captured.append(kwargs["messages"][0]["content"])
-            return _haiku_reply("YES")
+            return llm_reply("YES")
 
         return _create, captured
 
@@ -112,7 +105,7 @@ class TestCheckWatchHitPrompt:
 
     def test_no_reply_is_no(self):
         with patch("palmer.watches.client") as mock_client:
-            mock_client.messages.create.return_value = _haiku_reply("NO — routine game")
+            mock_client.messages.create.return_value = llm_reply("NO — routine game")
             hit = watches_mod._check_watch_hit(
                 results="Cardinals lost 5-4 to the Reds.",
                 description="Cardinals",

@@ -14,32 +14,28 @@ from unittest.mock import patch
 
 from palmer import agent
 from palmer import prompts
-from palmer.tools_def import TOOLS
+from tests.helpers import drive_tool, tool_by_name
 
 URL = "https://palmer.example.com/h/AbC123xyz"
 
 
-def _tool(name):
-    return next((t for t in TOOLS if t["name"] == name), None)
-
-
 class TestSchema:
     def test_the_tool_exists(self):
-        assert _tool("get_my_page") is not None
+        assert tool_by_name("get_my_page") is not None
 
     def test_it_takes_no_arguments(self):
         """The caller is the user. There is nothing to pass and nothing to
         get wrong — in particular no phone number the model could invent."""
-        schema = _tool("get_my_page")["input_schema"]
+        schema = tool_by_name("get_my_page")["input_schema"]
         assert schema["properties"] == {} and schema["required"] == []
 
     def test_the_description_covers_how_people_actually_ask(self):
-        d = _tool("get_my_page")["description"].lower()
+        d = tool_by_name("get_my_page")["description"].lower()
         for phrase in ("send me my page", "link", "dashboard", "resend"):
             assert phrase in d
 
     def test_the_description_pins_the_url_to_the_end(self):
-        d = _tool("get_my_page")["description"].lower()
+        d = tool_by_name("get_my_page")["description"].lower()
         assert "end" in d and "preview" in d
 
     def test_it_is_routed_in_the_system_prompt(self):
@@ -52,66 +48,42 @@ class TestSchema:
         assert "never type" in block or "from memory" in block
 
 
-class _Block:
-    def __init__(self, **kw):
-        self.__dict__.update(kw)
-
-
-class _Resp:
-    def __init__(self, content, stop_reason):
-        self.content, self.stop_reason = content, stop_reason
-
-
-def _drive(reply="here you go", url=URL):
+def _drive_my_page(reply="here you go", url=URL):
     """Run get_reply through one get_my_page tool call and capture what the
     model was handed back."""
-    calls = []
-    responses = [
-        _Resp([_Block(type="tool_use", name="get_my_page", id="t1", input={})], "tool_use"),
-        _Resp([_Block(type="text", text=reply)], "end_turn"),
-    ]
-
-    def _create(**kw):
-        calls.append(kw)
-        return responses[len(calls) - 1]
-
-    with patch.object(agent, "_build_system", return_value="sys"), \
-         patch.object(agent, "get_history", return_value=[]), \
-         patch.object(agent, "get_profile", return_value={"timezone": "America/Chicago"}), \
-         patch("palmer.home.ensure_fresh", return_value=url) as ensure, \
-         patch.object(agent.client.messages, "create", side_effect=_create):
-        text, _gif = agent.get_reply("+1555", "send me my page")
-    # the tool_result the model saw, on the second request
-    result = calls[1]["messages"][-1]["content"][0]["content"]
+    text, result, (ensure,) = drive_tool(
+        "get_my_page", {}, message="send me my page", reply=reply,
+        profile={"timezone": "America/Chicago"},
+        patches=[patch("palmer.home.ensure_fresh", return_value=url)])
     return text, result, ensure
 
 
 class TestDispatch:
     def test_it_returns_the_live_url(self):
-        _, result, _ = _drive()
+        _, result, _ = _drive_my_page()
         assert URL in result
 
     def test_it_refreshes_the_page_for_this_caller(self):
         """ensure_fresh, never a bare URL builder — a link to a 404 or to yesterday's data
         is worse than no link."""
-        _, _, ensure = _drive()
+        _, _, ensure = _drive_my_page()
         ensure.assert_called_once_with("+1555")
 
     def test_it_tells_the_model_where_to_put_the_url(self):
-        _, result, _ = _drive()
+        _, result, _ = _drive_my_page()
         assert "end of your reply" in result.lower()
 
     def test_the_reply_reaches_the_user(self):
-        text, _, _ = _drive(reply=f"all yours {URL}")
+        text, _, _ = _drive_my_page(reply=f"all yours {URL}")
         assert text.endswith(URL)
 
     def test_no_app_url_does_not_promise_a_link(self):
-        _, result, _ = _drive(url="/h/tok")
+        _, result, _ = _drive_my_page(url="/h/tok")
         assert URL not in result
         assert "not mention a page" in result.lower()
 
     def test_no_app_url_still_answers_instead_of_erroring(self):
-        text, _, _ = _drive(reply="not much going on", url="/h/tok")
+        text, _, _ = _drive_my_page(reply="not much going on", url="/h/tok")
         assert text == "not much going on"
 
 

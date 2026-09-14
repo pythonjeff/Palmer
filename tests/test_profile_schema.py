@@ -58,8 +58,7 @@ class TestPrune:
 class TestNoneDeletes:
     """A stored null still costs prompt tokens. None must remove the key."""
 
-    def test_none_removes_the_key(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t.db", raising=False)
+    def test_none_removes_the_key(self, fresh_db):
         with patch.object(db, "_conn", db._conn):
             db.init_db()
             db.upsert_profile("+1555", {"city": "Kirkwood", "vibe": "dry"})
@@ -68,9 +67,7 @@ class TestNoneDeletes:
         assert prof["city"] == "Kirkwood"
         assert "vibe" not in prof, "None should delete, not store a null"
 
-    def test_deleting_an_absent_key_is_a_noop(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t2.db", raising=False)
-        db.init_db()
+    def test_deleting_an_absent_key_is_a_noop(self, fresh_db):
         db.upsert_profile("+1556", {"city": "K"})
         db.upsert_profile("+1556", {"never_set": None})
         assert db.get_profile("+1556")["city"] == "K"
@@ -176,10 +173,8 @@ class TestCityPrecisionIsExtracted:
 
 
 class TestCityChangeIsLogged:
-    def test_city_regression_prints_old_and_new(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t3.db", raising=False)
+    def test_city_regression_prints_old_and_new(self, fresh_db, monkeypatch, capsys):
         monkeypatch.setenv("APP_URL", "https://palmer.test")
-        db.init_db()
         db.upsert_profile("+1557", {"city": "Culver City, CA"})
         profile = db.get_profile("+1557")
         with patch("palmer.home.rebuild") as rebuild:
@@ -195,10 +190,8 @@ class TestEagerHomeBuild:
     "Onboarding" / the day-1 site build. It never sends the link; that's still
     gated on an explicit ask or the first morning send, unchanged."""
 
-    def test_first_city_triggers_a_build(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t6.db", raising=False)
+    def test_first_city_triggers_a_build(self, fresh_db, monkeypatch):
         monkeypatch.setenv("APP_URL", "https://palmer.test")
-        db.init_db()
         db.upsert_profile("+1558", {})
         profile = db.get_profile("+1558")
         with patch("palmer.home.home_token", return_value="tok"), \
@@ -207,30 +200,24 @@ class TestEagerHomeBuild:
             userprofile._apply_profile_updates("+1558", profile, {"city": "Chicago"})
         rebuild.assert_called_once_with("+1558", refresh_news=True)
 
-    def test_city_correction_does_not_rebuild(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t7.db", raising=False)
+    def test_city_correction_does_not_rebuild(self, fresh_db, monkeypatch):
         monkeypatch.setenv("APP_URL", "https://palmer.test")
-        db.init_db()
         db.upsert_profile("+1559", {"city": "Culver City, CA"})
         profile = db.get_profile("+1559")
         with patch("palmer.home.rebuild") as rebuild:
             userprofile._apply_profile_updates("+1559", profile, {"city": "Los Angeles"})
         rebuild.assert_not_called()
 
-    def test_no_app_url_skips_the_build(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t8.db", raising=False)
+    def test_no_app_url_skips_the_build(self, fresh_db, monkeypatch):
         monkeypatch.delenv("APP_URL", raising=False)
-        db.init_db()
         db.upsert_profile("+1560", {})
         profile = db.get_profile("+1560")
         with patch("palmer.home.rebuild") as rebuild:
             userprofile._apply_profile_updates("+1560", profile, {"city": "Chicago"})
         rebuild.assert_not_called()
 
-    def test_a_page_already_built_is_not_rebuilt_again(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t9.db", raising=False)
+    def test_a_page_already_built_is_not_rebuilt_again(self, fresh_db, monkeypatch):
         monkeypatch.setenv("APP_URL", "https://palmer.test")
-        db.init_db()
         db.upsert_profile("+1561", {})
         profile = db.get_profile("+1561")
         with patch("palmer.home.home_token", return_value="tok"), \
@@ -245,9 +232,7 @@ class TestOnboardingAskConsumption:
     exact condition; _update_profile marks it consumed the first time it sees
     that same condition hold true after a turn's extraction runs."""
 
-    def test_marks_consumed_after_a_qualifying_turn(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t10.db", raising=False)
-        db.init_db()
+    def test_marks_consumed_after_a_qualifying_turn(self, fresh_db):
         db.upsert_profile("+1562", {"intro_sent": True})
         block = MagicMock(); block.text = "{}"
         resp = MagicMock(); resp.content = [block]
@@ -255,10 +240,8 @@ class TestOnboardingAskConsumption:
             userprofile._update_profile("+1562", "hey", "hey, how's it going")
         assert db.get_profile("+1562")["onboarding_ask_sent"] is True
 
-    def test_not_marked_when_the_turn_supplies_both_fields(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t11.db", raising=False)
+    def test_not_marked_when_the_turn_supplies_both_fields(self, fresh_db, monkeypatch):
         monkeypatch.delenv("APP_URL", raising=False)
-        db.init_db()
         db.upsert_profile("+1563", {"intro_sent": True})
         block = MagicMock(); block.text = '{"name": "Ada", "city": "Chicago"}'
         resp = MagicMock(); resp.content = [block]
@@ -266,9 +249,7 @@ class TestOnboardingAskConsumption:
             userprofile._update_profile("+1563", "I'm Ada from Chicago", "hey Ada")
         assert "onboarding_ask_sent" not in db.get_profile("+1563")
 
-    def test_not_marked_before_intro_is_sent(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "t12.db", raising=False)
-        db.init_db()
+    def test_not_marked_before_intro_is_sent(self, fresh_db):
         db.upsert_profile("+1564", {})
         block = MagicMock(); block.text = "{}"
         resp = MagicMock(); resp.content = [block]

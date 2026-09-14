@@ -13,8 +13,7 @@ import pytest
 
 from palmer import tapback
 
-with patch("apscheduler.schedulers.background.BackgroundScheduler.start"):
-    from palmer import main
+from palmer import main
 
 
 class TestAppleTapbacks:

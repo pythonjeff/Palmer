@@ -23,7 +23,7 @@ from palmer import prompts
 from palmer import traffic
 from palmer import userprofile
 from palmer.timeutil import friendly_hhmm
-from palmer.tools_def import TOOLS
+from tests.helpers import drive_tool, tool_by_name
 
 CHI = ZoneInfo("America/Chicago")
 ROUTE = {"routes": [{"summary": {"travelTimeInSeconds": 1020,
@@ -275,24 +275,20 @@ class TestCard:
         assert artifacts._card_fingerprint(predicted) != artifacts._card_fingerprint(live)
 
 
-def _tool(name):
-    return next((t for t in TOOLS if t["name"] == name), None)
-
-
 class TestToolsAndRouting:
     def test_both_tools_exist_and_set_takes_an_optional_leave_time(self):
-        s = _tool("set_commute")
-        assert s is not None and _tool("clear_commute") is not None
+        s = tool_by_name("set_commute")
+        assert s is not None and tool_by_name("clear_commute") is not None
         assert set(s["input_schema"]["required"]) == {"origin", "destination"}
         assert "leave_time" in s["input_schema"]["properties"]
 
     def test_set_carries_the_landmark_warning_get_travel_time_has(self):
-        s, g = _tool("set_commute")["description"], _tool("get_travel_time")["description"]
+        s, g = tool_by_name("set_commute")["description"], tool_by_name("get_travel_time")["description"]
         assert "landmark" in s and "street address" in s
         assert "Fenway Park" in s and "Fenway Park" in g
 
     def test_travel_time_no_longer_disclaims_storing_addresses(self):
-        g = _tool("get_travel_time")["description"]
+        g = tool_by_name("get_travel_time")["description"]
         assert "don't store" not in g and "set_commute" in g
 
     def test_system_prompt_routes_the_regular_drive(self):
@@ -304,44 +300,20 @@ class TestToolsAndRouting:
         assert '"commute"' not in prompts.EXTRACT_PROMPT
 
 
-class _Block:
-    def __init__(self, **kw):
-        self.__dict__.update(kw)
-
-
-class _Resp:
-    def __init__(self, content, stop_reason):
-        self.content, self.stop_reason = content, stop_reason
-
-
-def _drive(tool_name, tool_input, geocodes=((38.5, -90.4), (38.6, -90.2)), key="k"):
-    calls = []
-    responses = [
-        _Resp([_Block(type="tool_use", name=tool_name, id="t1", input=tool_input)], "tool_use"),
-        _Resp([_Block(type="text", text="done")], "end_turn"),
-    ]
-
-    def _create(**kw):
-        calls.append(kw)
-        return responses[len(calls) - 1]
-
-    with patch.object(agent, "_build_system", return_value="sys"), \
-         patch.object(agent, "get_history", return_value=[]), \
-         patch.object(agent, "get_profile", return_value={}), \
-         patch.object(agent, "upsert_profile") as upsert, \
-         patch.object(traffic, "TOMTOM_API_KEY", key), \
-         patch.object(traffic, "_geocode_address", side_effect=list(geocodes)), \
-         patch("palmer.home.invalidate") as invalidate, \
-         patch.object(agent.client.messages, "create", side_effect=_create):
-        agent.get_reply("+1555", "my commute")
-    result = calls[1]["messages"][-1]["content"][0]["content"]
+def _drive_commute(tool_name, tool_input, geocodes=((38.5, -90.4), (38.6, -90.2)), key="k"):
+    _, result, (upsert, _key, _geo, invalidate) = drive_tool(
+        tool_name, tool_input, message="my commute",
+        patches=[patch.object(agent, "upsert_profile"),
+                 patch.object(traffic, "TOMTOM_API_KEY", key),
+                 patch.object(traffic, "_geocode_address", side_effect=list(geocodes)),
+                 patch("palmer.home.invalidate")])
     saved = upsert.call_args[0][1] if upsert.called else None
     return result, saved, invalidate
 
 
 class TestSetDispatch:
     def test_geocodes_on_the_write_path_and_expires_the_card(self):
-        result, saved, invalidate = _drive("set_commute",
+        result, saved, invalidate = _drive_commute("set_commute",
                                            {"origin": ORIGIN, "destination": DEST, "leave_time": "8:30"})
         assert saved["commute"] == {"origin": ORIGIN, "destination": DEST, "leave_time": "08:30",
                                     "origin_ll": [38.5, -90.4], "dest_ll": [38.6, -90.2]}
@@ -349,27 +321,27 @@ class TestSetDispatch:
         assert "08:30" in result and "without reading the addresses back" in result
 
     def test_no_leave_time_saves_and_says_the_number_is_live(self):
-        result, saved, _ = _drive("set_commute", {"origin": ORIGIN, "destination": DEST})
+        result, saved, _ = _drive_commute("set_commute", {"origin": ORIGIN, "destination": DEST})
         assert "leave_time" not in saved["commute"] and saved["commute"]["origin_ll"]
         assert "live" in result and "optional" in result
 
     def test_an_unresolvable_address_asks_rather_than_guesses(self):
-        result, saved, invalidate = _drive("set_commute", {"origin": ORIGIN, "destination": DEST},
+        result, saved, invalidate = _drive_commute("set_commute", {"origin": ORIGIN, "destination": DEST},
                                            geocodes=((38.5, -90.4), None))
         assert saved is None and "do not guess" in result and DEST in result
         invalidate.assert_not_called()
 
     def test_a_bad_leave_time_saves_nothing(self):
-        result, saved, _ = _drive("set_commute",
+        result, saved, _ = _drive_commute("set_commute",
                                   {"origin": ORIGIN, "destination": DEST, "leave_time": "half eight"})
         assert saved is None and "Nothing saved" in result and "HH:MM" in result
 
     def test_a_missing_key_is_not_reported_as_a_bad_address(self):
-        result, saved, _ = _drive("set_commute", {"origin": ORIGIN, "destination": DEST}, key="")
+        result, saved, _ = _drive_commute("set_commute", {"origin": ORIGIN, "destination": DEST}, key="")
         assert saved is None and "Nothing saved" in result and "Couldn't find" not in result
 
     def test_clear_deletes_the_key_and_expires_the_card(self):
-        result, saved, invalidate = _drive("clear_commute", {})
+        result, saved, invalidate = _drive_commute("clear_commute", {})
         assert saved == {"commute": None}
         invalidate.assert_called_once_with("+1555", ("traffic",))
 

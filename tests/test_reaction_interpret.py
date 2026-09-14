@@ -7,22 +7,14 @@ land on silence, never on an unwanted text.
 Live model behavior (does Haiku actually call a thumbs-up on a question an
 "answer"?) is verified separately against the real API, not here.
 """
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
 from palmer import tapback
 
-with patch("apscheduler.schedulers.background.BackgroundScheduler.start"):
-    from palmer import main
-
-
-def _haiku(text: str) -> MagicMock:
-    block = MagicMock()
-    block.text = text
-    resp = MagicMock()
-    resp.content = [block]
-    return resp
+from palmer import main
+from tests.helpers import llm_reply
 
 
 LIKED = {"kind": "liked", "sentiment": "positive", "quoted": "want me to add that?", "emoji": ""}
@@ -39,7 +31,7 @@ class TestInterpretVerdicts:
     ])
     def test_only_answer_needs_reply(self, function, needs_reply):
         payload = f'{{"function": "{function}", "sentiment": "positive", "about": "mornings"}}'
-        with patch.object(tapback.client.messages, "create", return_value=_haiku(payload)):
+        with patch.object(tapback.client.messages, "create", return_value=llm_reply(payload)):
             v = tapback.interpret_reaction(THUMBS, "want me to add that to your morning?", {})
         assert v["function"] == function
         assert v["needs_reply"] is needs_reply
@@ -48,13 +40,13 @@ class TestInterpretVerdicts:
         """A skull is 'neutral' to the static map; in context it can be praise."""
         skull = {"kind": "emoji", "sentiment": "neutral", "quoted": "", "emoji": "\U0001f480"}
         payload = '{"function": "applause", "sentiment": "positive", "about": "the joke"}'
-        with patch.object(tapback.client.messages, "create", return_value=_haiku(payload)):
+        with patch.object(tapback.client.messages, "create", return_value=llm_reply(payload)):
             v = tapback.interpret_reaction(skull, "They always pick the day before the weekend.", {})
         assert v["sentiment"] == "positive"
 
     def test_about_is_captured_and_truncated(self):
         payload = '{"function": "objection", "sentiment": "negative", "about": "' + "x" * 200 + '"}'
-        with patch.object(tapback.client.messages, "create", return_value=_haiku(payload)):
+        with patch.object(tapback.client.messages, "create", return_value=llm_reply(payload)):
             v = tapback.interpret_reaction(LIKED, "bitcoin is up 12%", {})
         assert len(v["about"]) <= 40
 
@@ -68,19 +60,19 @@ class TestInterpretFailsSafe:
         assert v["needs_reply"] is False and v["function"] == "closer"
 
     def test_unparseable_response(self):
-        with patch.object(tapback.client.messages, "create", return_value=_haiku("not json at all")):
+        with patch.object(tapback.client.messages, "create", return_value=llm_reply("not json at all")):
             v = tapback.interpret_reaction(THUMBS, "want me to add that?", {})
         assert v["needs_reply"] is False
 
     def test_invalid_function_value(self):
         with patch.object(tapback.client.messages, "create",
-                          return_value=_haiku('{"function": "vibes", "sentiment": "positive"}')):
+                          return_value=llm_reply('{"function": "vibes", "sentiment": "positive"}')):
             v = tapback.interpret_reaction(THUMBS, "want me to add that?", {})
         assert v["function"] == "closer" and v["needs_reply"] is False
 
     def test_invalid_sentiment_falls_back_to_parsed(self):
         with patch.object(tapback.client.messages, "create",
-                          return_value=_haiku('{"function": "closer", "sentiment": "spicy"}')):
+                          return_value=llm_reply('{"function": "closer", "sentiment": "spicy"}')):
             v = tapback.interpret_reaction(THUMBS, "hi", {})
         assert v["sentiment"] in ("positive", "negative", "neutral")
 
@@ -115,7 +107,7 @@ class TestConsolidation:
         stored = {}
         with patch.object(tapback, "get_profile", return_value=self._profile(tapback.CONSOLIDATE_EVERY)), \
              patch.object(tapback.client.messages, "create",
-                          return_value=_haiku('{"communication_style": "likes the dry stuff"}')), \
+                          return_value=llm_reply('{"communication_style": "likes the dry stuff"}')), \
              patch.object(tapback, "upsert_profile", side_effect=lambda p, u: stored.update(u)):
             tapback.maybe_consolidate("+15550001111")
         assert stored["communication_style"] == "likes the dry stuff"

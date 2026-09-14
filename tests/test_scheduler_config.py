@@ -13,11 +13,8 @@ The property under test throughout is phase-independence: fire times must not
 move when the process starts at a different moment.
 """
 import importlib
-from dotenv import load_dotenv
-load_dotenv()
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -25,8 +22,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 
 def _scheduler():
-    with patch("apscheduler.schedulers.background.BackgroundScheduler.start"):
-        from palmer import main
+    from palmer import main
     return main._scheduler
 
 

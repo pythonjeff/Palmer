@@ -6,17 +6,10 @@ Haiku is mocked; we're testing that:
   3. Every declared genre has a non-empty rubric.
   4. rubric_for() falls back safely on unknown or None input.
 """
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from palmer import rubrics
-
-
-def _haiku_reply(text: str) -> MagicMock:
-    block = MagicMock()
-    block.text = text
-    resp = MagicMock()
-    resp.content = [block]
-    return resp
+from tests.helpers import llm_reply
 
 
 class TestRubricCoverage:
@@ -46,22 +39,22 @@ class TestClassifyGenre:
 
     def test_exact_reply_maps(self):
         with patch("palmer.rubrics.client") as mock_client:
-            mock_client.messages.create.return_value = _haiku_reply("sports_team")
+            mock_client.messages.create.return_value = llm_reply("sports_team")
             assert rubrics.classify_genre("Cardinals") == "sports_team"
 
     def test_normalizes_reply_with_punctuation(self):
         with patch("palmer.rubrics.client") as mock_client:
-            mock_client.messages.create.return_value = _haiku_reply("Category: market_instrument.")
+            mock_client.messages.create.return_value = llm_reply("Category: market_instrument.")
             assert rubrics.classify_genre("AAPL stock") == "market_instrument"
 
     def test_uppercase_reply_maps(self):
         with patch("palmer.rubrics.client") as mock_client:
-            mock_client.messages.create.return_value = _haiku_reply("GEOPOLITICS")
+            mock_client.messages.create.return_value = llm_reply("GEOPOLITICS")
             assert rubrics.classify_genre("Iran conflict") == "geopolitics"
 
     def test_unknown_reply_falls_back_to_other(self):
         with patch("palmer.rubrics.client") as mock_client:
-            mock_client.messages.create.return_value = _haiku_reply("nonsense reply here")
+            mock_client.messages.create.return_value = llm_reply("nonsense reply here")
             assert rubrics.classify_genre("something") == "other"
 
     def test_api_failure_falls_back_to_other(self):
@@ -77,7 +70,7 @@ class TestClassifyGenre:
 
     def test_memoization_short_circuits_second_call(self):
         with patch("palmer.rubrics.client") as mock_client:
-            mock_client.messages.create.return_value = _haiku_reply("sports_team")
+            mock_client.messages.create.return_value = llm_reply("sports_team")
             rubrics.classify_genre("Cardinals")
             rubrics.classify_genre("Cardinals")
             rubrics.classify_genre("cardinals")   # case-insensitive
@@ -87,8 +80,8 @@ class TestClassifyGenre:
     def test_memoization_distinct_topics_call_separately(self):
         with patch("palmer.rubrics.client") as mock_client:
             mock_client.messages.create.side_effect = [
-                _haiku_reply("sports_team"),
-                _haiku_reply("market_instrument"),
+                llm_reply("sports_team"),
+                llm_reply("market_instrument"),
             ]
             assert rubrics.classify_genre("Cardinals") == "sports_team"
             assert rubrics.classify_genre("AAPL") == "market_instrument"
@@ -101,6 +94,6 @@ class TestClassifyGenre:
             mock_client.messages.create.side_effect = RuntimeError("boom")
             assert rubrics.classify_genre("weird") == "other"
         with patch("palmer.rubrics.client") as mock_client:
-            mock_client.messages.create.return_value = _haiku_reply("sports_team")
+            mock_client.messages.create.return_value = llm_reply("sports_team")
             assert rubrics.classify_genre("weird") == "other"
             mock_client.messages.create.assert_not_called()

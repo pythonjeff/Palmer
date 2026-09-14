@@ -6,15 +6,10 @@ repeat what the briefing already covers, and must fail to silence rather than to
 filler. Haiku is mocked — its judgement quality is checked live, not here.
 """
 from datetime import date
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from palmer import trends
-
-
-def _reply(text: str) -> MagicMock:
-    b = MagicMock(); b.text = text
-    r = MagicMock(); r.content = [b]
-    return r
+from tests.helpers import llm_reply
 
 
 CANDIDATES = [
@@ -67,7 +62,7 @@ class TestAdjacentPick:
     def test_returns_story_for_a_valid_pick(self):
         with _patch_candidates(), \
              patch.object(trends.client.messages, "create",
-                          return_value=_reply('{"query": "jeff bezos zero income tax idea", "why": "markets angle"}')), \
+                          return_value=llm_reply('{"query": "jeff bezos zero income tax idea", "why": "markets angle"}')), \
              patch.object(trends, "_search_raw",
                           return_value=[{"title": "Bezos floats plan", "content": "details"}]):
             out = trends.adjacent_story(INTERESTS, ["Bitcoin flat"])
@@ -76,7 +71,7 @@ class TestAdjacentPick:
 
     def test_none_verdict_is_respected(self):
         with _patch_candidates(), \
-             patch.object(trends.client.messages, "create", return_value=_reply('{"query": "NONE"}')), \
+             patch.object(trends.client.messages, "create", return_value=llm_reply('{"query": "NONE"}')), \
              patch.object(trends, "_search_raw") as search:
             assert trends.adjacent_story(INTERESTS, []) is None
         search.assert_not_called()
@@ -85,7 +80,7 @@ class TestAdjacentPick:
         """A hallucinated trend is exactly the filler this feature must not add."""
         with _patch_candidates(), \
              patch.object(trends.client.messages, "create",
-                          return_value=_reply('{"query": "aliens land in ohio", "why": "big if true"}')), \
+                          return_value=llm_reply('{"query": "aliens land in ohio", "why": "big if true"}')), \
              patch.object(trends, "_search_raw") as search:
             assert trends.adjacent_story(INTERESTS, []) is None
         search.assert_not_called()
@@ -93,7 +88,7 @@ class TestAdjacentPick:
     def test_pick_with_no_story_behind_it_is_dropped(self):
         with _patch_candidates(), \
              patch.object(trends.client.messages, "create",
-                          return_value=_reply('{"query": "jeff bezos zero income tax idea", "why": "x"}')), \
+                          return_value=llm_reply('{"query": "jeff bezos zero income tax idea", "why": "x"}')), \
              patch.object(trends, "_search_raw", return_value=[]):
             assert trends.adjacent_story(INTERESTS, []) is None
 
@@ -102,7 +97,7 @@ class TestAdjacentPick:
 
         def _create(**kw):
             captured["p"] = kw["messages"][0]["content"]
-            return _reply('{"query": "NONE"}')
+            return llm_reply('{"query": "NONE"}')
 
         with _patch_candidates(), patch.object(trends.client.messages, "create", side_effect=_create):
             trends.adjacent_story(INTERESTS, ["Bitcoin flat at 77k"])
@@ -120,7 +115,7 @@ class TestAdjacentPick:
 
     def test_unparseable_reply_is_silent(self):
         with _patch_candidates(), \
-             patch.object(trends.client.messages, "create", return_value=_reply("not json")):
+             patch.object(trends.client.messages, "create", return_value=llm_reply("not json")):
             assert trends.adjacent_story(INTERESTS, []) is None
 
 

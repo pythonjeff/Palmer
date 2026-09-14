@@ -8,14 +8,7 @@ from unittest.mock import patch, MagicMock
 
 from palmer import watches as watches_mod
 from palmer import watches
-
-
-def _haiku_reply(text: str) -> MagicMock:
-    block = MagicMock()
-    block.text = text
-    resp = MagicMock()
-    resp.content = [block]
-    return resp
+from tests.helpers import llm_reply
 
 
 def _capture_prompt(reply_text: str):
@@ -23,7 +16,7 @@ def _capture_prompt(reply_text: str):
 
     def _create(**kwargs):
         captured.append(kwargs["messages"][0]["content"])
-        return _haiku_reply(reply_text)
+        return llm_reply(reply_text)
 
     return _create, captured
 
@@ -64,7 +57,7 @@ class TestCheckWatchHitStoryBlock:
 
     def test_yes_reply_still_fires(self):
         with patch("palmer.watches.client") as mock_client:
-            mock_client.messages.create.return_value = _haiku_reply("YES")
+            mock_client.messages.create.return_value = llm_reply("YES")
             assert watches_mod._check_watch_hit(
                 results="candidate", description="d", recent_summaries=[],
                 engaged=False, genre="sports_team",
@@ -76,7 +69,7 @@ class TestUpdateStoryState:
     def test_persists_haiku_summary(self):
         with patch("palmer.watches.client") as mock_client, \
              patch("palmer.watches.update_watch_story") as mock_update:
-            mock_client.messages.create.return_value = _haiku_reply(
+            mock_client.messages.create.return_value = llm_reply(
                 "Cardinals extended their winning streak to seven with a 4-2 win over the Cubs."
             )
             watches_mod._update_story_state(
@@ -93,7 +86,7 @@ class TestUpdateStoryState:
     def test_no_previous_state_still_seeds(self):
         with patch("palmer.watches.client") as mock_client, \
              patch("palmer.watches.update_watch_story") as mock_update:
-            mock_client.messages.create.return_value = _haiku_reply(
+            mock_client.messages.create.return_value = llm_reply(
                 "Cardinals moved into first place with a win over the Cubs."
             )
             watches_mod._update_story_state(
@@ -121,7 +114,7 @@ class TestUpdateStoryState:
     def test_empty_haiku_reply_no_persist(self):
         with patch("palmer.watches.client") as mock_client, \
              patch("palmer.watches.update_watch_story") as mock_update:
-            mock_client.messages.create.return_value = _haiku_reply("   ")
+            mock_client.messages.create.return_value = llm_reply("   ")
             watches_mod._update_story_state(
                 watch_id=1, previous_state=None,
                 new_alert_title="t", new_alert_content="c",
@@ -132,7 +125,7 @@ class TestUpdateStoryState:
         long_text = "x" * 900
         with patch("palmer.watches.client") as mock_client, \
              patch("palmer.watches.update_watch_story") as mock_update:
-            mock_client.messages.create.return_value = _haiku_reply(long_text)
+            mock_client.messages.create.return_value = llm_reply(long_text)
             watches_mod._update_story_state(
                 watch_id=1, previous_state=None,
                 new_alert_title="t", new_alert_content="c",

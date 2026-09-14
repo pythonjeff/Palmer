@@ -28,8 +28,7 @@ def _fresh(tmp_path, monkeypatch):
 
 
 class TestTheKindColumn:
-    def test_a_kind_round_trips(self, tmp_path, monkeypatch):
-        _fresh(tmp_path, monkeypatch)
+    def test_a_kind_round_trips(self, fresh_db):
         db.save_message(PHONE, "assistant", "morning line", kind="morning")
         conn = db._conn()
         cur = conn.cursor()
@@ -37,15 +36,11 @@ class TestTheKindColumn:
         assert cur.fetchone()["kind"] == "morning"
         conn.close()
 
-    def test_kind_is_optional_so_existing_callers_are_unaffected(self, tmp_path, monkeypatch):
-        _fresh(tmp_path, monkeypatch)
+    def test_kind_is_optional_so_existing_callers_are_unaffected(self, fresh_db):
         db.save_message(PHONE, "user", "hey")
         assert db.get_history(PHONE) == [{"role": "user", "content": "hey"}]
 
-    def test_migration_is_idempotent(self, tmp_path, monkeypatch):
-        _fresh(tmp_path, monkeypatch)
-        db.init_db()
-        db.init_db()
+    def test_migration_is_idempotent(self, fresh_db):
         db.save_message(PHONE, "assistant", "x", kind="alert")
         assert len(db.get_history(PHONE)) == 1
 

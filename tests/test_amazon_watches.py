@@ -1,7 +1,5 @@
 """Tests for Amazon price-watch logic. Pure logic + mocked SerpAPI/Haiku —
 no real network or LLM calls. Run: pytest test_amazon_watches.py"""
-from dotenv import load_dotenv
-load_dotenv()
 
 from unittest.mock import patch, MagicMock
 

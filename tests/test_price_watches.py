@@ -1,7 +1,5 @@
 """Tests for price-watch alert logic. Pure logic only — no SerpAPI / Anthropic
 calls. Run: pytest test_price_watches.py"""
-from dotenv import load_dotenv
-load_dotenv()
 
 from datetime import datetime, timezone, timedelta
 
@@ -329,9 +327,7 @@ class TestPriceWatchSchedule:
     fire times are a function of the clock, not of when the process started."""
 
     def _trigger(self):
-        from unittest.mock import patch
-        with patch("apscheduler.schedulers.background.BackgroundScheduler.start"):
-            from palmer import main
+        from palmer import main
         from palmer.shopping import run_price_watches
         jobs = [j for j in main._scheduler.get_jobs() if j.func is run_price_watches]
         assert len(jobs) == 1, "expected exactly one run_price_watches job"

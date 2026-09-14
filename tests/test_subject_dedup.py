@@ -1,8 +1,6 @@
 """Tests for cross-job subject-dedup: userprofile._is_duplicate_subject and its wiring
 into watches.py and followup.py. Pure logic + mocked LLM/DB — no real network
 or LLM calls. Run: pytest test_subject_dedup.py"""
-from dotenv import load_dotenv
-load_dotenv()
 
 from unittest.mock import patch, MagicMock
 

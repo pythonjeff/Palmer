@@ -97,11 +97,6 @@ class TestTheClockReachesTheSystemPrompt:
         assert "{" not in out.split("RIGHT NOW")[1][:200]
 
 
-def _fresh(tmp_path, monkeypatch):
-    monkeypatch.setattr(db, "_DB_PATH", tmp_path / "test_reminder_time.db")
-    db.init_db()
-
-
 class TestNormalizeDueAt:
     """The write-path vetting. `due_at` is TEXT and claim_due_reminders orders it
     lexicographically, so a wrong shape is not a cosmetic problem — it fires the
@@ -162,8 +157,7 @@ class TestNormalizeDueAt:
 
 
 class TestTheDispatchEchoesLocalTime:
-    def test_a_saved_reminder_reports_the_local_time(self, tmp_path, monkeypatch):
-        _fresh(tmp_path, monkeypatch)
+    def test_a_saved_reminder_reports_the_local_time(self, fresh_db):
         with patch.object(agent, "get_profile", return_value={"timezone": "America/Chicago"}):
             due, label, err = agent._normalize_due_at(
                 PHONE, (datetime.now(timezone.utc) + timedelta(days=1)).isoformat())
@@ -174,8 +168,7 @@ class TestTheDispatchEchoesLocalTime:
 
 
 class TestStoredRowsAreCanonical:
-    def test_save_reminder_rewrites_the_offset(self, tmp_path, monkeypatch):
-        _fresh(tmp_path, monkeypatch)
+    def test_save_reminder_rewrites_the_offset(self, fresh_db):
         db.save_reminder(PHONE, "call mom", "2026-08-31T09:00:00-05:00")
         conn = db._conn()
         cur = conn.cursor()
@@ -184,8 +177,7 @@ class TestStoredRowsAreCanonical:
         conn.close()
         assert stored == "2026-08-31T14:00:00+00:00"
 
-    def test_an_unparseable_due_at_is_not_stored(self, tmp_path, monkeypatch):
-        _fresh(tmp_path, monkeypatch)
+    def test_an_unparseable_due_at_is_not_stored(self, fresh_db):
         db.save_reminder(PHONE, "call mom", "whenever")
         conn = db._conn()
         cur = conn.cursor()
@@ -193,8 +185,7 @@ class TestStoredRowsAreCanonical:
         assert cur.fetchone()["c"] == 0
         conn.close()
 
-    def test_normalize_repairs_a_legacy_row_and_is_idempotent(self, tmp_path, monkeypatch):
-        _fresh(tmp_path, monkeypatch)
+    def test_normalize_repairs_a_legacy_row_and_is_idempotent(self, fresh_db):
         conn = db._conn()
         cur = conn.cursor()
         # Write past save_reminder, the way rows were written before it normalized.
@@ -205,8 +196,7 @@ class TestStoredRowsAreCanonical:
         assert db.normalize_due_at_rows() == 1
         assert db.normalize_due_at_rows() == 0
 
-    def test_a_corrected_row_no_longer_fires_early(self, tmp_path, monkeypatch):
-        _fresh(tmp_path, monkeypatch)
+    def test_a_corrected_row_no_longer_fires_early(self, fresh_db):
         # 09:00-05:00 is 14:00Z. Lexicographically "09:00" sorts below a 12:00Z
         # "now", so before normalization this row was claimed five hours early.
         conn = db._conn()

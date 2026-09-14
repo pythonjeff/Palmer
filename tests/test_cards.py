@@ -26,7 +26,7 @@ OPENING = [{"kind": "event", "title": "Todd Rundgren", "when": "Friday", "source
            {"kind": "screen", "title": "Colony", "when": "in theaters", "source": "tmdb.org"}]
 
 
-def _render(**kw):
+def _render_card(**kw):
     args = dict(city="Kirkwood, MO", weather=WEATHER, traffic=TRAFFIC,
                 prices=PRICES, headlines=HEADS)
     args.update(kw)
@@ -36,21 +36,21 @@ def _render(**kw):
 class TestRender:
     def test_produces_a_png_at_og_spec(self):
         """1200x630 so one asset serves both the MMS card and the og:image."""
-        img = Image.open(io.BytesIO(_render()))
+        img = Image.open(io.BytesIO(_render_card()))
         assert img.format == "PNG"
         assert img.size == (cards.W, cards.H) == (1200, 630)
 
     def test_not_blank(self):
-        img = Image.open(io.BytesIO(_render())).convert("RGB")
+        img = Image.open(io.BytesIO(_render_card())).convert("RGB")
         assert len(img.getcolors(maxcolors=1_000_000) or []) > 50, "render looks empty"
 
     def test_under_mms_size_limit(self):
-        assert len(_render()) < 5_000_000
+        assert len(_render_card()) < 5_000_000
 
     def test_deterministic(self):
         from datetime import datetime
         when = datetime(2026, 8, 23, 7, 15)
-        assert _render(when=when) == _render(when=when)
+        assert _render_card(when=when) == _render_card(when=when)
 
 
 class TestDegradesSection_by_section:
@@ -59,22 +59,22 @@ class TestDegradesSection_by_section:
 
     def test_each_section_may_be_absent(self):
         for missing in ("weather", "traffic", "prices", "headlines"):
-            assert _render(**{missing: None})
+            assert _render_card(**{missing: None})
 
     def test_everything_absent(self):
-        assert _render(weather=None, traffic=None, prices=None, headlines=None)
+        assert _render_card(weather=None, traffic=None, prices=None, headlines=None)
 
     def test_partial_weather(self):
-        assert _render(weather={"description": "Overcast"})
+        assert _render_card(weather={"description": "Overcast"})
 
     def test_price_without_series(self):
-        assert _render(prices=[{"label": "X", "price": 1.5, "pct_24h": -2.0, "series": []}])
+        assert _render_card(prices=[{"label": "X", "price": 1.5, "pct_24h": -2.0, "series": []}])
 
     def test_long_headline_is_clipped_not_crashed(self):
-        assert _render(headlines=["x" * 400])
+        assert _render_card(headlines=["x" * 400])
 
     def test_missing_city(self):
-        assert _render(city="")
+        assert _render_card(city="")
 
 
 class TestOpeningBand:
@@ -82,27 +82,27 @@ class TestOpeningBand:
     rule — the one band of the card that was empty."""
 
     def test_the_card_renders_with_opening(self):
-        img = Image.open(io.BytesIO(_render(opening=OPENING)))
+        img = Image.open(io.BytesIO(_render_card(opening=OPENING)))
         assert img.size == (cards.W, cards.H)
 
     def test_it_changes_the_pixels(self):
         """A section that draws nothing is a section that isn't there."""
-        assert _render(opening=OPENING) != _render(opening=None)
+        assert _render_card(opening=OPENING) != _render_card(opening=None)
 
     def test_absent_opening_is_fine(self):
-        assert _render(opening=None) and _render(opening=[])
+        assert _render_card(opening=None) and _render_card(opening=[])
 
     def test_more_rows_than_fit_do_not_overflow_into_the_news_band(self):
         many = [{"kind": "event", "title": f"Act number {i}", "when": "Friday"}
                 for i in range(9)]
-        a = _render(opening=many)
-        b = _render(opening=many[:cards.CARD_OPENING_ROWS])
+        a = _render_card(opening=many)
+        b = _render_card(opening=many[:cards.CARD_OPENING_ROWS])
         assert a == b, "rows past the cap must not be drawn at all"
 
     def test_a_very_long_title_is_clipped_rather_than_running_under_markets(self):
         long = [{"kind": "local", "title": "A restaurant with an absurdly long name " * 4,
                  "when": "Friday"}]
-        assert _render(opening=long)
+        assert _render_card(opening=long)
 
 
 class TestCardCacheKey:
