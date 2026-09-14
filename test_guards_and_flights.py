@@ -136,7 +136,11 @@ class TestFailureStringsDoNotDisclaimCapability:
         assert not guards.redirects_elsewhere(out)
 
     def test_no_failure_string_names_a_competitor(self):
-        import flights, hotels, serpapi, shopping, traffic
+        import flights
+        import hotels
+        import serpapi
+        import shopping
+        import traffic
         # shopping gates on serpapi.API_KEY, not a local constant — patching the
         # wrong one lets the test out to the live network.
         with patch.object(flights, "SERP_API_KEY", ""), \
@@ -261,7 +265,8 @@ class TestFlightAlertThresholds:
             flightwatch.run_flight_watches()
 
     def test_it_is_scheduled_on_cron(self):
-        import inspect, main
+        import inspect
+        import main
         block = inspect.getsource(main).split("run_flight_watches,")[1][:120]
         assert '"cron"' in block and "misfire_grace_time" in block
 
@@ -271,7 +276,8 @@ class TestTopicOverlapIsRaisedNotEnforced:
         """Semantic overlap has false positives — "NFL headlines" reads as a
         duplicate of "Philadelphia Eagles news" and is not — so silently
         dropping what someone asked for is the wrong failure."""
-        import inspect, agent
+        import inspect
+        import agent
         src = inspect.getsource(agent.get_reply)
         block = src.split('update_morning_briefing"')[1].split("elif b.name")[0]
         assert "topic_already_covered" in block
@@ -279,7 +285,8 @@ class TestTopicOverlapIsRaisedNotEnforced:
         assert "Do not remove anything yourself" in block
 
     def test_the_page_will_not_render_one_article_twice(self):
-        import inspect, home
+        import inspect
+        import home
         src = inspect.getsource(home._fetch_headlines)
         assert "seen_urls" in src
 
@@ -387,7 +394,11 @@ class TestTheCapabilityDenialGuard:
     def test_no_failure_string_in_the_codebase_trips_it(self):
         """The tool failure strings are what the model paraphrases. If one of
         them reads as a denial, the guard is policing a problem we wrote."""
-        import flights, hotels, serpapi, shopping, traffic, datafeeds
+        import flights
+        import hotels
+        import serpapi
+        import shopping
+        import traffic
         with patch.object(flights, "SERP_API_KEY", ""), \
              patch.object(hotels, "SERP_API_KEY", ""), \
              patch.object(serpapi, "API_KEY", ""):

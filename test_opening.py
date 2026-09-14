@@ -635,7 +635,8 @@ class TestTheKindsDispatch:
 
     def test_a_kinds_change_expires_the_cached_rows(self):
         """Otherwise they keep seeing the concerts they just asked to stop."""
-        import inspect, agent
+        import inspect
+        import agent
         src = inspect.getsource(agent.get_reply)
         block = src.split('update_morning_briefing"')[1].split("elif b.name")[0]
         assert "morning_prefs" in block and "opening" in block

@@ -4,7 +4,6 @@ Profile extraction/consolidation plus the two cross-send dedup gates that
 stop unprompted messages repeating a subject.
 """
 import json
-import re
 
 from db import (
     get_profile, upsert_profile, get_message_count, get_older_messages, HISTORY_LIMIT,

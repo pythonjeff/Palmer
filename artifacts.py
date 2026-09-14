@@ -30,7 +30,7 @@ import os
 import secrets
 import threading
 
-from db import save_artifact, get_artifact
+from db import get_artifact
 
 _APP_URL = os.environ.get("APP_URL", "").rstrip("/")
 
@@ -46,13 +46,6 @@ _cache_lock = threading.Lock()
 def new_token() -> str:
     """128-bit URL-safe token."""
     return secrets.token_urlsafe(16)
-
-
-def publish(payload: dict, ttl_hours: int = TTL_HOURS) -> tuple[str, str]:
-    """Store a briefing payload. Returns (token, page_url)."""
-    token = new_token()
-    save_artifact(token, "briefing", json.dumps(payload).encode(), ttl_hours=ttl_hours)
-    return token, page_url(token)
 
 
 def page_url(token: str) -> str:

@@ -13,7 +13,6 @@ and the server vets what comes back rather than trusting the string.
 from datetime import datetime, timedelta, timezone, date
 from unittest.mock import patch
 
-import pytest
 
 import agent
 import db
@@ -177,7 +176,6 @@ class TestStoredRowsAreCanonical:
     def test_save_reminder_rewrites_the_offset(self, tmp_path, monkeypatch):
         _fresh(tmp_path, monkeypatch)
         db.save_reminder(PHONE, "call mom", "2026-08-31T09:00:00-05:00")
-        rows = db.get_pending_reminders(PHONE) if hasattr(db, "get_pending_reminders") else None
         conn = db._conn()
         cur = conn.cursor()
         cur.execute(f"SELECT due_at FROM reminders WHERE phone = {db.PH}", (PHONE,))

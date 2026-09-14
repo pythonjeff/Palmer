@@ -293,7 +293,6 @@ class TestInvalidateExpiresPaidSections:
     city-derived section must not keep serving the old city's answer."""
 
     def _invalidated(self, section):
-        now = time.time()
         pl = _payload()
         with patch.object(home, "get_profile", return_value={"home_token": "tok"}), \
              patch.object(home, "load", return_value=pl), \

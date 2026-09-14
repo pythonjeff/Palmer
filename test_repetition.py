@@ -9,8 +9,8 @@ six hours while the followup job runs every four and the subject stayed live for
 days. Another got "Here you go - <link>" three times, word for word.
 
 VARIATION — a scheduled message the user DID ask for, said the same way every
-time: "Morning Drew - 103 today in Woodland Hills", "106 in Woodland Hills
-today, Drew", "111 today in Woodland Hills, Drew". Suppressing those would be
+time: "Morning Alex - 103 today in Cedar Falls", "106 in Cedar Falls
+today, Alex", "111 today in Cedar Falls, Alex". Suppressing those would be
 wrong; they asked for a daily briefing. Only the phrasing may not repeat. And
 token overlap cannot see it — those score 0.23 against each other.
 
@@ -26,10 +26,10 @@ import guards
 
 
 REPEAT_MORNINGS = [
-    "Morning Drew - 103 today in Woodland Hills, stay inside if you can.",
-    "106 in Woodland Hills today, Drew - hottest it's been all week.",
-    "111 today in Woodland Hills, Drew - and there's actually a chance of thunderstorms.",
-    "110 in Woodland Hills today, so outdoor plans need a rethink.",
+    "Morning Alex - 103 today in Cedar Falls, stay inside if you can.",
+    "106 in Cedar Falls today, Alex - hottest it's been all week.",
+    "111 today in Cedar Falls, Alex - and there's actually a chance of thunderstorms.",
+    "110 in Cedar Falls today, so outdoor plans need a rethink.",
 ]
 FRESH_LINES = [
     "Courtney Barnett plays the Hollywood Palladium Friday if you want a reason to get out.",
@@ -95,7 +95,7 @@ class TestVaryingAScheduledMessage:
 
     def test_leading_with_something_else_clears_it(self):
         """The redraft asks for the same facts starting somewhere else."""
-        recast = "Courtney Barnett's at the Hollywood Palladium Friday, and it's 110 in Woodland Hills."
+        recast = "Courtney Barnett's at the Hollywood Palladium Friday, and it's 110 in Cedar Falls."
         assert guards.repeats_opening(recast, REPEAT_MORNINGS) is None
 
     def test_the_morning_line_redrafts_on_a_repeat(self):

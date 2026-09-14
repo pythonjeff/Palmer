@@ -10,7 +10,7 @@ someone's home and office.
 """
 import inspect
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 

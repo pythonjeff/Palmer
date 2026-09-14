@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import html
 import os
-from datetime import datetime
 from urllib.parse import quote
 
 from timeutil import friendly_hhmm

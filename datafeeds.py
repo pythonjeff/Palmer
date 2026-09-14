@@ -7,7 +7,7 @@ import os
 import base64
 import random
 import concurrent.futures
-from datetime import datetime, timezone, timedelta, date as _date
+from datetime import datetime, timezone, timedelta
 
 import requests as _requests
 from tavily import TavilyClient

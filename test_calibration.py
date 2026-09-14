@@ -241,7 +241,7 @@ class TestEveryToolIsRouted:
 
     def test_the_three_way_track_collision_is_resolved(self):
         block = agent.SYSTEM_PROMPT.split("USE THE RIGHT TOOL")[1]
-        line = next(l for l in block.split("\n") if l.startswith("- add_watch vs"))
+        line = next(ln for ln in block.split("\n") if ln.startswith("- add_watch vs"))
         for other in ("update_morning_briefing", "follow_team"):
             assert other in line
 

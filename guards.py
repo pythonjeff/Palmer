@@ -88,14 +88,14 @@ REDIRECT_CORRECTION = (
 # --- repetition --------------------------------------------------------------
 # Two different failures wear the same face, and they need opposite remedies.
 #
-# SUPPRESSION: an unprompted message repeating one already sent. Drew got the
-# identical followup twice — "yo how'd practice look today? hurts moving like
+# SUPPRESSION: an unprompted message repeating one already sent. One user got
+# the identical followup twice — "yo how'd practice look today? hurts moving like
 # they said?" — because _is_duplicate_subject's window is six hours while the
 # followup job runs every four and the subject stayed live for days.
 #
 # VARIATION: a scheduled message the user DID ask for, said the same way every
-# time. Three consecutive mornings opened "103 today in Woodland Hills", "106 in
-# Woodland Hills today", "111 today in Woodland Hills". Suppressing those would
+# time. Three consecutive mornings opened "103 today in Cedar Falls", "106 in
+# Cedar Falls today", "111 today in Cedar Falls". Suppressing those would
 # be wrong — they asked for a daily briefing — but Palmer should not sound like
 # a form letter.
 #
@@ -144,9 +144,9 @@ def near_duplicate(text: str, recent: list[str], threshold: float = REPEAT_THRES
 
 
 # Token overlap answers SUPPRESSION and is useless for VARIATION. Three
-# consecutive Woodland Hills mornings — "Morning Drew - 103 today in Woodland
-# Hills", "106 in Woodland Hills today, Drew", "111 today in Woodland Hills,
-# Drew" — score only 0.23-0.25 against each other, because the numbers and the
+# consecutive Cedar Falls mornings — "Morning Alex - 103 today in Cedar Falls",
+# "106 in Cedar Falls today, Alex", "111 today in Cedar Falls, Alex" — score
+# only 0.23-0.25 against each other, because the numbers and the
 # trailing clause differ every day. Nothing lexical separates them from a
 # genuinely fresh morning.
 #
@@ -155,7 +155,7 @@ def near_duplicate(text: str, recent: list[str], threshold: float = REPEAT_THRES
 # words. That is the thing a reader recognises as "he says it the same way
 # every morning".
 # Three, not five. By the fourth word the trailing clause has diverged — "103
-# today in Woodland Hills, STAY INSIDE" vs "106 in Woodland Hills today, DREW —
+# today in Cedar Falls, STAY INSIDE" vs "106 in Cedar Falls today, ALEX —
 # HOTTEST" — and every day looks unique again. The repetition a reader actually
 # notices is in the first breath.
 _OPENING_WORDS = 3

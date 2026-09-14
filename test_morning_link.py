@@ -198,7 +198,6 @@ class TestNamingTheLink:
         assert out, "a second violation still ships rather than failing the morning"
 
     def test_ordinary_words_are_not_false_positives(self):
-        line = "Morning Jeff, the Cards page-turner of a ninth inning aside, cool and clear."
         out, calls = _draft_returning("Morning Jeff, cool and clear and 81.")
         assert len(calls) == 1
         assert not morning._NAMES_THE_LINK.search("Cool and clear, pages of rain later")

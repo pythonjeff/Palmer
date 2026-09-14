@@ -21,8 +21,8 @@ def _daily_ok(watch: dict, cap: int = DAILY_ALERT_MAX, today: str | None = None)
 
     It keyed on the dyno's UTC date, which rolls at 17:00 Pacific — mid-evening
     — so the allowance reset in the middle of a user's evening and could be
-    spent again before their own day was over. alerts.py had the same defect
-    and was fixed; this is the same fix, and the write side (db's
+    spent again before their own day was over. the retired daily-alert job had the same
+    defect and was fixed; this is the same fix, and the write side (db's
     update_watch_alerted) takes the same date so the two agree.
 
     `cap` is lowered for users whose reactions say Palmer is texting too much —
@@ -195,8 +195,8 @@ def _draft_alert(phone: str, watch: dict, top: dict, fallback: str) -> str:
 
     This was the one user-facing message in the system with no Palmer in it —
     a bare `title\nurl`, no system prompt, no calibration, against the rule
-    that anything the user reads is drafted through _build_system. Its sibling
-    alerts.py has always done this; the two paths simply diverged.
+    that anything the user reads is drafted through _build_system. Its sibling,
+    the retired daily-alert job, always did this; the two paths simply diverged.
 
     Never raises. Every failure falls back to the raw headline, which is what
     production sent before this existed — the same discipline as

@@ -11,7 +11,6 @@ to shut up about the page instead of promising a link it can't send.
 """
 from unittest.mock import patch
 
-import pytest
 
 import agent
 import prompts
@@ -93,7 +92,7 @@ class TestDispatch:
         assert URL in result
 
     def test_it_refreshes_the_page_for_this_caller(self):
-        """ensure_fresh, not home_url — a link to a 404 or to yesterday's data
+        """ensure_fresh, never a bare URL builder — a link to a 404 or to yesterday's data
         is worse than no link."""
         _, _, ensure = _drive()
         ensure.assert_called_once_with("+1555")
@@ -275,7 +274,8 @@ class TestACancelSaysWhatItTook:
         assert db.cancel_reminders(self.PHONE) == 3
 
     def test_the_dispatch_names_them(self):
-        import inspect, agent
+        import inspect
+        import agent
         block = inspect.getsource(agent.get_reply).split('"cancel_reminders"')[1] \
                                                   .split("elif b.name")[0]
         assert "cancel_reminders_named" in block

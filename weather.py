@@ -1,5 +1,5 @@
 """Weather: geocoding, NWS (US) and Open-Meteo (everywhere else)."""
-import re
+import os
 from datetime import datetime, timedelta, timezone, date as _date
 
 from netutil import _http_get_json_retry
@@ -19,7 +19,9 @@ _WMO_DESCRIPTIONS = {
     95: "thunderstorm", 96: "thunderstorm with hail", 99: "severe thunderstorm",
 }
 
-_NWS_USER_AGENT = "PalmerSMS/1.0 (contact: jeffreyblarson00@gmail.com)"
+# NWS requires a contact in the User-Agent; it is read from the environment so
+# nobody's personal address lives in the source.
+_NWS_USER_AGENT = f"PalmerSMS/1.0 (contact: {os.environ.get('PALMER_CONTACT_EMAIL', 'ops@palmer.invalid')})"
 
 def _is_us_coords(lat: float, lon: float) -> bool:
     """Rough bounding boxes for NWS-covered territory: CONUS, AK, HI, PR/USVI."""
@@ -103,7 +105,7 @@ def geocode_candidates(location: str) -> list[str]:
     """Other real places sharing this name, best match first, or [].
 
     Write paths only — this runs when a user PINS a location, never on the
-    read path that fires on every page view. Same terms as resolve_show and
+    read path that fires on every page view. Same terms as find_shows and
     _normalize_price_topic."""
     key = (location or "").strip().lower()
     if key not in _geocode_alts:
@@ -130,7 +132,7 @@ def resolve_weather_location(location: str) -> str | None:
     same display form _geocode/weather_snapshot use ("City, State"). Runs on
     the WRITE path when a user adds a location — never on read, which happens
     on every page view — same terms as tickers.resolve_company_ticker and
-    shows.resolve_show. None means the model should ask rather than guess."""
+    shows.find_shows. None means the model should ask rather than guess."""
     try:
         _, _, resolved = _geocode(location)
         return resolved

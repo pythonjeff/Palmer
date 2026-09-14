@@ -101,6 +101,6 @@ class TestProactiveSendersNeverShipTheFallbackString:
                      "shopping.py", "flightwatch.py", "send_reminders.py"]
         for name in proactive:
             src = pathlib.Path(name).read_text()
-            calls = [l for l in src.splitlines()
-                     if "ensure_sms(" in l and not l.strip().startswith("#")]
+            calls = [ln for ln in src.splitlines()
+                     if "ensure_sms(" in ln and not ln.strip().startswith("#")]
             assert not calls, (name, calls)

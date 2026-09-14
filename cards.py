@@ -39,7 +39,6 @@ RULE = (214, 210, 198)
 UP, DOWN = (31, 110, 58), (163, 39, 31)
 WARM = (168, 70, 26)
 COOL = (31, 90, 140)
-AMBER = (138, 90, 16)
 
 _FONT_DIRS = (
     "/usr/share/fonts/truetype/dejavu",                  # heroku slug

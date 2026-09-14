@@ -202,7 +202,8 @@ class TestAnAmbiguousPlaceIsAskedAboutNotGuessed:
         assert (lat, lon) == (39.8, -89.6)
 
     def test_the_dispatch_refuses_to_pick(self):
-        import inspect, agent
+        import inspect
+        import agent
         block = inspect.getsource(agent.get_reply).split('"add_weather_location"')[1] \
                                                   .split("elif b.name")[0]
         assert "ambiguous_location" in block

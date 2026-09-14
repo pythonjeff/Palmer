@@ -1,5 +1,7 @@
 # Palmer
 
+[![CI](https://github.com/pythonjeff/Palmer/actions/workflows/ci.yml/badge.svg)](https://github.com/pythonjeff/Palmer/actions/workflows/ci.yml)
+
 **The AI that texts like a friend who actually pays attention.**
 
 Palmer is a personal AI delivered entirely over SMS. No app to download, no interface to learn — just text it. It knows who you are, remembers what you care about, and reaches out when something worth knowing happens.
@@ -92,7 +94,8 @@ cp .env.example .env
 | `TOMTOM_API_KEY` | developer.tomtom.com (free tier, ~2,500 requests/day) |
 | `SERP_API_KEY` | serpapi.com (free plan is 250 searches/mo; paid from $50/mo for 5,000) |
 | `APP_URL` | Your deployed app URL (for Twilio status callbacks) |
-| `DATABASE_URL` | Postgres connection string (auto-set by Heroku) |
+| `DATABASE_URL` | Postgres connection string (auto-set by Heroku; omit locally to use SQLite) |
+| `PALMER_CONTACT_EMAIL` | Contact address sent in the User-Agent to the National Weather Service, which requires one |
 
 **3. Run locally**
 ```bash
@@ -134,6 +137,20 @@ GET /preview?phone=+15551234567         # generate morning briefing without send
 
 ---
 
+## Development
+
+```bash
+pip install -r requirements-dev.txt
+pytest                      # ~1,400 tests, all offline, a few seconds
+ruff check .                # lint
+```
+
+The tests need no real keys. A few modules read their API key at import time, so set placeholder values (`TAVILY_API_KEY=x`, `TOMTOM_API_KEY=x`, `SERP_API_KEY=x`, the Twilio and Anthropic vars) or copy `.env.example` to `.env`. `PALMER_NO_SCHEDULER=1` keeps the job loop from starting when `main` is imported in a shell or a one-off script. CI runs the same two commands on every push.
+
+Design notes — the reasoning behind each subsystem and the production incidents that shaped it — live in [`CLAUDE.md`](CLAUDE.md).
+
+---
+
 ## Architecture
 
 - `WEB_CONCURRENCY=1` is required. In-memory phone locks and APScheduler only work correctly in a single process.
@@ -141,8 +158,14 @@ GET /preview?phone=+15551234567         # generate morning briefing without send
 - **Source quality is one gate, applied at the search call** (`sources.py`). Every news fact and link Palmer sends — watch alerts, the morning briefing, Palmer Home, and conversational web search — goes through `datafeeds._search_raw` / `_search`, which filter before returning, so no surface can drift to its own standard. Four gates: a **blocklist** dropping press-release wires (`prnewswire`, `globenewswire`) and republishing aggregators (`msn.com`, `biztoc`, `news.google.com`) outright; a **relevance floor** that gives trusted sources 0.15 of slack, because Tavily's score measures query-text match and that is exactly what an SEO content farm is built to win; **tier ordering** from `trusted_sources.json` (tier 1 = wires and premier newsrooms plus `.gov`/`.edu`, tier 2 = mainstream and reputable specialists, tier 3 = everything else) sorting `(tier, -score)` so a wire report beats a higher-scoring blog; and **corroboration** requiring ≥ 2 distinct domains OR ≥ 1 tier-1 source before any unprompted alert fires. Palmer Home additionally drops tier 3 entirely — an untrusted row is worse than no row on a short curated list. Edit `trusted_sources.json` to add or remove sources; no code change needed.
 - Watches run every 30 minutes via APScheduler but only alert on major breaking developments — dated results from the last 12 hours, a strict criticality gate, a HEAD reachability check so a dead top link falls through to the next result, per-watch cooldown (default 4 hours), and dedup against the last alerted event.
 - Traffic uses TomTom. Morning briefings auto-include a short city snapshot (`get_city_traffic`): geocode → parallel Traffic Flow + Traffic Incidents in a city bounding box → Haiku drafts one natural line, or skips silently on failure. On demand, users can ask for city conditions or point-to-point drive times (`get_travel_time`, live traffic vs. free-flow). Landmark destinations (White House, Fenway, LAX) get resolved to street addresses by Sonnet before geocoding — TomTom's geocoder is a mapping API, not a search engine, and mis-ranks landmark names. A regular commute is saved with `set_commute` (geocoded once on save, with an optional leave time); the page's Commute card and the morning text are then routed for that departure via TomTom `departAt`, and say whether the number is a forecast for it or live traffic.
-- Price watches use SerpAPI Google Shopping (`shopping.py`): user texts "watch these sneakers under $80" → `add_price_watch` tool saves to `price_watches` → `run_price_watches` job runs every 6h. Each tick: SerpAPI Google Shopping query on the product name, Haiku picks the cheapest genuine match from the top candidates (guards against firing on unrelated accessories/refurbs), first successful check establishes a baseline silently, subsequent checks alert when the target is hit or the price drops ≥ 15% from baseline. Cooldown defaults to 12h. Fails silently on any SerpAPI error — never surfaces "shopping tool failed" to the user.
+- Price watches use SerpAPI Google Shopping (`shopping.py`): user texts "watch these sneakers under $80" → `add_price_watch` tool saves to `price_watches` → `run_price_watches` job runs twice a day on a cron (00:00 and 16:00 UTC — a cron rather than an interval so a deploy cannot reset the clock). Each run: SerpAPI Google Shopping query on the product name, Haiku picks the cheapest genuine match from the top candidates (guards against firing on unrelated accessories/refurbs), first successful check establishes a baseline silently, subsequent checks alert when the target is hit or the price has moved more than $2 in either direction (a flat bar, deliberately not a percentage, so a $12 grocery item and a $1,200 laptop are held to the same standard), then re-baseline. Cooldown defaults to 12h. Fails silently on any SerpAPI error — never surfaces "shopping tool failed" to the user.
 - Proactive outbound is scheduled: **mornings** at each user's local time (5-min tick, catch-up window, per-day guard), **check-ins** on a 2h tick but paced in days (`followup.GAP_DAYS`; Haiku picks one subject from their threads, their team's game or the page's headlines by echoing it exactly, Sonnet drafts, 1–7pm window), and **missing-data asks** every 60 min for users onboarded without a city so mornings can target them (7-day cooldown, US-daytime UTC window; `DATA_ASK_DRY_RUN=1` to preview).
 - Reminder delivery uses `FOR UPDATE SKIP LOCKED` on Postgres — safe for multiple scheduler ticks, no double-sends.
 - Twilio webhook signatures (HMAC-SHA1) validated on every inbound request. All DB queries parameterized and scoped to phone number.
 - Tool routing is hard: `get_weather` → NWS/Open-Meteo only, `get_price` → CoinGecko/yfinance only, traffic tools → TomTom only, product price watches → SerpAPI only, web search → Tavily news mode. No overlap, no hallucinated data.
+
+---
+
+## License
+
+Copyright © 2026 Jeff Larson. All rights reserved. The source is published for reading and evaluation; see [`LICENSE`](LICENSE).

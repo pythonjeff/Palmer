@@ -9,8 +9,6 @@ kind, so for anyone who actually texts Palmer the anti-repetition guard was
 comparing today's morning line against ordinary chat rather than against
 yesterday's morning — which is the failure it was written for.
 """
-from datetime import datetime, timezone
-from unittest.mock import patch
 
 import db
 import morning
@@ -58,7 +56,7 @@ class TestTheMorningComparesAgainstMornings:
 
 
 class TestTheAlertCapsUseTheReadersDay:
-    """alerts.py was fixed for this and the two watch caps were not.
+    """The retired daily-alert job was fixed for this and the two watch caps were not.
 
     A cap keyed on the dyno's UTC date rolls at 17:00 Pacific — inside the
     evening, not between days — so a user could take the whole day's
@@ -84,20 +82,23 @@ class TestTheAlertCapsUseTheReadersDay:
     def test_the_watch_loop_derives_the_day_from_the_profile_it_already_reads(self):
         """One profile read per user already happens for the pacing cap; the
         local day rides along on it rather than costing another connection."""
-        import inspect, watches
+        import inspect
+        import watches
         src = inspect.getsource(watches.run_watches)
         assert "local_today" in src
         assert "today=today" in src
 
     def test_the_price_loop_reads_every_profile_in_one_query(self):
         """Never `for phone in ...: get_profile(phone)` — that is N+1 a tick."""
-        import inspect, shopping
+        import inspect
+        import shopping
         src = inspect.getsource(shopping.run_price_watches)
         assert "get_all_profiles" in src
         assert "get_profile(" not in src
 
     def test_the_write_side_takes_the_same_day_as_the_read(self):
-        import inspect, db
+        import inspect
+        import db
         for fn in (db.update_watch_alerted, db.update_price_watch_alerted):
             assert "today" in inspect.signature(fn).parameters
 
@@ -109,7 +110,8 @@ class TestProfileFactsAgeOnTheReadersCalendar:
     the model as days_old: 1, and a volatile field was dropped a day early."""
 
     def test_the_prompt_profile_is_aged_on_the_users_day(self):
-        import inspect, agent
+        import inspect
+        import agent
         src = inspect.getsource(agent._prompt_safe_profile)
         assert "local_today" in src
         assert "fresh_profile_for_prompt(profile)" not in src, \

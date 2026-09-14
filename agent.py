@@ -14,8 +14,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 
 from db import (
-    init_db, get_history, save_message, get_profile, upsert_profile, save_reminder, cancel_reminders,
-    HISTORY_LIMIT,
+    init_db, get_history, save_message, get_profile, upsert_profile, save_reminder, HISTORY_LIMIT,
     save_watch, get_user_watches, cancel_watches,
     save_price_watch, get_user_price_watches, cancel_price_watches, set_price_watch_baseline,
 )
@@ -745,7 +744,7 @@ def get_reply(phone_number: str, message: str, media_url: str = None, history: l
                 current = list(profile.get("weather_locations") or [])
                 asked = (b.input.get("location") or "").strip()
                 # Resolve on the WRITE path, once — never on read, which runs
-                # on every page view. Same terms as resolve_show/_normalize_price_topic.
+                # on every page view. Same terms as shows.find_shows/_normalize_price_topic.
                 resolved = resolve_weather_location(asked)
                 choices = ambiguous_location(asked)
                 if not resolved:
