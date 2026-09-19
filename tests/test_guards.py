@@ -201,39 +201,30 @@ class TestFailureStringsDoNotDisclaimCapability:
 
 
 class TestFlightWatches:
-    def _fresh(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "fw.db")
-        db.init_db()
-
-    def test_a_watch_saves_and_lists(self, tmp_path, monkeypatch):
-        self._fresh(tmp_path, monkeypatch)
+    def test_a_watch_saves_and_lists(self, fresh_db):
         assert db.save_flight_watch("+1555", "lax", "mxp", "2026-09-18", "2026-09-26", 800)
         w = db.get_user_flight_watches("+1555")[0]
         assert (w["origin"], w["destination"]) == ("LAX", "MXP"), "codes normalise to upper"
 
-    def test_the_same_route_is_not_watched_twice(self, tmp_path, monkeypatch):
-        self._fresh(tmp_path, monkeypatch)
+    def test_the_same_route_is_not_watched_twice(self, fresh_db):
         db.save_flight_watch("+1555", "LAX", "MXP", "2026-09-18")
         assert db.save_flight_watch("+1555", "lax", "mxp", "2026-09-18") is None
 
-    def test_the_cap_holds(self, tmp_path, monkeypatch):
+    def test_the_cap_holds(self, fresh_db):
         """Each active watch costs ~30 SerpAPI searches a month against a 250
         plan, so the cap is a budget control, not tidiness."""
-        self._fresh(tmp_path, monkeypatch)
         for i in range(db.FLIGHT_WATCH_MAX):
             assert db.save_flight_watch("+1555", "LAX", f"MX{i}", "2026-09-18")
         assert db.save_flight_watch("+1555", "LAX", "JFK", "2026-09-18") is None
 
-    def test_cancelling_by_airport(self, tmp_path, monkeypatch):
-        self._fresh(tmp_path, monkeypatch)
+    def test_cancelling_by_airport(self, fresh_db):
         db.save_flight_watch("+1555", "LAX", "MXP", "2026-09-18")
         db.save_flight_watch("+1555", "JFK", "LHR", "2026-10-01")
         assert db.cancel_flight_watches("+1555", "lax") == 1
         assert len(db.get_user_flight_watches("+1555")) == 1
 
-    def test_an_alert_rebaselines(self, tmp_path, monkeypatch):
+    def test_an_alert_rebaselines(self, fresh_db):
         """Otherwise the next check measures from a fare the user was never told."""
-        self._fresh(tmp_path, monkeypatch)
         db.save_flight_watch("+1555", "LAX", "MXP", "2026-09-18")
         wid = db.get_user_flight_watches("+1555")[0]["id"]
         db.update_flight_watch_price(wid, 900.0, baseline=True)

@@ -26,7 +26,7 @@ from tests.helpers import llm_reply
 # ============================================================================
 #
 # Tests for price-watch alert logic. Pure logic only — no SerpAPI / Anthropic
-# calls. Run: pytest test_price_watches.py
+# calls. Run: pytest tests/test_shopping.py
 
 def _watch(**kwargs) -> dict:
     """Build a watch dict with sensible defaults; override fields per-test."""
@@ -624,7 +624,7 @@ class TestBothSourcesDelegate:
 # ============================================================================
 #
 # Tests for Amazon price-watch logic. Pure logic + mocked SerpAPI/Haiku —
-# no real network or LLM calls. Run: pytest test_amazon_watches.py
+# no real network or LLM calls. Run: pytest tests/test_shopping.py
 
 class TestExtractPrice:
     def test_extracted_price_number(self):
@@ -703,13 +703,6 @@ class TestSerpapiSearch:
 
 
 class TestPickBestMatch:
-    def _haiku_reply(self, text: str) -> MagicMock:
-        block = MagicMock()
-        block.text = text
-        resp = MagicMock()
-        resp.content = [block]
-        return resp
-
     def _candidates(self):
         return [
             {"asin": "B01", "title": "Optimum Nutrition Gold Standard 5lb", "price": 54.0, "url": ""},
@@ -721,18 +714,18 @@ class TestPickBestMatch:
 
     def test_picks_indexed_candidate(self):
         with patch("palmer.amazon.client") as mock_client:
-            mock_client.messages.create.return_value = self._haiku_reply("0")
+            mock_client.messages.create.return_value = llm_reply("0")
             out = amazon._pick_best_match("Optimum Nutrition 5lb", self._candidates())
         assert out["asin"] == "B01"
 
     def test_none_reply_returns_none(self):
         with patch("palmer.amazon.client") as mock_client:
-            mock_client.messages.create.return_value = self._haiku_reply("NONE")
+            mock_client.messages.create.return_value = llm_reply("NONE")
             assert amazon._pick_best_match("random", self._candidates()) is None
 
     def test_out_of_range_index_returns_none(self):
         with patch("palmer.amazon.client") as mock_client:
-            mock_client.messages.create.return_value = self._haiku_reply("99")
+            mock_client.messages.create.return_value = llm_reply("99")
             assert amazon._pick_best_match("q", self._candidates()) is None
 
     def test_haiku_exception_returns_none(self):

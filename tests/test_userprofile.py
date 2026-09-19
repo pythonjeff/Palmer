@@ -567,11 +567,9 @@ class TestUserAlreadyCovered:
 # the box is free text so topics arrive subject-shaped.
 
 @pytest.fixture
-def store(tmp_path, monkeypatch):
-    monkeypatch.setattr(db, "_DB_PATH", tmp_path / "onboard.db", raising=False)
+def store(fresh_db, monkeypatch):
     monkeypatch.setenv("APP_URL", "https://palmer.test")
-    db.init_db()
-    return db
+    return fresh_db
 
 
 class _Form(dict):

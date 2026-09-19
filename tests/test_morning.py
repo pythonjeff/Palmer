@@ -345,7 +345,7 @@ class TestTheirTeamInTheMorning:
 # from test_morning_schedule.py
 # ============================================================================
 #
-# Tests for morning send-window logic and time parsing. Run: pytest test_morning_schedule.py
+# Tests for morning send-window logic and time parsing. Run: pytest tests/test_morning.py
 
 def _dt(hour, minute, tz="America/Chicago"):
     return datetime(2026, 8, 3, hour, minute, tzinfo=ZoneInfo(tz))

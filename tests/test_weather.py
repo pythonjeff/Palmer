@@ -562,10 +562,8 @@ class TestTheSelectorIsGatedOnEvidence:
     that switches on one good day is the anecdote-fitting this was built to
     replace."""
 
-    def _seed(self, tmp_path, monkeypatch, rows):
+    def _seed(self, fresh_db, rows):
         from datetime import date, timedelta
-        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "sel.db")
-        db.init_db()
         wxaudit._clear_best_cache()
         for city, source, err, n in rows:
             for i in range(n):
@@ -573,44 +571,44 @@ class TestTheSelectorIsGatedOnEvidence:
                 db.record_forecast(city, day, source, 100.0 + err)
                 db.record_actual(city, day, 100.0)
 
-    def test_a_clearly_better_source_wins(self, tmp_path, monkeypatch):
-        self._seed(tmp_path, monkeypatch,
+    def test_a_clearly_better_source_wins(self, fresh_db):
+        self._seed(fresh_db,
                    [("WH", "nws", 11, 6), ("WH", "ecmwf_ifs025", 3, 6)])
         assert wxaudit.best_source("WH") == "ecmwf_ifs025"
 
-    def test_an_incumbent_that_is_already_best_is_kept(self, tmp_path, monkeypatch):
-        self._seed(tmp_path, monkeypatch,
+    def test_an_incumbent_that_is_already_best_is_kept(self, fresh_db):
+        self._seed(fresh_db,
                    [("CC", "nws", 2, 6), ("CC", "ecmwf_ifs025", 12, 6)])
         assert wxaudit.best_source("CC") is None
 
-    def test_a_margin_too_thin_does_not_churn(self, tmp_path, monkeypatch):
+    def test_a_margin_too_thin_does_not_churn(self, fresh_db):
         """A source that changes weekly is its own kind of wrong."""
-        self._seed(tmp_path, monkeypatch,
+        self._seed(fresh_db,
                    [("TIE", "nws", 5, 6), ("TIE", "ecmwf_ifs025", 4, 6)])
         assert wxaudit.best_source("TIE") is None
 
-    def test_a_challenger_with_too_few_days_does_not_win(self, tmp_path, monkeypatch):
-        self._seed(tmp_path, monkeypatch,
+    def test_a_challenger_with_too_few_days_does_not_win(self, fresh_db):
+        self._seed(fresh_db,
                    [("THIN", "nws", 11, 6), ("THIN", "icon_seamless", 1, 2)])
         assert wxaudit.best_source("THIN") is None
 
-    def test_an_unmeasured_incumbent_is_never_abandoned(self, tmp_path, monkeypatch):
+    def test_an_unmeasured_incumbent_is_never_abandoned(self, fresh_db):
         """The failure this gate exists to prevent: NWS has no historical
         endpoint, so it starts with almost no scored days. Switching away from
         it before measuring it would be exactly the mistake."""
-        self._seed(tmp_path, monkeypatch, [("NOBASE", "ecmwf_ifs025", 1, 6)])
+        self._seed(fresh_db, [("NOBASE", "ecmwf_ifs025", 1, 6)])
         assert wxaudit.best_source("NOBASE") is None
 
-    def test_the_answer_is_cached_per_city_per_day(self, tmp_path, monkeypatch):
+    def test_the_answer_is_cached_per_city_per_day(self, fresh_db):
         """Consulted on the read path; the answer cannot change intraday."""
-        self._seed(tmp_path, monkeypatch,
+        self._seed(fresh_db,
                    [("WH", "nws", 11, 6), ("WH", "ecmwf_ifs025", 3, 6)])
         wxaudit.best_source("WH")
         with patch("palmer.db.forecast_scores", side_effect=AssertionError("should not re-query")):
             assert wxaudit.best_source("WH") == "ecmwf_ifs025"
 
-    def test_no_city_and_no_data_are_safe(self, tmp_path, monkeypatch):
-        self._seed(tmp_path, monkeypatch, [])
+    def test_no_city_and_no_data_are_safe(self, fresh_db):
+        self._seed(fresh_db, [])
         assert wxaudit.best_source("") is None
         assert wxaudit.best_source("Nowhere") is None
 

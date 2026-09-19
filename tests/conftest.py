@@ -58,6 +58,10 @@ def _no_llm(monkeypatch):
 @pytest.fixture
 def fresh_db(tmp_path, monkeypatch):
     """An empty schema in a temp file, in place of the repo-root palmer.db."""
-    monkeypatch.setattr(db, "_DB_PATH", tmp_path / "test.db", raising=False)
+    assert not db._DATABASE_URL, (
+        "DATABASE_URL is set — fresh_db only isolates the SQLite path, so "
+        "these tests would run against that real database. Unset it first."
+    )
+    monkeypatch.setattr(db, "_DB_PATH", tmp_path / "test.db")
     db.init_db()
     return db
