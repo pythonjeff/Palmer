@@ -71,6 +71,14 @@ userprofile.py  profile extract/consolidate + the two cross-send dedup gates
 agent.py        _build_system, get_reply, tool dispatch, save_assistant_turn
 ```
 
+Two more sit at the very bottom beside `timeutil`/`sources`, importing nothing
+from Palmer so anything may use them:
+
+```
+brand.py        palette, name, tagline, the mark (favicon / icon / RBM logo)
+links.py        every public URL: page, og:image, vCard, icon, sms: deep links
+```
+
 Dependencies run strictly downward: `llm`/`netutil`/`sources` ← `smstext`/`weather`/`datafeeds` ← `userprofile` ← `agent`. Each module imports standalone; keep it that way.
 
 `sources.py` imports nothing from Palmer at all — that is what lets `datafeeds` use it. The tier helpers used to live in `watches.py`, which `datafeeds` sits below, so filtering at the search call would have been a cycle.
@@ -787,6 +795,90 @@ by URL and have no reason to refetch one they have already seen. With a fixed
 first time. The server was rendering today's card faithfully; nobody was asking
 for it, and there was no ETag or Last-Modified to hint otherwise. The PNG route
 now sends an ETag too, for caches that do revalidate.
+
+### Every public URL is built in `links.py`, and the short host must not redirect
+Six f-strings spelled `{APP_URL}/h/{token}` by hand — `home.rotate`,
+`home.ensure_fresh`, `onboard.start`, both `/h/` handlers in `main.py`, and a
+dead pair in `artifacts.py`. They agreed only by coincidence, which is the same
+setup that froze the card's cache key when its caller composed one it did not
+own. `links.py` owns the shape; `test_links.py::TestNobodyBuildsTheirOwn` fails
+if a seventh copy appears.
+
+**`APP_URL` and `LINK_DOMAIN` are not interchangeable.** `APP_URL` is where the
+app runs and where Twilio's status callbacks post; it must stay the real host.
+`LINK_DOMAIN` is what a person reads in a text, is optional, and falls back to
+`APP_URL` — so the shape is already changeable and nothing moves until a domain
+exists.
+
+**`LINK_DOMAIN` must be an alias that SERVES the page, never a redirecting
+shortener.** A link preview is drawn by a scraper fetching the URL and reading
+og tags out of the HTML. A redirect in front of that makes the preview depend on
+the scraper chasing it and attributing the result to the short URL — and a
+redirect is the standard way a working preview silently stops working, on the
+one surface (iMessage) that already needed a `?v=` fingerprint to refetch an
+image at all. Concretely: **Twilio Link Shortening must stay off the Messaging
+Service carrying these links**, because rewriting body URLs into a redirecting
+host is exactly that shape.
+
+**The token stays 22 characters.** A branded shortlink's path is ~10 and the gap
+is not worth closing: that kind of link is scoped to one order and expires,
+while `/h/{token}` is a permanent unauthenticated key to a page naming someone's
+city, their commute and the hour they leave the house. The 128 bits are the
+authentication (`artifacts.py`), not a style choice. The host is the part a
+reader notices.
+
+The `/c/{token}` routes are gone. `artifacts.load` accepted only
+`kind="briefing"` and `home.save` has written `kind="home"` since it took the
+page over, so nothing had written a row either route could read in a long time
+and every request 404'd — two URL shapes for one concept, one permanently
+broken.
+
+### One brand: `brand.py` owns the palette, the name and the mark
+`page.py` carried `--paper:#f7f5ef` and `cards.py` carried
+`PAPER = (247, 245, 239)`: one palette in two notations, kept in step by hand,
+under the standing rule that the card and the page render from one payload and
+must not disagree. Both render from `brand.py` now, hex for CSS and `rgb()` for
+Pillow, and `test_brand.py` fails on a hardcoded literal anywhere else — it
+caught the `theme-color` in `page.py` and `onboard.py` immediately.
+
+It imports nothing from Palmer, for the reason `sources.py` and `timeutil.py`
+don't: bottom of the graph, so anything may use it. That is also why the mark
+resolves its own font instead of borrowing `cards._font`, which would point the
+arrow back up.
+
+`mark_png()` defaults to **224x224** because that is what RCS Business
+Messaging wants for an agent logo (<=50KB), so one drawing serves the favicon,
+the apple-touch-icon, the contact photo and a future RBM brand asset.
+
+### The preview names the sender; the contact card is offered, never sent
+`og:site_name` was absent, and the page's masthead is the **reader's** name by
+design — so nothing anywhere in the link preview said who sent it. That one tag
+is the line iMessage renders as the brand. `og:image:alt` sits beside it because
+the card *is* the preview, and an unlabelled image is what a screen reader
+announced. The favicon is an inline `data:` URI rather than a route: `page.py`
+promises no external requests, and it opens on a cell connection.
+
+`/palmer.vcf` is Palmer as a saveable contact — vCard 3.0 with CRLF endings,
+which is what iOS and Android both import without mangling. `/icon.png` clamps
+`?s=` to 32..512, because that is user input on an unauthenticated route and an
+unbounded value renders a 30000px image on a 512MB dyno.
+
+**It lives on the page and is never texted.** An unprompted attachment to
+someone who asked for nothing is the same mistake as volunteering a URL, and the
+bare-greeting intro rule exists for it: a user who opened their page has opted
+into Palmer, a stranger on message one has not.
+`test_brand.py::TestWhereTheContactCardGoesOut` reads every proactive sender and
+fails if one reaches for it — the same shape as
+`test_onboard.py::TestWhereTheLinkGoesOut`.
+
+This is the half of verified-brand messaging that needs nobody's approval. The
+real thing is an RCS Business Messaging agent, where the brand IS the sender
+identity and there is nothing to save; that needs Google and US carrier vetting
+first, and `docs/branded-messaging.md` has the path, the costs and the seam it
+would land on (`sms_util.send_sms` growing a `ContentSid`, with Twilio's
+Content API carrying a `twilio/card` and a `twilio/text` fallback in one
+template). Note the og work above is for the SMS/iMessage path specifically —
+on RCS there is no scraper and the card is a payload you author.
 
 ### Windows must be shorter than the refresh opportunity, or they alias
 Most users never open their page, so the only guaranteed refresh is the daily

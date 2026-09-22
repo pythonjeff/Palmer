@@ -93,7 +93,8 @@ cp .env.example .env
 | `TICKETMASTER_API_KEY` | developer.ticketmaster.com (free, 5k calls/day) — Opening section |
 | `TOMTOM_API_KEY` | developer.tomtom.com (free tier, ~2,500 requests/day) |
 | `SERP_API_KEY` | serpapi.com (free plan is 250 searches/mo; paid from $50/mo for 5,000) |
-| `APP_URL` | Your deployed app URL (for Twilio status callbacks) |
+| `APP_URL` | Where the app runs — Twilio status callbacks post here |
+| `LINK_DOMAIN` | *Optional.* Short host for the links people read (`palmr.at`). Must be a CNAME alias that **serves** the page, never a redirecting shortener — a redirect in front of the og tags breaks the link preview. Falls back to `APP_URL`. See [docs/branded-messaging.md](docs/branded-messaging.md) |
 | `DATABASE_URL` | Postgres connection string (auto-set by Heroku; omit locally to use SQLite) |
 | `PALMER_CONTACT_EMAIL` | Contact address sent in the User-Agent to the National Weather Service, which requires one |
 
