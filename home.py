@@ -37,13 +37,12 @@ exists from day one.
 """
 from __future__ import annotations
 
-import os
 import time
 
 from db import get_profile, upsert_profile, save_artifact, get_artifact
 from artifacts import new_token
+from links import page_url
 
-_APP_URL = os.environ.get("APP_URL", "").rstrip("/")
 
 KIND = "home"
 TTL_HOURS = 24 * 400          # effectively permanent; refreshed on every write
@@ -94,7 +93,7 @@ def rotate(phone: str) -> str:
     payload = load(token) or {}
     if not payload:
         rebuild(phone, refresh_news=False)
-    return f"{_APP_URL}/h/{token}"
+    return page_url(token)
 
 
 def _now() -> float:
@@ -623,7 +622,7 @@ def ensure_fresh(phone: str) -> str:
             refresh_stale(token, payload)
     except Exception as e:
         print(f"home.ensure_fresh failed for {phone}: {type(e).__name__}: {e}")
-    return f"{_APP_URL}/h/{token}"
+    return page_url(token)
 
 
 def save(token: str, payload: dict) -> None:

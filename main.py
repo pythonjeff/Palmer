@@ -341,49 +341,6 @@ async def sms_status_webhook(
     return Response(status_code=204)
 
 
-@app.get("/c/{token}.png")
-async def artifact_png(token: str):
-    """The briefing as a flat card, for MMS and og:image.
-
-    Public by necessity — Twilio fetches MMS media and the recipient's phone
-    fetches the og:image, neither of which can carry auth. The token is the
-    protection; see artifacts.py."""
-    from artifacts import load, render_png
-    payload = load(token)
-    if payload is None:
-        raise HTTPException(status_code=404)
-    return FileResponse(
-        content=render_png(token, payload),
-        media_type="image/png",
-        headers={
-            "Cache-Control": "public, max-age=86400",
-            "X-Robots-Tag": "noindex, nofollow",
-            "Referrer-Policy": "no-referrer",
-        },
-    )
-
-
-@app.get("/c/{token}")
-async def artifact_page(token: str):
-    """The interactive briefing. An MMS card is a bitmap with no tap targets,
-    so this is where headlines and tickers become links."""
-    from artifacts import load, image_url, page_url
-    from page import render
-    payload = load(token)
-    if payload is None:
-        raise HTTPException(status_code=404)
-    return FileResponse(
-        content=render(payload, token=token,
-                       image_url=image_url(token), page_url=page_url(token)),
-        media_type="text/html; charset=utf-8",
-        headers={
-            "Cache-Control": "public, max-age=300",
-            "X-Robots-Tag": "noindex, nofollow",
-            "Referrer-Policy": "no-referrer",
-        },
-    )
-
-
 @app.api_route("/h/{token}.png", methods=["GET", "HEAD"])
 async def home_png(token: str):
     """The user's home as a flat card — og:image and MMS.
@@ -429,12 +386,12 @@ async def home_setup_submit(token: str, request: Request):
     payload = load(token)
     if payload is None:
         raise HTTPException(status_code=404)
-    base = os.environ.get("APP_URL", "").rstrip("/")
+    from links import page_url
     if needs_setup(payload):
         apply(token, payload, await request.form())
     # Redirect either way: a resubmitted form lands on the page it already
     # built rather than on an error the user can do nothing about.
-    return Response(status_code=303, headers={"Location": f"{base}/h/{token}",
+    return Response(status_code=303, headers={"Location": page_url(token),
                                               "Cache-Control": "no-store"})
 
 
@@ -447,7 +404,7 @@ async def home_page(token: str):
     payload = load(token)
     if payload is None:
         raise HTTPException(status_code=404)
-    base = os.environ.get("APP_URL", "").rstrip("/")
+    from links import image_url, page_url
     # Before the form is submitted this address IS the form, and between submit
     # and the first payload it is a holding page. Both return before
     # refresh_stale, which would otherwise spend on sections for a user whose
@@ -455,13 +412,13 @@ async def home_page(token: str):
     from onboard import needs_setup, render_setup, render_building
     if needs_setup(payload):
         return FileResponse(
-            content=render_setup(token, action=f"{base}/h/{token}"),
+            content=render_setup(token, action=page_url(token)),
             media_type="text/html; charset=utf-8",
             headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow",
                      "Referrer-Policy": "no-referrer"})
     if not payload.get("built_at"):
         return FileResponse(
-            content=render_building(f"{base}/h/{token}"),
+            content=render_building(page_url(token)),
             media_type="text/html; charset=utf-8",
             headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow",
                      "Referrer-Policy": "no-referrer"})
@@ -478,8 +435,8 @@ async def home_page(token: str):
     stamp = _card_fingerprint(payload)
     return FileResponse(
         content=render(payload, token=token,
-                       image_url=f"{base}/h/{token}.png?v={stamp}",
-                       page_url=f"{base}/h/{token}"),
+                       image_url=image_url(token, stamp),
+                       page_url=page_url(token)),
         media_type="text/html; charset=utf-8",
         headers={"Cache-Control": "no-store",
                  "X-Robots-Tag": "noindex, nofollow",

@@ -25,6 +25,9 @@ from datetime import datetime
 
 from PIL import Image, ImageDraw, ImageFont
 
+import brand
+from brand import rgb as _rgb
+
 W, H = 1200, 630
 PAD = 60
 
@@ -32,13 +35,16 @@ PAD = 60
 # only on temperature (warm/cool), the commute marker, and market deltas.
 # Pillow flattens to RGB at save time without alpha compositing, so every
 # colour here is a solid RGB triplet — no translucent overlays to fake.
-PAPER = (247, 245, 239)
-INK = (22, 21, 16)
-MUTED = (92, 88, 76)
-RULE = (214, 210, 198)
-UP, DOWN = (31, 110, 58), (163, 39, 31)
-WARM = (168, 70, 26)
-COOL = (31, 90, 140)
+# The values themselves live in brand.py, which page.py also renders from —
+# they used to be written out here as triplets and there as hex, one palette
+# maintained twice by hand. rgb() converts; nothing is transcribed.
+PAPER = _rgb(brand.PAPER)
+INK = _rgb(brand.INK)
+MUTED = _rgb(brand.INK2)
+RULE = _rgb(brand.RULE_SOLID)
+UP, DOWN = _rgb(brand.UP), _rgb(brand.DOWN)
+WARM = _rgb(brand.WARM)
+COOL = _rgb(brand.COOL)
 
 _FONT_DIRS = (
     "/usr/share/fonts/truetype/dejavu",                  # heroku slug

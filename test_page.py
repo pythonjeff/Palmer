@@ -139,10 +139,19 @@ class TestThePreviewImageCanChange:
     """
 
     def test_the_image_url_carries_a_content_stamp(self):
+        """Asserted on what links.image_url builds rather than on the spelling
+        in main.home_page: the "?v=" moved into the builder when every public
+        URL got one owner, and a source-text check would have gone quietly
+        green-then-vacuous instead of following it."""
+        import links
+        assert links.image_url("tok", "abc123").endswith("/h/tok.png?v=abc123")
+
+    def test_the_handler_passes_a_fingerprint_as_that_stamp(self):
+        """The other half: a stamp that never changes busts no cache."""
         import inspect
         import main
         src = inspect.getsource(main.home_page)
-        assert "_card_fingerprint" in src and "?v=" in src
+        assert "_card_fingerprint" in src and "image_url(token, stamp)" in src
 
     def test_the_png_answers_a_revalidating_cache(self):
         import inspect

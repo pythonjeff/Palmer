@@ -32,7 +32,6 @@ them nothing about onboarding has changed.
 from __future__ import annotations
 
 import html
-import os
 import re
 import threading
 
@@ -68,15 +67,15 @@ def start(phone: str) -> str | None:
     whose form this is. Returns None when there is nowhere to serve the page,
     so the caller sends an ordinary intro with no link rather than a dead one.
     Never raises — it sits in the path of a user's very first reply."""
-    app_url = os.environ.get("APP_URL", "").rstrip("/")
-    if not app_url:
+    from links import configured, page_url
+    if not configured():
         return None
     try:
         from home import home_token, load, save
         token = home_token(phone)
         if load(token) is None:
             save(token, {"phone": phone, "setup_pending": True})
-        return f"{app_url}/h/{token}"
+        return page_url(token)
     except Exception as e:
         print(f"onboard.start failed for {phone}: {type(e).__name__}: {e}")
         return None

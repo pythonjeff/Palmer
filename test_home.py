@@ -440,44 +440,63 @@ class TestInvalidate:
 
 
 class TestEnsureFresh:
-    """The one entry point for every path where Palmer hands over the link."""
+    """The one entry point for every path where Palmer hands over the link.
 
-    def test_it_builds_a_page_that_does_not_exist_yet(self):
+    The host comes from links.public_base() now, not a home._APP_URL constant,
+    so these set the environment the way production does. Patching a name that
+    has moved does not fail loudly — it just stops guarding anything — so the
+    target follows the code.
+    """
+
+    def test_it_builds_a_page_that_does_not_exist_yet(self, monkeypatch):
         """Minting a token does not build a payload, so a user who has never
         had a morning sent would otherwise get a link straight to a 404."""
+        monkeypatch.setenv("APP_URL", "https://x.test")
+        monkeypatch.delenv("LINK_DOMAIN", raising=False)
         with patch.object(home, "home_token", return_value="tok"), \
              patch.object(home, "load", return_value=None), \
-             patch.object(home, "rebuild") as rb, \
-             patch.object(home, "_APP_URL", "https://x.test"):
+             patch.object(home, "rebuild") as rb:
             url = home.ensure_fresh("+1555")
         rb.assert_called_once_with("+1555", refresh_news=True)
         assert url == "https://x.test/h/tok"
 
-    def test_it_only_refreshes_an_existing_page(self):
+    def test_it_only_refreshes_an_existing_page(self, monkeypatch):
+        monkeypatch.setenv("APP_URL", "https://x.test")
         with patch.object(home, "home_token", return_value="tok"), \
              patch.object(home, "load", return_value=_payload()), \
              patch.object(home, "rebuild") as rb, \
-             patch.object(home, "refresh_stale") as rs, \
-             patch.object(home, "_APP_URL", "https://x.test"):
+             patch.object(home, "refresh_stale") as rs:
             home.ensure_fresh("+1555")
         rb.assert_not_called()
         rs.assert_called_once()
 
-    def test_it_still_returns_a_url_when_the_refresh_blows_up(self):
+    def test_it_still_returns_a_url_when_the_refresh_blows_up(self, monkeypatch):
         """Callers are user-facing. A dead weather API must cost freshness,
         not the link."""
+        monkeypatch.setenv("APP_URL", "https://x.test")
+        monkeypatch.delenv("LINK_DOMAIN", raising=False)
         with patch.object(home, "home_token", return_value="tok"), \
-             patch.object(home, "load", side_effect=RuntimeError("db down")), \
-             patch.object(home, "_APP_URL", "https://x.test"):
+             patch.object(home, "load", side_effect=RuntimeError("db down")):
             assert home.ensure_fresh("+1555") == "https://x.test/h/tok"
 
-    def test_a_missing_app_url_is_detectable_by_the_caller(self):
+    def test_a_missing_app_url_is_detectable_by_the_caller(self, monkeypatch):
         """Callers gate on startswith('http') to fall back to text."""
+        monkeypatch.setenv("APP_URL", "")
+        monkeypatch.delenv("LINK_DOMAIN", raising=False)
         with patch.object(home, "home_token", return_value="tok"), \
              patch.object(home, "load", return_value=_payload()), \
-             patch.object(home, "refresh_stale"), \
-             patch.object(home, "_APP_URL", ""):
+             patch.object(home, "refresh_stale"):
             assert not home.ensure_fresh("+1555").startswith("http")
+
+    def test_a_link_domain_fronts_the_url_without_moving_the_app(self, monkeypatch):
+        """The whole point of LINK_DOMAIN: the reader sees the short host while
+        Twilio's callbacks keep posting to wherever the app actually runs."""
+        monkeypatch.setenv("APP_URL", "https://palmer-ai.herokuapp.com")
+        monkeypatch.setenv("LINK_DOMAIN", "palmr.at")
+        with patch.object(home, "home_token", return_value="tok"), \
+             patch.object(home, "load", return_value=_payload()), \
+             patch.object(home, "refresh_stale"):
+            assert home.ensure_fresh("+1555") == "https://palmr.at/h/tok"
 
 
 class TestToken:

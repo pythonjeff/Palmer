@@ -1,9 +1,17 @@
-"""Public, unguessable URLs for a briefing artifact.
+"""Token minting and card rendering for a briefing artifact.
 
-One token, one payload, two renderings:
+One token, one payload, two renderings — served by `main.py` as:
 
-  /c/{token}       the interactive page — headlines and tickers are real links
-  /c/{token}.png   the same briefing as a flat card, for MMS and og:image
+  /h/{token}       the interactive page — headlines and tickers are real links
+  /h/{token}.png   the same briefing as a flat card, for MMS and og:image
+
+This module used to own a second pair at `/c/{token}`, from before `home.py`
+took the page over. Those routes outlived their writer: `home.save` stores
+`kind="home"` and the `/c/` loader accepted only `kind="briefing"`, so nothing
+had written a row either of them could read in a long time and every request to
+them 404'd. They are gone, along with the loader and the two URL builders that
+addressed them. Every public URL is built in `links.py` now — see its docstring
+for why the shape has one owner.
 
 Storing the *payload* rather than the pixels is what makes the page possible. An
 MMS image is a bitmap with no tap targets anywhere in it, so interactivity can
@@ -26,13 +34,9 @@ from __future__ import annotations
 
 import json
 from datetime import datetime as _dt, timezone as _tz
-import os
 import secrets
 import threading
 
-from db import get_artifact
-
-_APP_URL = os.environ.get("APP_URL", "").rstrip("/")
 
 TTL_HOURS = 48
 
@@ -46,28 +50,6 @@ _cache_lock = threading.Lock()
 def new_token() -> str:
     """128-bit URL-safe token."""
     return secrets.token_urlsafe(16)
-
-
-def page_url(token: str) -> str:
-    return f"{_APP_URL}/c/{token}"
-
-
-def image_url(token: str) -> str:
-    # .png suffix because some carriers sniff the extension over the content type
-    return f"{_APP_URL}/c/{token}.png"
-
-
-def load(token: str) -> dict | None:
-    got = get_artifact(token)
-    if not got:
-        return None
-    kind, body = got
-    if kind != "briefing":
-        return None
-    try:
-        return json.loads(body.decode())
-    except Exception:
-        return None
 
 
 def _card_now(payload: dict):
@@ -119,7 +101,6 @@ def _card_fingerprint(payload: dict) -> str:
     means the image regenerates when it would look different and never
     otherwise, which is what the cache was for."""
     import hashlib
-    import json
     body = json.dumps(_card_inputs(payload), sort_keys=True, default=str)
     return hashlib.sha1(body.encode()).hexdigest()[:16]
 

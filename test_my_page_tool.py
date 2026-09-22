@@ -64,7 +64,15 @@ class _Resp:
 
 def _drive(reply="here you go", url=URL):
     """Run get_reply through one get_my_page tool call and capture what the
-    model was handed back."""
+    model was handed back.
+
+    The profile carries a city deliberately. Without one the dispatch routes to
+    onboard.start instead, and these tests then passed only because APP_URL
+    happened to be unset — start() returns None with nowhere to serve a page,
+    and the branch fell through to ensure_fresh by accident. Set APP_URL (a
+    local .env is enough) and every assertion here was silently checking the
+    setup-page branch instead of the one it names.
+    """
     calls = []
     responses = [
         _Resp([_Block(type="tool_use", name="get_my_page", id="t1", input={})], "tool_use"),
@@ -77,7 +85,8 @@ def _drive(reply="here you go", url=URL):
 
     with patch.object(agent, "_build_system", return_value="sys"), \
          patch.object(agent, "get_history", return_value=[]), \
-         patch.object(agent, "get_profile", return_value={"timezone": "America/Chicago"}), \
+         patch.object(agent, "get_profile",
+                      return_value={"timezone": "America/Chicago", "city": "Kirkwood, MO"}), \
          patch("home.ensure_fresh", return_value=url) as ensure, \
          patch.object(agent.client.messages, "create", side_effect=_create):
         text, _gif = agent.get_reply("+1555", "send me my page")

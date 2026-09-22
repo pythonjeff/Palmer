@@ -16,6 +16,7 @@ import html
 import os
 from urllib.parse import quote
 
+import brand
 from timeutil import friendly_hhmm
 
 # A newspaper page, not a dashboard: flat paper white, ink-black type, thin
@@ -23,14 +24,23 @@ from timeutil import friendly_hhmm
 # a reader actually needs it at a glance — the temperature and the commute
 # gauge — everything else stays black-and-white. Mirrors cards.py's palette
 # so the MMS/og:image preview and the page read as one publication.
+# The custom properties are interpolated from brand.py rather than written out,
+# because cards.py draws the same palette and the two used to be separate copies
+# in separate notations. Concatenated rather than f-strung: the rest of CSS is
+# full of braces.
+_ROOT = (
+ ":root{"
+ f"--paper:{brand.PAPER};--ink:{brand.INK};--ink2:{brand.INK2};--rule:{brand.RULE_ALPHA};"
+ f"--warm:{brand.WARM};--cool:{brand.COOL};--up:{brand.UP};--down:{brand.DOWN};"
+ f"--amber:{brand.AMBER};"
+ '--serif:Georgia,"Iowan Old Style","Times New Roman",Times,serif;'
+ '--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;'
+ "}"
+)
+
 CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
-:root{
- --paper:#f7f5ef;--ink:#161510;--ink2:#5c584c;--rule:rgba(22,21,16,.16);
- --warm:#a8461a;--cool:#1f5a8c;--up:#1f6e3a;--down:#a3271f;--amber:#8a5a10;
- --serif:Georgia,"Iowan Old Style","Times New Roman",Times,serif;
- --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
-}
+""" + _ROOT + """
 body{background:var(--paper);color:var(--ink);font:16px/1.5 var(--serif);
  -webkit-font-smoothing:antialiased;padding:0 0 48px}
 .wrap{max-width:640px;margin:0 auto;padding:28px 22px}
