@@ -348,8 +348,8 @@ async def brand_icon(s: int = 180):
     Not per-user and not a token route: it carries the brand and nothing about
     whoever fetched it, so unlike /h/ there is nothing here to protect. Cached
     hard for that reason — it only changes when brand.py does."""
-    from brand import mark_png
-    size = max(32, min(512, s))
+    from brand import mark_png, snap_size
+    size = snap_size(max(1, s))
     return FileResponse(
         content=mark_png(size),
         media_type="image/png",

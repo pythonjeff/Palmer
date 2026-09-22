@@ -20,6 +20,8 @@ would point the arrow back up.
 """
 from __future__ import annotations
 
+from functools import lru_cache
+
 NAME = "Palmer"
 
 # One sentence, used where a platform wants to describe the sender: the vCard's
@@ -121,6 +123,27 @@ def _mark_font(size: int):
         return None
 
 
+# The sizes the mark is ever served at. `/icon.png?s=` snaps to this ladder
+# rather than honouring an arbitrary number, which keeps the cache below
+# bounded at six entries — the route is public and unauthenticated, and a
+# render costs ~12ms on the single worker that also answers Twilio's inbound
+# webhooks (WEB_CONCURRENCY=1 is a hard requirement; see CLAUDE.md). Every
+# caller is ours, so nothing needs a size off this list, and a client handed a
+# slightly larger PNG downscales it for free.
+# 224 is on the ladder because it is mark_png's default and the RBM logo
+# size; 180 is the apple-touch-icon.
+MARK_SIZES = (32, 64, 128, 180, 224, 256, 512)
+
+
+def snap_size(size: int) -> int:
+    """The smallest offered size that covers `size`."""
+    for s in MARK_SIZES:
+        if size <= s:
+            return s
+    return MARK_SIZES[-1]
+
+
+@lru_cache(maxsize=len(MARK_SIZES))
 def mark_png(size: int = 224) -> bytes:
     """The mark as a PNG.
 
@@ -128,6 +151,9 @@ def mark_png(size: int = 224) -> bytes:
     an agent logo (<=50KB), so the same call serves the favicon, the
     apple-touch-icon, the vCard photo and — if Palmer is ever registered as an
     RBM agent — the brand asset itself, with no second drawing to keep in step.
+
+    Cached: the drawing is a pure function of `size` and the palette above, and
+    the palette does not change at runtime.
     """
     import io
     from PIL import Image, ImageDraw

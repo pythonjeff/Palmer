@@ -88,8 +88,27 @@ class TestTheMark:
         """A fontless container must still get the square and the rule rather
         than a 500 on the icon route."""
         monkeypatch.setattr(brand, "_MARK_DIRS", ("/nonexistent",))
-        png = brand.mark_png(64)
-        assert png[:8] == b"\x89PNG\r\n\x1a\n"
+        brand.mark_png.cache_clear()   # the render is memoised; this one differs
+        try:
+            png = brand.mark_png(64)
+            assert png[:8] == b"\x89PNG\r\n\x1a\n"
+        finally:
+            brand.mark_png.cache_clear()
+
+    def test_the_render_is_memoised(self):
+        """/icon.png is public and unauthenticated, and a render costs ~12ms on
+        the single worker that also answers Twilio's inbound webhooks."""
+        brand.mark_png.cache_clear()
+        first = brand.mark_png(180)
+        assert brand.mark_png(180) is first
+
+    def test_every_offered_size_is_on_the_ladder(self):
+        """snap_size bounds the cache. An arbitrary ?s= would not."""
+        assert brand.snap_size(1) == 32
+        assert brand.snap_size(180) == 180
+        assert brand.snap_size(181) == 224
+        assert brand.snap_size(99999) == 512
+        assert brand.mark_png.cache_info().maxsize == len(brand.MARK_SIZES)
 
 
 class TestTheContactCard:
