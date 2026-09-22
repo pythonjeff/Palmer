@@ -13,10 +13,10 @@ phone over a cell connection, which is the only place it will ever be opened.
 from __future__ import annotations
 
 import html
-import os
 from urllib.parse import quote
 
 import brand
+from links import configured, icon_url, sms_link, vcard_url
 from timeutil import friendly_hhmm
 
 # A newspaper page, not a dashboard: flat paper white, ink-black type, thin
@@ -281,7 +281,7 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">',
         '<meta name="robots" content="noindex,nofollow">',
         '<meta name="referrer" content="no-referrer">',
-        '<meta name="theme-color" content="#f7f5ef">',
+        f'<meta name="theme-color" content="{brand.PAPER}">',
         f"<title>{e(title)}</title>",
         f'<meta property="og:title" content="{e(title)}">',
         f'<meta property="og:description" content="{e(desc)}">',
@@ -290,7 +290,21 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         '<meta property="og:image:height" content="630">',
         f'<meta property="og:url" content="{e(page_url)}">',
         '<meta property="og:type" content="website">',
+        # The brand line under the preview card. iMessage renders og:site_name
+        # beside the domain, and without it the only name on the card was the
+        # reader's own — the masthead is their name, deliberately, so nothing
+        # anywhere in the preview said who sent it. This is the cheapest half
+        # of "the message looks like it came from Palmer".
+        f'<meta property="og:site_name" content="{e(brand.NAME)}">',
+        # A preview image with no alt text is announced as an unlabelled image
+        # by a screen reader, and the card is the whole preview.
+        f'<meta property="og:image:alt" content="{e(brand.NAME)} briefing for {e(eyebrow)}">',
         '<meta name="twitter:card" content="summary_large_image">',
+        # Inline, not a route: the page is self-contained by design — no
+        # external requests, nothing to fetch on a cell connection — and a
+        # favicon is small enough to keep that promise.
+        f'<link rel="icon" href="data:image/svg+xml,{quote(brand.mark_svg(64))}">',
+        f'<link rel="apple-touch-icon" href="{e(icon_url(180))}">',
         f"<style>{CSS}</style></head><body><div class=wrap>",
         '<div class=masthead>',
         f'<div class=eyebrow>{e(eyebrow)}</div>',
@@ -303,12 +317,9 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         # No form here on purpose — the page has no auth and nothing to POST to.
         # The product is SMS, so the affordance is a pre-filled text back to
         # Palmer. Tapping opens Messages with the body already written.
-        sms_num = os.environ.get("TWILIO_PHONE_NUMBER", "")
-        # quote(), not quote_plus(): the sms: URI scheme has no form encoding,
-        # so a "+" is a literal plus. quote_plus sent people into Messages with
-        # "My+name+is+" already typed, and that is exactly what Palmer received.
-        body = quote("My name is ")
-        href = f"sms:{sms_num}?&body={body}" if sms_num else ""
+        # links.sms_link owns the URI shape, including the `?&` separator that
+        # looks like a typo and is the one spelling iOS and Android both parse.
+        href = sms_link("My name is ") or ""
         opener = f'<a class=ask href="{e(href)}">' if href else '<div class=ask>'
         closer = "</a>" if href else "</div>"
         out.append(
@@ -517,13 +528,31 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
     # Palmer — same affordance as the name ask above, and for the same reason:
     # the page has no auth and nothing to POST to. quote(), not quote_plus():
     # the sms: URI scheme has no form encoding, so a "+" is a literal plus.
-    arrange_num = os.environ.get("TWILIO_PHONE_NUMBER", "")
-    if arrange_num:
-        arrange_href = f'sms:{arrange_num}?&body={quote("Arrange my page: ")}'
+    arrange_href = sms_link("Arrange my page: ")
+    if arrange_href:
         out.append(
             f'<a class=ask href="{e(arrange_href)}">'
             '<div class=h>Want this arranged differently?</div>'
             '<div class=s>Tap to tell Palmer &rarr;</div></a>'
+        )
+
+    # The contact card. Palmer texts from a bare number, so until someone saves
+    # it every message arrives over an unnamed thread — which is most of what
+    # makes a brand's texts feel like a brand's and Palmer's feel like a
+    # stranger's. A verified RCS agent solves it properly and needs Google and
+    # carrier vetting first (docs/branded-messaging.md); this is the half that
+    # works today on both platforms and needs nobody's approval.
+    #
+    # It lives HERE and is never texted. Sending an unprompted attachment to
+    # someone who asked for nothing is the same mistake as volunteering a URL,
+    # and the bare-greeting intro rule exists for it. A user who has opened
+    # their page has already opted into Palmer; a stranger on message one has
+    # not.
+    if configured():
+        out.append(
+            f'<a class=ask href="{e(vcard_url())}">'
+            f'<div class=h>Save {e(brand.NAME)} to your contacts</div>'
+            '<div class=s>So texts arrive with a name &rarr;</div></a>'
         )
 
     out.append('<div class=foot>Palmer keeps this current<br>tap anything to open the source')

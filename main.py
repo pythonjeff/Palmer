@@ -341,6 +341,67 @@ async def sms_status_webhook(
     return Response(status_code=204)
 
 
+@app.api_route("/icon.png", methods=["GET", "HEAD"])
+async def brand_icon(s: int = 180):
+    """Palmer's mark. apple-touch-icon, and the photo on the contact card.
+
+    Not per-user and not a token route: it carries the brand and nothing about
+    whoever fetched it, so unlike /h/ there is nothing here to protect. Cached
+    hard for that reason — it only changes when brand.py does."""
+    from brand import mark_png
+    size = max(32, min(512, s))
+    return FileResponse(
+        content=mark_png(size),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=604800", "ETag": f'"mark-{size}"'},
+    )
+
+
+@app.api_route("/palmer.vcf", methods=["GET", "HEAD"])
+async def palmer_vcard():
+    """Palmer as a saveable contact.
+
+    Palmer texts from a bare number, so until someone saves it every message
+    arrives over an unnamed thread — which is most of the difference between
+    how a brand's texts feel and how Palmer's do. The proper fix is a verified
+    RCS agent, where the brand IS the sender identity and there is nothing to
+    save; that needs Google and US carrier vetting first
+    (docs/branded-messaging.md). This is the half that works today, on both
+    platforms, with nobody's approval.
+
+    Offered on the page, never texted — see the tap target in page.py for why.
+
+    vCard 3.0 rather than 4.0: it is what iOS and Android both import without
+    complaint, and the PHOTO;VALUE=URI form is the one that survives both.
+    """
+    from links import configured, icon_url
+    import brand
+    number = os.environ.get("TWILIO_PHONE_NUMBER", "")
+    if not number or not configured():
+        raise HTTPException(status_code=404)
+    lines = [
+        "BEGIN:VCARD",
+        "VERSION:3.0",
+        f"N:;{brand.NAME};;;",
+        f"FN:{brand.NAME}",
+        f"TEL;TYPE=CELL:{number}",
+        f"PHOTO;VALUE=URI:{icon_url(512)}",
+        f"NOTE:{brand.TAGLINE}",
+        "END:VCARD",
+        "",
+    ]
+    return FileResponse(
+        content="\r\n".join(lines).encode(),
+        # text/vcard is the registered type and is what both platforms offer to
+        # add to Contacts on tap. The filename in the disposition is what the
+        # saved card is called.
+        media_type="text/vcard; charset=utf-8",
+        headers={"Content-Disposition": 'inline; filename="palmer.vcf"',
+                 "Cache-Control": "public, max-age=3600",
+                 "X-Robots-Tag": "noindex, nofollow"},
+    )
+
+
 @app.api_route("/h/{token}.png", methods=["GET", "HEAD"])
 async def home_png(token: str):
     """The user's home as a flat card — og:image and MMS.

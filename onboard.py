@@ -35,6 +35,8 @@ import html
 import re
 import threading
 
+import brand
+
 # "What do you follow" is one free-text box, not a row of chips. A chip's
 # label is a category ("Sports", "Health") and a category is exactly the kind
 # of topic the search answers worst — CLAUDE.md's own numbers: "US politics"
@@ -211,7 +213,7 @@ def render_setup(token: str, *, action: str) -> str:
         '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
         '<meta name="robots" content="noindex,nofollow">'
         '<meta name="referrer" content="no-referrer">'
-        '<meta name="theme-color" content="#f7f5ef">'
+        f'<meta name="theme-color" content="{brand.PAPER}">'
         "<title>Set up Palmer</title>"
         f"<style>{CSS}{_FORM_CSS}</style></head><body><div class=wrap>"
         "<div class=masthead><div class=eyebrow>Palmer</div>"
