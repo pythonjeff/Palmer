@@ -50,6 +50,27 @@ class TestPaletteHasOneDefinition:
         assert brand.rgb("161510") == (22, 21, 16)
 
 
+class TestItSitsAtTheBottomOfTheGraph:
+    """brand.py and links.py import nothing from Palmer, for the reason
+    sources.py and timeutil.py don't: anything may use them without a cycle.
+    That is also why the mark resolves its own font rather than borrowing
+    cards._font, which would point the arrow back up."""
+
+    @pytest.mark.parametrize("module", ["brand.py", "links.py"])
+    def test_no_palmer_imports(self, module):
+        import ast
+        import pathlib
+        local = {p.stem for p in pathlib.Path(".").glob("*.py")}
+        tree = ast.parse(pathlib.Path(module).read_text())
+        found = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                found |= {a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                found.add(node.module.split(".")[0])
+        assert not (found & local), f"{module} imports from Palmer: {found & local}"
+
+
 class TestTheMark:
     def test_svg_is_well_formed_and_carries_the_palette(self):
         svg = brand.mark_svg(64)
