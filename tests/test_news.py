@@ -593,6 +593,13 @@ class TestNewsTopicsAreNotPriceTopics:
     def test_the_same_company_with_a_price_word_does_resolve(self, topic, symbol):
         assert resolve(topic)[0] == symbol
 
+    def test_nasdaq_100_is_not_the_composite(self):
+        """"give me nasdaq 100 updates" matched the bare "nasdaq" key and served
+        ^IXIC labelled "Nasdaq" — the wrong index, silently."""
+        for topic in ("Nasdaq 100 updates", "nasdaq-100", "NDX", "Nasdaq 100 index price"):
+            assert resolve(topic) == ("^NDX", "Nasdaq 100"), topic
+        assert resolve("Nasdaq composite")[0] == "^IXIC"
+
     def test_indices_need_no_price_word(self):
         """"nasdaq" is unambiguously a market reference on its own."""
         assert resolve("nasdaq")[0] == "^IXIC"

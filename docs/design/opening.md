@@ -37,6 +37,35 @@ Three things are load-bearing:
   on Haiku, once per city, cached — deliberately *not* a lookup table, which is
   the mistake `tickers.py` made twice with `PRIVATE_COMPANIES`. Ticketmaster
   sidesteps the problem entirely by taking `latlong` + radius instead of a name.
+- **A smaller metro came back all concerts, and four things caused it.** St.
+  Louis showed Black Country New Road, D.L. Hughley and Journey, week after week.
+  (1) `_local_candidates` was `trusted_only`, and stltoday, stlpr, stlmag, fox2now
+  and ksdk are the real newsrooms and none is on the allowlist — it returned
+  nothing, so the whole press half was silently empty. It now runs untrusted at
+  `LOCAL_MIN_SCORE` 0.60 (`_search_raw` still sorts trusted first) over four
+  queries — openings, "festivals fairs events {Month Year}", "festival this
+  weekend", "family events … this weekend" — on a 21-day window, because the
+  14-day one made the same query swing between zero and eight hits. (2)
+  Ticketmaster was Music and Arts only; Miscellaneous (fairs, festivals, family
+  shows) is added, Sports deliberately is not (regular-season fixtures belong to
+  people who follow the team, which is a per-user question). (3) One shared
+  prompt cut at 12k characters meant ~8.6k of concerts and a clipped sliver of
+  press; `_fit` now holds each family to its own budget and drops whole items
+  rather than cutting one mid-JSON. (4) With both families in one call the model
+  took the first good candidates it met, which were the concerts, whatever the
+  prompt said about spread — so events and press are **curated in separate
+  calls** (`EVENT_ROWS`/`PRESS_ROWS` 5 each, `_interleave`d), and the per-topic
+  cap (`MAX_PER_TOPIC` 2) is enforced in code. Rows carry a `topic`
+  (music, comedy, theatre, food, festival, family, film, other) and `_spread`
+  takes one of each topic before a second at read time.
+- **A press-sourced event must carry a date or it is dropped.** The curator lifts
+  individual events out of weekend roundups, and a date there is the model's
+  reading of prose. Undated, a row can never expire, and "Oct 9-11" was served on
+  the 14th. The prompt asks for the LAST day of a multi-day event; Ticketmaster
+  rows have a real date upstream and are exempt. Cost: Tavily goes from 2 to 4
+  searches per metro per week and Haiku from 1 to 2 calls per metro per day.
+  Preference-driven ordering (family, teams, what the user has said) is the
+  next layer and is not built; today every user in a metro shares one ranking.
 - **The local outlets had to be added to `trusted_sources.json`.** Palmer Home
   passes `trusted_only=True`, and Eater, Time Out, LAist, Thrillist and the city
   dailies were all tier 3 — so before they were added the section returned

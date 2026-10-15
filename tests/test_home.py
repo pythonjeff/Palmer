@@ -394,6 +394,39 @@ class TestPricesSurviveAFailure:
         assert [p["label"] for p in out] == ["NVDA"]
 
 
+class TestMarketsFallback:
+    """Everyone's morning carries a market line. Someone who follows no ticker
+    gets the S&P 500 and the Dow; someone who does keeps exactly their own."""
+
+    def _labels(self, profile, snap=None):
+        snap = snap or (lambda sym, label=None: {"label": label, "price": 1.0})
+        with patch("palmer.datafeeds.price_snapshot", side_effect=snap) as ps:
+            out = home._fetch_prices(profile, None)
+        return [p["label"] for p in out], ps
+
+    def test_no_topics_shows_the_broad_market(self):
+        labels, ps = self._labels({})
+        assert labels == ["S&P 500", "Dow"]
+        assert [c.args[0] for c in ps.call_args_list] == ["^GSPC", "^DJI"]
+
+    def test_topics_that_name_no_ticker_still_get_it(self):
+        labels, _ = self._labels({"morning_topics": ["Philadelphia Eagles news", "SpaceX news"]})
+        assert labels == ["S&P 500", "Dow"]
+
+    def test_a_tracked_ticker_replaces_it_entirely(self):
+        labels, _ = self._labels({"morning_topics": ["Nvidia stock"]})
+        assert labels == ["NVDA"]
+
+    def test_tracked_tickers_that_fail_do_not_fall_back_to_indices(self):
+        """They chose those tickers; a blip is not a reason to swap the list."""
+        with patch("palmer.datafeeds.price_snapshot", return_value=None):
+            assert home._fetch_prices({"morning_topics": ["Nvidia stock"]}, None) == []
+
+    def test_a_user_who_hid_markets_gets_nothing(self):
+        labels, ps = self._labels({"morning_prefs": {"hidden_sections": ["markets"]}})
+        assert labels == [] and ps.call_count == 0
+
+
 class TestInvalidate:
     """"add apple stock" has to show up now, not in five minutes."""
 

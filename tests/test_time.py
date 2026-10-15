@@ -849,4 +849,5 @@ class TestCurationIsToldTheReadersDate:
         import inspect
         from palmer import opening
         src = inspect.getsource(opening.opening_snapshot)
-        assert "_curate(metro or _metro(city), pool, today=today)" in src
+        assert "_curate(metro, pool, today=today" in src, "events call"
+        assert "_curate(metro, list(candidates), today=today" in src, "press call"
