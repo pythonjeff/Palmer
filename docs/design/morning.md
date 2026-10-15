@@ -16,6 +16,8 @@ Three things hold it together:
 - **The format is enforced in code, with one redraft** (`_is_structured`, same remedy as `_NAMES_THE_LINK`), and only when there is something to bullet (`need = min(2, len(required))`) — a user with nothing loaded still gets a plain greeting. A redraft only replaces the draft if it is better formed, so a fix for one rule cannot break another.
 - **Length is capped at a line boundary** (`_tidy_morning_text`, `MORNING_LINE_MAX` 560). Whitespace collapses within a line but newlines survive; the old single-space join would have flattened the bullets, and a mid-line cut leaves half a fact.
 
+**Weather and markets are in every update.** WEATHER is required whenever the payload has weather (it needs a city). MARKETS is required whenever the payload has a price row, and a user who follows no ticker gets one anyway: `home._fetch_prices` falls back to `tickers.DEFAULT_MARKETS` (S&P 500 and Dow) only when *nothing* in their topics resolved to a symbol. Tickers that resolve but fail to fetch do not trigger it — those are the user's chosen list, and a rate-limit blip must not swap it for someone else's. A user who hid the Markets section gets neither the fallback nor the requirement. The same payload feeds the page, so their Markets card shows the indices too.
+
 Two properties are load-bearing:
 - **The URL is last and alone.** Message apps only draw the rich link preview when the message carries exactly one URL at a boundary, and that preview is most of the value. Nothing may follow it — not a period, not a sign-off.
 - **`carries_link` gates the status callback.** A link message is sent with `add_status_callback=False`, because the `/sms-status` shorten-and-retry would truncate the URL into garbage.

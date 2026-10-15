@@ -572,6 +572,10 @@ def generate_morning_line(phone: str, payload: dict) -> str:
         required.append("the commute")
     if score_lines(payload):
         required.append("their team — yesterday's result and/or today's game, with the score or the time")
+    hidden = (payload.get("page_prefs") or {}).get("hidden_sections") or []
+    if payload.get("prices") and "markets" not in hidden:
+        required.append("the markets — how each price row below moved, with its percent "
+                        "(for most people that is just the S&P 500 and the Dow)")
     if payload.get("opening"):
         required.append("1-2 things newly open or worth catching near them this week, named specifically")
     required_block = (
@@ -591,7 +595,7 @@ This is not the full briefing — the briefing is the page, they are about to ta
 Rules:
 - Cover every REQUIRED item above, in your own words, with real specifics — the actual temperature, the actual commute time, the actual name of the place or event. Never gesture at a category ("some stuff opened nearby") instead of naming it.
 - FORMAT: one opener line, then one bullet per item. The opener is a single short sentence in Palmer's voice (the day's character, a greeting, or the one thing that stands out) carrying no data the bullets also carry. Each bullet is its own line, exactly "- LABEL: text", where LABEL is ALL CAPS and one of: WEATHER, COMMUTE, NEARBY, SCORES, MARKETS, NEWS. Use WEATHER for weather, COMMUTE for the drive, NEARBY for openings/events, SCORES for a followed game. Only include a bullet for an item the data actually has. Each bullet is one tight line of plain words, not a clipped fragment. No blank lines between bullets.
-- Beyond the required items, you may add ONE more bullet (MARKETS or NEWS) about something else on the page ONLY if it is genuinely notable — a real change, not routine. Skip it rather than padding; this text is basics plus link, not the briefing.
+- Beyond the required items, you may add ONE more NEWS bullet about something else on the page ONLY if it is genuinely notable — a real change, not routine. Skip it rather than padding; this text is basics plus link, not the briefing.
 - Under {MORNING_LINE_MAX} characters total, counting every line. Tight and scannable.
 - Never say the word "link", "page", "dashboard", "site", or "click" - the link speaks for itself and naming it makes this sound like a product notification.
 - Write ONLY the text. The link is attached automatically after it. Do not write a URL, and do not leave a placeholder like [link] or (url) where you think one goes - anything like that ships to them as literal text.
