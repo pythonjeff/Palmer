@@ -322,3 +322,16 @@ def render_dashboard(*, city: str, weather: dict | None, traffic: dict | None,
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
+
+
+def render_icon(size: int = 180) -> bytes:
+    """A "P" in the card's ink on its paper — the favicon and apple-touch-icon."""
+    img = Image.new("RGB", (size, size), PAPER)
+    d = ImageDraw.Draw(img)
+    font = _font(int(size * 0.7), bold=True)
+    box = d.textbbox((0, 0), "P", font=font)
+    d.text(((size - (box[2] - box[0])) / 2 - box[0],
+            (size - (box[3] - box[1])) / 2 - box[1]), "P", fill=INK, font=font)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
