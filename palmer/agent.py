@@ -228,7 +228,14 @@ def _build_system(phone: str, include_recent: bool = False, is_new_user: bool = 
         # once — userprofile._update_profile marks score_offer_sent under this
         # same condition after the turn, so this never becomes a nag.
         teams = profile.get("sports_teams")
-        teams = ", ".join(teams) if isinstance(teams, list) else str(teams)
+        # sports_teams is meant to be prose, but a profile can hold follow-list
+        # dicts there (the old `teams` alias migrated them in). Join names, or
+        # this block raises and takes the whole turn with it.
+        if isinstance(teams, list):
+            teams = ", ".join(t.get("name", "") if isinstance(t, dict) else str(t)
+                              for t in teams)
+        else:
+            teams = str(teams)
         system += (
             "\n\nLIVE SCORES OFFER\n"
             f"They've mentioned a team they follow ({teams}) and nothing is set up for it. "

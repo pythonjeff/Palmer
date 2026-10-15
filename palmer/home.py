@@ -192,7 +192,7 @@ def _fetch_prices(profile: dict, previous: list[dict] | None = None) -> list[dic
     exactly like Palmer forgetting, and is far worse than a slightly stale
     number sitting under a visible "N min ago" stamp."""
     from palmer.datafeeds import price_snapshot
-    from palmer.tickers import resolve_topic_asset
+    from palmer.tickers import resolve_topic_asset, DEFAULT_MARKETS
     stale = {(p.get("label") or "").lower(): p for p in (previous or [])}
     assets, seen = [], set()
     for topic in (profile.get("morning_topics") or []):
@@ -200,6 +200,14 @@ def _fetch_prices(profile: dict, previous: list[dict] | None = None) -> list[dic
         if got and got[0].lower() not in seen:
             seen.add(got[0].lower())
             assets.append(got)
+    # Nothing resolved to a symbol: show the broad market rather than an empty
+    # section, so every user's morning has a markets line. Only when NOTHING
+    # resolved — someone tracking tickers whose fetches all failed chose those
+    # tickers, and indices would be somebody else's list. A user who hid the
+    # section asked not to see it.
+    hidden = (profile.get("morning_prefs") or {}).get("hidden_sections") or []
+    if not assets and "markets" not in hidden:
+        assets = list(DEFAULT_MARKETS)
     out = []
     for symbol, label in assets[:MAX_PRICES]:
         snapshot = price_snapshot(symbol, label) or stale.get(label.lower())

@@ -46,10 +46,16 @@ import re
 
 # Symbol -> how it should read on the page. Yahoo's index symbols are correct
 # but unreadable; nobody wants "^GSPC" in their Markets section.
+# What the Markets section shows for someone who follows no ticker at all, so
+# every morning carries a market line. Hand-mapped like INDEX_TICKERS: search
+# returns futures for indices, which would be the wrong number.
+DEFAULT_MARKETS = (("^GSPC", "S&P 500"), ("^DJI", "Dow"))
+
 INDEX_LABELS = {
     "^GSPC": "S&P 500",
     "^DJI": "Dow",
     "^IXIC": "Nasdaq",
+    "^NDX": "Nasdaq 100",
     "^RUT": "Russell 2000",
     "^VIX": "VIX",
 }
@@ -62,6 +68,10 @@ INDEX_LABELS = {
 INDEX_TICKERS = {
     "s&p 500": "^GSPC", "s&p500": "^GSPC", "sp500": "^GSPC", "s&p": "^GSPC",
     "dow jones": "^DJI", "the dow": "^DJI",
+    # Nasdaq 100 is not the Nasdaq Composite. Without these keys "nasdaq 100
+    # updates" matched the bare "nasdaq" below and quietly served ^IXIC under
+    # the label "Nasdaq" — a different index, with nothing to show it.
+    "nasdaq 100": "^NDX", "nasdaq-100": "^NDX", "nasdaq100": "^NDX", "ndx": "^NDX",
     "nasdaq": "^IXIC", "russell 2000": "^RUT", "vix": "^VIX",
     "stock market": "^GSPC", "the market": "^GSPC", "markets": "^GSPC",
 }

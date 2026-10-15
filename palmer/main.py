@@ -388,7 +388,7 @@ async def artifact_page(token: str):
 async def icon_png():
     """The page's favicon and apple-touch-icon. No token: it is the same mark
     for everyone and carries no one's data."""
-    from cards import render_icon
+    from palmer.cards import render_icon
     return Response(content=render_icon(), media_type="image/png",
                     headers={"Cache-Control": "public, max-age=86400"})
 
