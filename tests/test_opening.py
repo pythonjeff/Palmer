@@ -395,7 +395,7 @@ class TestExpiredRowsDropOut:
              patch.object(opening, "client") as cl:
             cl.messages.create.return_value = _resp({"rows": [
                 {"title": "Bad Date", "subtitle": "", "when": "someday",
-                 "url": "https://t.com/1", "kind": "event", "date": "not-a-date"}]})
+                 "url": "https://www.ticketmaster.com/1", "kind": "event", "date": "not-a-date"}]})
             rows = opening.opening_snapshot(LA)
         assert rows and rows[0]["date"] is None
 
@@ -588,10 +588,10 @@ class TestPerUserKinds:
         with patch.object(opening, "_http_get_json", return_value={}), \
              patch("palmer.weather._geocode", side_effect=lambda c: COORDS[c]), \
              patch("palmer.datafeeds._search_raw",
-                   return_value=[{"title": "gig", "url": "https://t.com/1"}]) as tav, \
+                   return_value=[{"title": "gig", "url": "https://www.ticketmaster.com/1"}]) as tav, \
              patch.object(opening, "client") as cl:
             cl.messages.create.return_value = _resp(
-                {"rows": [{"title": "Muse", "url": "https://t.com/1", "kind": "event"}]})
+                {"rows": [{"title": "Muse", "url": "https://www.ticketmaster.com/1", "kind": "event"}]})
             a = opening.opening_snapshot({"city": "Culver City"})
             b = opening.opening_snapshot({"city": "Woodland Hills, California",
                                           "morning_prefs": {"opening_kinds": ["screen"]}})
@@ -1177,8 +1177,9 @@ class TestNearbyVariety:
         assert "Sports" not in http.call_args.args[0]
 
     def test_curate_keeps_a_valid_topic_and_defaults_the_rest(self):
-        rows = [{"title": "A", "kind": "event", "topic": "comedy"},
-                {"title": "B", "kind": "event", "topic": "nonsense"},
+        tm = "https://www.ticketmaster.com/"
+        rows = [{"title": "A", "kind": "event", "topic": "comedy", "url": tm + "a"},
+                {"title": "B", "kind": "event", "topic": "nonsense", "url": tm + "b"},
                 {"title": "C", "kind": "local"}]
         with patch.object(opening, "client") as cl:
             cl.messages.create.return_value = _resp({"rows": rows})
@@ -1208,3 +1209,15 @@ class TestNearbyVariety:
         with patch("palmer.weather._geocode", side_effect=lambda c: COORDS[c]):
             rows = opening.opening_snapshot(dict(STL, morning_prefs={"opening_kinds": ["local", "event"]}))
         assert {r["topic"] for r in rows[:3]} == {"music", "comedy", "food"}, today
+
+    def test_the_two_halves_of_the_pool_do_not_eat_each_other(self):
+        """Ticketmaster is ~8.6k characters on its own; one shared cut clipped
+        the press half to a sliver and the section came out all concerts."""
+        events = [{"title": f"Gig {i}", "url": "https://t.com/" + "x" * 90, "source": "ticketmaster.com",
+                   "blurb": "Rock Enterprise Center 2026-10-20"} for i in range(60)]
+        press = [{"title": f"Roundup {i}", "url": f"https://fox2now.com/{i}", "source": "fox2now.com",
+                  "blurb": "y" * 700} for i in range(12)]
+        kept = opening._fit(events + press)
+        assert sum(1 for c in kept if c["source"] == "fox2now.com") >= 8, "press keeps its own share"
+        assert sum(1 for c in kept if c["source"] == "ticketmaster.com") >= 20
+        assert all(isinstance(c, dict) and c["title"] for c in kept), "whole items only"

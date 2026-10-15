@@ -81,7 +81,16 @@ KIND_WORDS = {
 # three cached rows happened to all be concerts. Costs nothing extra: same one
 # Haiku call, a few more output tokens.
 CURATE_POOL = 10
-# Radius for the events pull. 25 miles is a metro, not a neighbourhood, which
+# Ticketmaster and local press are curated in SEPARATE calls, five rows each.
+# In one mixed call the model took the first good candidates it met, and with
+# thirty-odd structured concerts ahead of the press, "pick the best ten" came
+# back as ten concerts however the prompt asked for spread. Separate calls make
+# the split a fact of the pipeline instead of a request.
+EVENT_ROWS = 5
+PRESS_ROWS = 5
+# At most this many rows of one topic survive curation, enforced in code — the
+# prompt says the same thing and the model breaks it.
+MAX_PER_TOPIC = 2# Radius for the events pull. 25 miles is a metro, not a neighbourhood, which
 # is deliberate: nobody picks a concert by how close it is to their street.
 EVENT_RADIUS_MI = 25
 
@@ -183,13 +192,14 @@ LOCAL_MIN_SCORE = 0.60
 
 
 def _local_queries(metro: str, today: date) -> list[str]:
-    """Three questions, one per thing people actually go out for. Each is worded
+    """Four questions, one per thing people actually go out for. Each is worded
     the way the answer is headlined: St. Louis returns real results for
-    "festivals fairs October 2026" and for "family events ... this weekend", and
-    returned nothing useful for "things to do ... this weekend", whose top hits
-    were other cities' Axios newsletters."""
+    "festivals fairs October 2026", "festival this weekend" and "family events
+    ... this weekend", and returned nothing useful for "things to do ... this
+    weekend", whose top hits were other cities' Axios newsletters."""
     return [f"new restaurant openings {metro}",
             f"{metro} festivals fairs events {today.strftime('%B %Y')}",
+            f"{metro} festival this weekend",
             f"family events {metro} this weekend"]
 
 
@@ -215,7 +225,10 @@ def _local_candidates(metro: str, today: date | None = None) -> list[dict]:
     out, seen = [], set()
     for query in _local_queries(metro, today or date.today()):
         try:
-            for r in _search_raw(query, days=14, max_age_hours=24 * 14,
+            # 21 days, not 14: measured on St. Louis, the narrower window made
+            # the same query swing between zero and eight hits, and a weekend
+            # roundup is published days before the weekend it covers.
+            for r in _search_raw(query, days=21, max_age_hours=24 * 21,
                                  min_score=LOCAL_MIN_SCORE, trusted_only=False)[:4]:
                 if r.get("url") in seen:
                     continue
@@ -404,14 +417,42 @@ Writing the row:
 - subtitle: at most 8 words on why it is worth knowing. Concrete, not promotional. Never "a must-visit" or "don't miss". For an EVENT this is usually just the venue name, nothing else — the day already goes in `when`, so do not repeat "Friday" or a date here too. For a PLACE, say what makes it distinct (a chef, a neighborhood, a dish) rather than restating the venue name from the title.
 - when: short and human — a day name for something dated within the next couple weeks ("Friday"), a short date for anything further out ("Oct 12") so it reads as advance notice rather than this week's plans, or "opened this week", "in theaters", "streaming now" for undated rows. Pick ONE form, not both — "Friday" on its own is enough; do not also add the date ("Friday, August 29").
 - url: copy verbatim from the candidate. Never invent one.
-- date: for an EVENT with a known date, copy it verbatim in YYYY-MM-DD form from the candidate data. Empty string for a PLACE, a screen, or anything undated.
+- date: for an EVENT with a known date, copy it verbatim in YYYY-MM-DD form from the candidate data; for one lifted out of an article, resolve it against {today} and give it in YYYY-MM-DD, using the LAST day of a multi-day event so it expires when it actually ends. An event whose last day is already before {today} is over — drop it. Empty string for a PLACE, a screen, or anything undated.
 - Plain ASCII. No emoji, no markdown, no exclamation marks.
 - subtitle and when must never say the same thing twice between them — if you catch yourself writing the same day, date, or venue in both fields, cut it from subtitle.
 
 If nothing clears the bar, return {{"rows": []}}. An empty section is correct and normal; a padded one is not."""
 
 
-def _curate(city: str, candidates: list[dict], today: date | None = None) -> list[dict]:
+# The curation prompt takes a bounded amount of candidate text, and the two
+# halves of the pool must not eat each other's share. Ticketmaster alone is
+# ~8.6k characters for a busy metro; with one shared 12k cut the press half —
+# the restaurants, fairs and family events — was clipped to a sliver, mid-item,
+# and the curated section came out all concerts.
+EVENT_BUDGET = 7000
+PRESS_BUDGET = 9000
+
+
+def _fit(candidates: list[dict]) -> list[dict]:
+    """Whole candidates only, each source family held to its own budget, in the
+    order given. Dropping an item beats cutting one: a half-written JSON object
+    is a candidate the model has to guess at."""
+    import json
+    used = {"events": 0, "press": 0}
+    cap = {"events": EVENT_BUDGET, "press": PRESS_BUDGET}
+    out = []
+    for c in candidates:
+        fam = "events" if c.get("source") == "ticketmaster.com" else "press"
+        n = len(json.dumps(c)) + 2
+        if used[fam] + n > cap[fam]:
+            continue
+        used[fam] += n
+        out.append(c)
+    return out
+
+
+def _curate(city: str, candidates: list[dict], today: date | None = None,
+            max_rows: int = CURATE_POOL) -> list[dict]:
     """The taste gate. One Haiku call, on the write path only.
 
     Everything upstream of this is a firehose: local press runs listicles and
@@ -444,7 +485,7 @@ def _curate(city: str, candidates: list[dict], today: date | None = None) -> lis
                 # on tomorrow, so a UTC date tells the curator to drop tonight's
                 # show as "already past".
                 today=(today or date.today()).strftime("%A, %B %d, %Y"), city=city,
-                candidates=json.dumps(candidates)[:12000], max_rows=CURATE_POOL)}],
+                candidates=json.dumps(_fit(candidates)), max_rows=max_rows)}],
         )
         parsed = _parse_json(resp.content[0].text) or {}
     except Exception as e:
@@ -452,7 +493,7 @@ def _curate(city: str, candidates: list[dict], today: date | None = None) -> lis
         return []
 
     rows = []
-    for r in (parsed.get("rows") or [])[:CURATE_POOL]:
+    for r in (parsed.get("rows") or [])[:max_rows]:
         title = (r.get("title") or "").strip()
         if not title:
             continue
@@ -463,17 +504,27 @@ def _curate(city: str, candidates: list[dict], today: date | None = None) -> lis
         # page would have credited TMDB for data TMDB never supplied.
         kind = r.get("kind") if r.get("kind") in ("local", "event") else "local"
         topic = r.get("topic") if r.get("topic") in TOPICS else "other"
+        url = r.get("url") or None
+        date_s = _valid_iso_date(r.get("date"))
+        # An event lifted out of a press roundup has no structured date behind
+        # it, only the model's reading of prose. Undated, it can never expire,
+        # and "Oct 9-11" was served on the 14th. Ticketmaster rows carry a real
+        # date upstream, so only the press-sourced ones are held to this.
+        if kind == "event" and not date_s and "ticketmaster" not in _source_of(url or ""):
+            continue
+        if sum(1 for x in rows if x["topic"] == topic and topic != "other") >= MAX_PER_TOPIC:
+            continue
         rows.append({
             "kind": kind,
             "topic": topic,
             "title": title[:80],
             "subtitle": (r.get("subtitle") or "").strip()[:90],
             "when": (r.get("when") or "").strip()[:32],
-            "url": r.get("url") or None,
-            "source": _source_of(r.get("url") or ""),
+            "url": url,
+            "source": _source_of(url or ""),
             # Kept only to expire the row once its date passes — see
             # opening_snapshot. Not rendered; "when" is what the page shows.
-            "date": _valid_iso_date(r.get("date")),
+            "date": date_s,
         })
     return rows
 
@@ -491,6 +542,15 @@ def _is_far(row: dict, today: date) -> bool:
         return (date.fromisoformat(d) - today).days > FAR_HORIZON_DAYS
     except (TypeError, ValueError):
         return False
+
+
+def _interleave(a: list[dict], b: list[dict]) -> list[dict]:
+    """Alternate two ranked lists, each keeping its own order, so slicing the
+    front of the result takes from both."""
+    out = []
+    for i in range(max(len(a), len(b))):
+        out += [x for x in (a[i:i + 1] + b[i:i + 1])]
+    return out
 
 
 def _spread(rows: list[dict]) -> list[dict]:
@@ -636,9 +696,8 @@ def opening_snapshot(profile: dict) -> list[dict]:
         near = _events(lat, lon)
         far = _events(lat, lon, start_days=7, end_days=LONG_LEAD_DAYS,
                       size=LONG_LEAD_SIZE)
-        # Events first, press after. The prompt is cut at a character limit and
-        # the press blurbs are long, so ordering them last means it is the
-        # roundup text that gets clipped and never the structured events.
+        # Structured events only. Press is curated in its own call below, so
+        # neither family can crowd the other out of the prompt or the result.
         pool = []
         for ev in near + far:
             pool.append({"title": ev["title"], "url": ev.get("url"),
@@ -646,8 +705,10 @@ def opening_snapshot(profile: dict) -> list[dict]:
                          "blurb": " ".join(str(x) for x in
                                            (ev.get("genre"), ev.get("venue"), ev.get("date"))
                                            if x)})
-        pool.extend(candidates)
-        hit = _curate(metro or _metro(city), pool, today=today)
+        metro = metro or _metro(city)
+        hit = _interleave(
+            _curate(metro, pool, today=today, max_rows=EVENT_ROWS) if pool else [],
+            _curate(metro, list(candidates), today=today, max_rows=PRESS_ROWS))
         with _cache_lock:
             _local_cache[dkey] = hit
 
