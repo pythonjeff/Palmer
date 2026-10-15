@@ -1037,3 +1037,11 @@ class TestPreviewCard:
 
     def test_the_icon_is_a_png(self):
         assert cards.render_icon()[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_the_icon_route_serves_it(self):
+        """The route imported `cards` by its pre-package name and 500'd in
+        production while every unit test of render_icon passed."""
+        from fastapi.testclient import TestClient
+        from palmer.main import app
+        r = TestClient(app).get("/icon.png")
+        assert r.status_code == 200 and r.headers["content-type"] == "image/png"
