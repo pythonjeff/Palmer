@@ -150,7 +150,14 @@ every morning) is `update_morning_briefing`, not a reminder. `set_reminder` with
 something up to write the message, it belongs in the morning update.
 
 ### The morning update is basics plus a link, not a full briefing
-`morning._compose_morning` sends ONE message: a short Palmer-drafted text carrying the basics, then the user's Palmer Home URL. Every user gets the same shape — today's weather, the commute if they have an address on file, and 1-2 things newly open or worth catching nearby this week — so a user who never taps the link still gets those three every day. Anything beyond that (their tracked topics, prices, headlines) lives on the page only. It used to be a single one-line teaser ("here's a reason to tap"), and before that the full text briefing plus a second text carrying the link — both said less or said everything twice; this is the middle point.
+`morning._compose_morning` sends ONE message: a Palmer-drafted opener plus labeled bullets carrying the basics (see below), then the user's Palmer Home URL. Every user gets the same shape — today's weather, the commute if they have an address on file, and 1-2 things newly open or worth catching nearby this week — so a user who never taps the link still gets those three every day. Anything beyond that (their tracked topics, prices, headlines) lives on the page only. It used to be a single one-line teaser ("here's a reason to tap"), and before that the full text briefing plus a second text carrying the link — both said less or said everything twice; this is the middle point.
+
+**The shape is an opener, then `- LABEL: text` bullets.** One short voiced line, then one bullet per item the data actually has, labels from the fixed set `WEATHER`, `COMMUTE`, `NEARBY`, `SCORES`, `MARKETS`, `NEWS`, a blank line, the URL. Bold is not on offer: SMS has no markup, and Unicode "math bold" forces UCS-2 (70 characters a segment instead of 160), reads letter by letter in a screen reader and shows boxes on some carriers. CAPS labels are the ASCII stand-in, and the fixed vocabulary is what stops a structured text drifting back into a paragraph.
+
+Three things hold it together:
+- **`_sms_clean` keeps a bullet only when an ALL-CAPS label follows** (`smstext._LABEL_BULLET`). It strips every other leading `-`/`*`, because that is markdown in a chat reply; without the exception `send_sms` would delete these bullets on the way out, since it runs the cleaner on every message.
+- **The format is enforced in code, with one redraft** (`_is_structured`, same remedy as `_NAMES_THE_LINK`), and only when there is something to bullet (`need = min(2, len(required))`) — a user with nothing loaded still gets a plain greeting. A redraft only replaces the draft if it is better formed, so a fix for one rule cannot break another.
+- **Length is capped at a line boundary** (`_tidy_morning_text`, `MORNING_LINE_MAX` 560). Whitespace collapses within a line but newlines survive; the old single-space join would have flattened the bullets, and a mid-line cut leaves half a fact.
 
 Two properties are load-bearing:
 - **The URL is last and alone.** Message apps only draw the rich link preview when the message carries exactly one URL at a boundary, and that preview is most of the value. Nothing may follow it — not a period, not a sign-off.
@@ -778,6 +785,9 @@ The "edit button" is the name-ask pattern: an `.ask` tap target that opens
 Messages pre-filled with "Arrange my page: " (`quote()`, never `quote_plus()` —
 sms: URIs have no form encoding). The page has no auth and accepts exactly one
 POST — the one-shot setup form above — and nothing else.
+
+### The link preview is the only "button" SMS has
+A labeled "Learn More" button inside the bubble (the way brands like TaylorMade send links) is a rich-link element from a registered business channel — Apple Messages for Business or an RCS rich card — and both are ruled out for Palmer (bot-only products are barred from the first, the second needs weeks of carrier approval). On plain SMS the whole affordance is the Open Graph card, so `page.render` spends its effort there: `og:title` is "Jeff's morning" (the bare name read as a contact, not a briefing) or the temperature when no name is on file; `og:description` leads with the weather, then commute, then the top headline; `og:site_name` is Palmer; and `/icon.png` (`cards.render_icon`, no token — same mark for everyone) is the favicon and apple-touch-icon. The fallback when a preview does not draw is the raw URL, so keep `APP_URL` on a short custom domain; the token stays 22 characters because it is the page's only protection and a one-shot write key for setup.
 
 ### The preview image must change URL, or nobody ever refetches it
 `og:image` points at `/h/{token}.png?v={fingerprint}`. The query stamp is the

@@ -80,13 +80,13 @@ class TestPreviewTitle:
         return re.search(r'og:title" content="(.*?)"', _render(**over)).group(1)
 
     def test_the_name_is_the_headline_when_known(self):
-        assert self._title(name="Jeff") == "Jeff"
+        assert self._title(name="Jeff") == "Jeff&#x27;s morning"
 
     def test_it_falls_back_to_the_weather_when_unknown(self):
         assert self._title() == "81\u00b0 in Kirkwood, MO"
 
     def test_the_browser_title_matches(self):
-        assert "<title>Jeff</title>" in _render(name="Jeff")
+        assert "<title>Jeff&#x27;s morning</title>" in _render(name="Jeff")
 
     def test_a_blank_name_does_not_produce_an_empty_headline(self):
         assert self._title(name="   ").strip()
@@ -377,3 +377,18 @@ class TestScoresSection:
     def test_it_can_be_hidden(self):
         html = self._html(page_prefs={"hidden_sections": ["scores"], "section_order": []})
         assert ">Scores<" not in html
+
+
+class TestPreviewCard:
+    def test_it_names_the_site_and_carries_an_icon(self):
+        html = _render(name="Jeff")
+        assert 'og:site_name" content="Palmer"' in html
+        assert 'rel="apple-touch-icon" href="/icon.png"' in html
+
+    def test_the_description_leads_with_the_weather_when_named(self):
+        desc = re.search(r'og:description" content="(.*?)"', _render(name="Jeff")).group(1)
+        assert desc.startswith("81\u00b0")
+
+    def test_the_icon_is_a_png(self):
+        from palmer import cards
+        assert cards.render_icon()[:8] == b"\x89PNG\r\n\x1a\n"

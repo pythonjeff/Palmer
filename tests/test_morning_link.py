@@ -66,7 +66,7 @@ class TestComposeShape:
 
     def test_the_line_survives_ahead_of_the_link(self):
         msg, _, _ = self._compose(line="Bitcoin is off 4.2% overnight.")
-        assert msg.startswith("Bitcoin is off 4.2% overnight. ")
+        assert msg.startswith("Bitcoin is off 4.2% overnight.\n\n")
 
     def test_it_is_one_message_not_two(self):
         """The briefing used to be its own text with the link chasing it."""
@@ -166,6 +166,10 @@ def _draft_returning(*texts, payload=None):
         return morning.generate_morning_line("+1555", payload if payload is not None else PAYLOAD), calls
 
 
+GOOD = ""+"Morning Jeff, easy one.\n- WEATHER: 71 and clear\n- COMMUTE: 34 min"+""
+TAIL_BAD = "Check the page.\n- WEATHER: 71 and clear\n- COMMUTE: 34 min"
+
+
 class TestNamingTheLink:
     """"page has your full rundown" turns a text from a friend into a push
     notification. The prompt asks for this; the code enforces it."""
@@ -178,27 +182,28 @@ class TestNamingTheLink:
         "Morning Jeff, tap here for more.",
     ])
     def test_a_line_that_names_the_link_is_redrafted(self, bad):
-        out, calls = _draft_returning(bad, "Morning Jeff, cool and clear.")
-        assert out == "Morning Jeff, cool and clear."
+        bad = bad + "\n- WEATHER: 71 and clear\n- COMMUTE: 34 min"
+        out, calls = _draft_returning(bad, GOOD)
+        assert out == GOOD
         assert len(calls) == 2, "must redraft exactly once"
 
     def test_a_clean_line_is_not_redrafted(self):
-        out, calls = _draft_returning("Morning Jeff, cool and clear.")
-        assert out == "Morning Jeff, cool and clear."
+        out, calls = _draft_returning(GOOD)
+        assert out == GOOD
         assert len(calls) == 1, "a clean line must not cost a second call"
 
     def test_the_redraft_is_told_what_it_did_wrong(self):
-        _, calls = _draft_returning("Check the page.", "Cool and clear today.")
+        _, calls = _draft_returning(TAIL_BAD, GOOD)
         assert "Check the page." in calls[1]["messages"][0]["content"]
 
     def test_it_gives_up_after_one_redraft(self):
         """Two calls, not a loop — a stubborn model must not burn the budget."""
-        out, calls = _draft_returning("Check the page.", "Still on your page.")
+        out, calls = _draft_returning(TAIL_BAD, TAIL_BAD)
         assert len(calls) == 2
         assert out, "a second violation still ships rather than failing the morning"
 
     def test_ordinary_words_are_not_false_positives(self):
-        out, calls = _draft_returning("Morning Jeff, cool and clear and 81.")
+        out, calls = _draft_returning(GOOD)
         assert len(calls) == 1
         assert not morning._NAMES_THE_LINK.search("Cool and clear, pages of rain later")
 
@@ -207,14 +212,28 @@ class TestLineDiscipline:
     def _draft(self, text):
         return _draft_returning(text)[0]
 
-    def test_long_output_is_trimmed_on_a_word_boundary(self):
-        out = self._draft("word " * 200)
+    def test_long_output_is_trimmed_on_a_line_boundary(self):
+        out = self._draft(GOOD + "".join(f"\n- NEWS: headline number {i} goes on a while" for i in range(30)))
         assert len(out) <= morning.MORNING_LINE_MAX
-        assert not out.endswith("wor"), "must not cut mid-word"
+        assert out.splitlines()[-1].endswith("goes on a while"), "no half-lines"
 
-    def test_newlines_are_flattened_to_one_line(self):
-        out = self._draft("Cool and clear today.\n\nBitcoin is down.")
-        assert "\n" not in out
+    def test_blank_lines_go_but_the_bullets_stay_separate_lines(self):
+        out = self._draft("Easy one.\n\n- WEATHER:   71  and clear\n\n- COMMUTE: 34 min")
+        assert out == "Easy one.\n- WEATHER: 71 and clear\n- COMMUTE: 34 min"
+
+    def test_a_paragraph_is_redrafted_into_bullets(self):
+        out, calls = _draft_returning("Cool 71 and clear, drive is 34 min.", GOOD)
+        assert out == GOOD and len(calls) == 2
+        assert "not the format" in calls[1]["messages"][0]["content"]
+
+    def test_nothing_loaded_means_a_plain_greeting_is_fine(self):
+        out, calls = _draft_returning("Morning Jeff.", payload={"city": "Kirkwood, MO"})
+        assert out == "Morning Jeff." and len(calls) == 1
+
+    def test_the_bullets_survive_the_sms_cleaner(self):
+        from palmer.smstext import _sms_clean
+        assert _sms_clean(GOOD) == GOOD
+        assert _sms_clean("- first\n* second") == "first\nsecond"
 
     def test_empty_output_raises_so_the_caller_can_fall_back(self):
         with pytest.raises(ValueError):
@@ -225,10 +244,10 @@ class TestLineDiscipline:
             self._draft("Not sending the weather since they asked me to skip it.")
 
     def test_a_normal_line_passes_through_untouched(self):
-        assert self._draft("Cool 71 and clear.") == "Cool 71 and clear."
+        assert self._draft(GOOD) == GOOD
 
     def test_the_drafter_strips_a_placeholder_before_returning(self):
-        assert self._draft("Cool 71 and clear. [link]") == "Cool 71 and clear."
+        assert self._draft(GOOD + " [link]") == GOOD
 
     def test_the_prompt_also_warns_against_placeholders(self):
         assert "placeholder" in TestPrompt()._prompt()["messages"][0]["content"].lower()
@@ -326,5 +345,5 @@ class TestTheirTeamInTheMorning:
         assert "their team" in body and "so every one of them must appear" in body
 
     def test_the_team_is_not_required_without_a_game(self):
-        body = _draft_returning("Cool and clear.", payload=PAYLOAD)[1][0]["messages"][0]["content"]
+        body = _draft_returning(GOOD, payload=PAYLOAD)[1][0]["messages"][0]["content"]
         assert "their team" not in body
