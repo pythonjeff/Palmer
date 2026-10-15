@@ -526,14 +526,14 @@ def _tidy_morning_text(text: str) -> str:
     a line boundary. The old one-line version joined everything with spaces,
     which would flatten the bullets back into a paragraph; a mid-line cut would
     leave half a fact."""
-    lines = [" ".join(l.split()) for l in text.splitlines()]
-    lines = [l for l in lines if l]
+    lines = [" ".join(ln.split()) for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln]
     out, total = [], 0
-    for l in lines:
-        total += len(l) + 1
+    for ln in lines:
+        total += len(ln) + 1
         if out and total > MORNING_LINE_MAX:
             break
-        out.append(l)
+        out.append(ln)
     return "\n".join(out)
 
 
@@ -541,7 +541,7 @@ def _is_structured(text: str, min_bullets: int = 2) -> bool:
     """An opener line, then at least `min_bullets` labeled bullets."""
     lines = text.splitlines()
     return len(lines) > min_bullets and not lines[0].startswith("- ") \
-        and sum(1 for l in lines[1:] if _LABELED.match(l)) >= min_bullets
+        and sum(1 for ln in lines[1:] if _LABELED.match(ln)) >= min_bullets
 
 
 def generate_morning_line(phone: str, payload: dict) -> str:
