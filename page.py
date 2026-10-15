@@ -253,13 +253,19 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
     # the whole point — it is what makes the card read as *yours* in a thread,
     # and it is the user-visible proof that Palmer actually stored the name
     # rather than just reading it back out of the conversation.
-    title = name or (f"{temp:.0f}° in {where}" if temp is not None
-                     else f"{where}".capitalize())
+    # "Jeff" alone reads as a contact name in a thread; "Jeff's morning" says
+    # what the card is while still proving the name was stored.
+    title = (f"{name}'s morning" if name else
+             (f"{temp:.0f}° in {where}" if temp is not None else f"{where}".capitalize()))
     bits = []
+    # Weather leads the description when the title is not already the weather.
+    if name and temp is not None:
+        wdesc = (w.get("description") or "").strip()
+        bits.append(f"{temp:.0f}° {wdesc}".strip())
     if t.get("live_min"):
         bits.append(f"{t['live_min']} min commute"
                     + (f" at {friendly_hhmm(t['depart_at'])}" if t.get("depart_at") else ""))
-    if prices:
+    if prices and not bits:
         p0 = prices[0]
         bits.append(f"{p0.get('label')} {p0.get('pct_24h', 0):+.1f}%")
     if heads:
@@ -272,6 +278,8 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         '<meta name="robots" content="noindex,nofollow">',
         '<meta name="referrer" content="no-referrer">',
         '<meta name="theme-color" content="#f7f5ef">',
+        '<link rel="icon" href="/icon.png">',
+        '<link rel="apple-touch-icon" href="/icon.png">',
         f"<title>{e(title)}</title>",
         f'<meta property="og:title" content="{e(title)}">',
         f'<meta property="og:description" content="{e(desc)}">',
@@ -280,6 +288,7 @@ def render(payload: dict, *, token: str, image_url: str, page_url: str) -> str:
         '<meta property="og:image:height" content="630">',
         f'<meta property="og:url" content="{e(page_url)}">',
         '<meta property="og:type" content="website">',
+        '<meta property="og:site_name" content="Palmer">',
         '<meta name="twitter:card" content="summary_large_image">',
         f"<style>{CSS}</style></head><body><div class=wrap>",
         '<div class=masthead>',

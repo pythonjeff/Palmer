@@ -14,7 +14,7 @@ Palmer is a personal AI delivered entirely over SMS. No app to download, no inte
 Every exchange teaches Palmer something new. Your city, your job, your teams, your interests — it builds a picture of you and uses it the way a real friend would: casually, in context, without citation. The longer you text, the sharper it gets.
 
 ### Sends your morning
-Each morning Palmer texts you a short, personalized briefing on what you actually care about — weather, local traffic, markets, sports, news. Not a newsletter. One text, just the things that matter, from today.
+Each morning Palmer texts you one short message: a line of voice, then a few labeled bullets — weather, your commute, what's new nearby, your team's game — and a link to your page for everything else you follow (markets, news, prices). Not a newsletter. Just the things that matter, from today.
 
 ### Watches for things
 Tell Palmer to watch for something — a geopolitical event, a company move, an athlete's health update, anything — and it runs that in the background. When it hits, you get a text. No feed to check.

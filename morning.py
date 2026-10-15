@@ -516,7 +516,32 @@ _NAMES_THE_LINK = re.compile(
 # (weather, commute, opening), not the topics and headlines, which is why it
 # is longer than a single teaser sentence but well short of the old full
 # text briefing.
-MORNING_LINE_MAX = 420
+MORNING_LINE_MAX = 560
+
+_LABELED = re.compile(r"^- [A-Z][A-Z &]{1,14}: \S")
+
+
+def _tidy_morning_text(text: str) -> str:
+    """Collapse whitespace within each line but keep the lines, and cap length at
+    a line boundary. The old one-line version joined everything with spaces,
+    which would flatten the bullets back into a paragraph; a mid-line cut would
+    leave half a fact."""
+    lines = [" ".join(l.split()) for l in text.splitlines()]
+    lines = [l for l in lines if l]
+    out, total = [], 0
+    for l in lines:
+        total += len(l) + 1
+        if out and total > MORNING_LINE_MAX:
+            break
+        out.append(l)
+    return "\n".join(out)
+
+
+def _is_structured(text: str, min_bullets: int = 2) -> bool:
+    """An opener line, then at least `min_bullets` labeled bullets."""
+    lines = text.splitlines()
+    return len(lines) > min_bullets and not lines[0].startswith("- ") \
+        and sum(1 for l in lines[1:] if _LABELED.match(l)) >= min_bullets
 
 
 def generate_morning_line(phone: str, payload: dict) -> str:
@@ -565,9 +590,9 @@ This is not the full briefing — the briefing is the page, they are about to ta
 
 Rules:
 - Cover every REQUIRED item above, in your own words, with real specifics — the actual temperature, the actual commute time, the actual name of the place or event. Never gesture at a category ("some stuff opened nearby") instead of naming it.
-- Weave the required items into two or three short sentences that read like a friend talking, not a bulleted list and not separate labeled lines.
-- Beyond the required items, you may add ONE more sentence about something else on the page (a price move, a headline) ONLY if it is genuinely notable — a real change, not routine. Skip it rather than padding; this text is basics plus link, not the briefing.
-- Under {MORNING_LINE_MAX} characters total. Tight and scannable, not a wall of text.
+- FORMAT: one opener line, then one bullet per item. The opener is a single short sentence in Palmer's voice (the day's character, a greeting, or the one thing that stands out) carrying no data the bullets also carry. Each bullet is its own line, exactly "- LABEL: text", where LABEL is ALL CAPS and one of: WEATHER, COMMUTE, NEARBY, SCORES, MARKETS, NEWS. Use WEATHER for weather, COMMUTE for the drive, NEARBY for openings/events, SCORES for a followed game. Only include a bullet for an item the data actually has. Each bullet is one tight line of plain words, not a clipped fragment. No blank lines between bullets.
+- Beyond the required items, you may add ONE more bullet (MARKETS or NEWS) about something else on the page ONLY if it is genuinely notable — a real change, not routine. Skip it rather than padding; this text is basics plus link, not the briefing.
+- Under {MORNING_LINE_MAX} characters total, counting every line. Tight and scannable.
 - Never say the word "link", "page", "dashboard", "site", or "click" - the link speaks for itself and naming it makes this sound like a product notification.
 - Write ONLY the text. The link is attached automatically after it. Do not write a URL, and do not leave a placeholder like [link] or (url) where you think one goes - anything like that ships to them as literal text.
 - Do not end with a question. The page is the ask.
@@ -575,22 +600,34 @@ Rules:
 - If the drive-time line names a leave time, that number is for THAT departure — say so ("your 8:30 drive is 34 min today"), never as if it were traffic right now. If it says "right now", it is live and you don't know when they leave, so don't invent a time.
 - If the weather data says the forecasts disagree, do NOT pick one and state it. Give the range or say "around", the way a person hedges out loud — "upper 90s to maybe 110", "somewhere around 100". Stating a precise high nobody can stand behind is how this went wrong before.
 - If you mention the weather, name the city exactly as the data writes it, and never pair a number with any other place. Their profile may call where they live something broader or narrower than the forecast does - the data wins. If the two disagree, the data is the one that was actually measured.
-- Palmer's voice. Plain ASCII, no emoji, no markdown, no bullets, no sign-off."""
+- Palmer's voice. Plain ASCII, no emoji, no markdown, no bold or asterisks, no sign-off. The "- " bullets and CAPS labels above are the only formatting."""
 
     def _draft(correction: str = "") -> str:
         response = client.messages.create(
             model=SONNET_MODEL,
-            max_tokens=120,
+            max_tokens=300,
             system=system,
             messages=[{"role": "user", "content": prompt + correction}],
         )
         line = _strip_link_placeholder(_sms_clean(response.content[0].text.strip()))
-        line = " ".join(line.split())
-        if len(line) > MORNING_LINE_MAX:
-            line = line[:MORNING_LINE_MAX].rsplit(" ", 1)[0].rstrip(" ,;:-")
-        return line
+        return _tidy_morning_text(line)
+
+    # With nothing structured loaded the right text is a plain greeting, so the
+    # format is only enforced when there are items to put in bullets.
+    need = min(2, len(required))
+
+    def _shaped(t: str) -> bool:
+        return need == 0 or _is_structured(t, need)
 
     line = _draft()
+    if not _shaped(line):
+        retry = _draft(
+            "\n\nYou just wrote: " + repr(line) + "\nThat is not the format. "
+            "Write it again as one opener line, then one \"- LABEL: text\" bullet "
+            "per item, each on its own line, using only the labels given."
+        )
+        if _shaped(retry):
+            line = retry
     if _NAMES_THE_LINK.search(line):
         retry = _draft(
             "\n\nYou just wrote: " + repr(line) + "\nThat names the link, which is "
@@ -601,7 +638,8 @@ Rules:
         )
         # Keep the retry only if it actually fixed the problem — a second
         # violation means take the better-formed of the two, not a worse one.
-        if retry and not _NAMES_THE_LINK.search(retry):
+        if retry and not _NAMES_THE_LINK.search(retry) \
+                and (_shaped(retry) or not _shaped(line)):
             line = retry
     # The prompt already says not to reuse an opener and the model does it
     # anyway: three consecutive mornings opened "103 today in Woodland Hills",
@@ -619,7 +657,9 @@ Rules:
             "event, or the commute, rather than the temperature. Keep every "
             "number identical."
         )
-        if again and not _NAMES_THE_LINK.search(again) and not repeats_opening(again, recent):
+        if again and not _NAMES_THE_LINK.search(again) \
+                and not repeats_opening(again, recent) \
+                and (_shaped(again) or not _shaped(line)):
             line = again
 
     if len(line) < 8:
@@ -663,7 +703,7 @@ def _compose_morning(phone: str) -> tuple[str, bool]:
     except Exception as e:
         print(f"generate_morning_line failed for {phone}: {type(e).__name__}: {e}")
         return generate_morning(phone), False
-    return f"{line} {url}", True
+    return f"{line}\n\n{url}", True
 
 
 # Called every 5 minutes by APScheduler in main.py. The morning_sent_date guard
