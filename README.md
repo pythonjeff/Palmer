@@ -147,7 +147,7 @@ ruff check .                # lint
 
 The tests need no real keys. A few modules read their API key at import time, so set placeholder values (`TAVILY_API_KEY=x`, `TOMTOM_API_KEY=x`, `SERP_API_KEY=x`, the Twilio and Anthropic vars) or copy `.env.example` to `.env`. `PALMER_NO_SCHEDULER=1` keeps the job loop from starting when `main` is imported in a shell or a one-off script. CI runs the same two commands on every push.
 
-Design notes — the reasoning behind each subsystem and the production incidents that shaped it — live in [`CLAUDE.md`](CLAUDE.md).
+Design notes — the reasoning behind each subsystem and the production incidents that shaped it — live in [`docs/design/`](docs/design/README.md). [`CLAUDE.md`](CLAUDE.md) is the short operational guide.
 
 ---
 
