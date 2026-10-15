@@ -384,6 +384,15 @@ async def artifact_page(token: str):
     )
 
 
+@app.api_route("/icon.png", methods=["GET", "HEAD"])
+async def icon_png():
+    """The page's favicon and apple-touch-icon. No token: it is the same mark
+    for everyone and carries no one's data."""
+    from cards import render_icon
+    return Response(content=render_icon(), media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.api_route("/h/{token}.png", methods=["GET", "HEAD"])
 async def home_png(token: str):
     """The user's home as a flat card — og:image and MMS.

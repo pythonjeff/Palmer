@@ -8,6 +8,7 @@ from unittest.mock import patch, MagicMock
 from palmer import db, userprofile, agent, artifacts, home, onboard
 from scripts import migrate_profile_prune as mig
 from datetime import date, timedelta
+from palmer.timeutil import local_today
 from tests.helpers import llm_reply
 
 
@@ -365,7 +366,8 @@ class TestVolatileFactsAge:
     def test_writing_a_volatile_field_stamps_it(self):
         updates = {"stressed_about": "a deadline"}
         userprofile._stamp_volatile({"timezone": "America/Chicago"}, updates)
-        assert updates["field_dates"]["stressed_about"] == date.today().isoformat()
+        assert updates["field_dates"]["stressed_about"] == \
+            local_today("America/Chicago").isoformat()
 
     def test_writing_a_durable_field_stamps_nothing(self):
         updates = {"name": "Jeff"}
@@ -398,7 +400,8 @@ class TestCityIsAuthoritative:
         life = userprofile.VOLATILE_FIELDS["life_context"]
         profile = {"city": "Culver City", "timezone": "America/Los_Angeles",
                    "life_context": "Based in LA.",
-                   "field_dates": {"life_context": (date.today() - timedelta(days=life + 1)).isoformat()}}
+                   "field_dates": {"life_context": (local_today("America/Los_Angeles")
+                                                      - timedelta(days=life + 1)).isoformat()}}
         with patch.object(agent, "get_profile", return_value=profile):
             sys = agent._build_system("+1555")
         assert "Based in LA" not in sys
@@ -567,11 +570,9 @@ class TestUserAlreadyCovered:
 # the box is free text so topics arrive subject-shaped.
 
 @pytest.fixture
-def store(tmp_path, monkeypatch):
-    monkeypatch.setattr(db, "_DB_PATH", tmp_path / "onboard.db", raising=False)
+def store(fresh_db, monkeypatch):
     monkeypatch.setenv("APP_URL", "https://palmer.test")
-    db.init_db()
-    return db
+    return fresh_db
 
 
 class _Form(dict):

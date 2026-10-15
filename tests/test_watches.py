@@ -156,15 +156,10 @@ class TestTheWatchAlertHasAVoice:
            "content": "The deal runs five years."}
     WATCH = {"id": 1, "description": "Eagles roster news"}
 
-    def _draft(self, text):
-        resp = MagicMock()
-        resp.content = [MagicMock(text=text)]
-        return resp
-
     def _run(self, text, **kw):
         with patch.object(watches, "_build_system", return_value="sys") as bs, \
              patch.object(watches.client.messages, "create",
-                          return_value=self._draft(text), **kw) as create:
+                          return_value=llm_reply(text), **kw) as create:
             out = watches._draft_alert("+15550001111", self.WATCH, self.TOP,
                                        fallback="FALLBACK")
         return out, bs, create
@@ -216,7 +211,7 @@ class TestTheWatchAlertHasAVoice:
         every NEVER rule from a message still going out."""
         with patch.object(watches, "_build_system", side_effect=RuntimeError("no db")), \
              patch.object(watches.client.messages, "create",
-                          return_value=self._draft("Hurts got paid.")) as create:
+                          return_value=llm_reply("Hurts got paid.")) as create:
             watches._draft_alert("+15550001111", self.WATCH, self.TOP, fallback="FB")
         system = create.call_args.kwargs["system"]
         assert "Palmer" in system
@@ -413,13 +408,7 @@ class TestCorroborated:
 #
 # Tests for cross-job subject-dedup: userprofile._is_duplicate_subject and its wiring
 # into watches.py and followup.py. Pure logic + mocked LLM/DB — no real network
-# or LLM calls. Run: pytest test_subject_dedup.py
-
-def _haiku_response(text: str) -> MagicMock:
-    resp = MagicMock()
-    resp.content = [MagicMock(text=text)]
-    return resp
-
+# or LLM calls. Run: pytest tests/test_watches.py
 
 class TestIsDuplicateSubject:
     def test_no_recent_messages_returns_false_without_llm_call(self):
@@ -431,13 +420,13 @@ class TestIsDuplicateSubject:
     def test_haiku_says_yes_returns_true(self):
         with patch("palmer.db.get_recent_assistant_messages", return_value=["Hurts practice update"]), \
              patch("palmer.userprofile.client") as mock_client:
-            mock_client.messages.create.return_value = _haiku_response("YES")
+            mock_client.messages.create.return_value = llm_reply("YES")
             assert userprofile._is_duplicate_subject("+15551234567", "Hurts camp footage") is True
 
     def test_haiku_says_no_returns_false(self):
         with patch("palmer.db.get_recent_assistant_messages", return_value=["weather update"]), \
              patch("palmer.userprofile.client") as mock_client:
-            mock_client.messages.create.return_value = _haiku_response("NO")
+            mock_client.messages.create.return_value = llm_reply("NO")
             assert userprofile._is_duplicate_subject("+15551234567", "bitcoin price") is False
 
     def test_llm_failure_fails_open(self):
@@ -704,11 +693,6 @@ def _freeze(monkeypatch):
     monkeypatch.setattr(followup, "_local_today", lambda tz: FROZEN.date())
 
 
-def _fresh(tmp_path, monkeypatch):
-    monkeypatch.setattr(db, "_DB_PATH", tmp_path / "test_followup.db")
-    db.init_db()
-
-
 def _haiku(text):
     return patch.object(followup.client.messages, "create",
                         return_value=MagicMock(content=[MagicMock(text=text)]))
@@ -838,9 +822,8 @@ class TestThePacingGapSurvivesABail:
     on a bail erased the record of the last real send — and _should_send_followup
     measures the gap against exactly that field."""
 
-    def _run(self, tmp_path, monkeypatch, *, subject, candidates=None,
+    def _run(self, fresh_db, monkeypatch, *, subject, candidates=None,
              drafted="hey, how'd it go?", dup=False, sent=True):
-        _fresh(tmp_path, monkeypatch)
         db.upsert_profile(PHONE, {
             "morning_onboarded": True, "timezone": "America/Chicago",
             "ongoing_threads": THREADS, "followup_sent_date": PRIOR_SENT,
@@ -858,28 +841,28 @@ class TestThePacingGapSurvivesABail:
             followup.run_followups()
         return db.get_profile(PHONE)
 
-    def test_no_candidates_restores_the_prior_date(self, tmp_path, monkeypatch):
-        p = self._run(tmp_path, monkeypatch, subject=None, candidates=[])
+    def test_no_candidates_restores_the_prior_date(self, fresh_db, monkeypatch):
+        p = self._run(fresh_db, monkeypatch, subject=None, candidates=[])
         assert p["followup_sent_date"] == PRIOR_SENT
 
-    def test_no_pick_restores_it(self, tmp_path, monkeypatch):
-        p = self._run(tmp_path, monkeypatch, subject=None)
+    def test_no_pick_restores_it(self, fresh_db, monkeypatch):
+        p = self._run(fresh_db, monkeypatch, subject=None)
         assert p["followup_sent_date"] == PRIOR_SENT
 
-    def test_an_empty_draft_restores_it(self, tmp_path, monkeypatch):
-        p = self._run(tmp_path, monkeypatch, subject=_threads(THREADS[0])[0], drafted="")
+    def test_an_empty_draft_restores_it(self, fresh_db, monkeypatch):
+        p = self._run(fresh_db, monkeypatch, subject=_threads(THREADS[0])[0], drafted="")
         assert p["followup_sent_date"] == PRIOR_SENT
 
-    def test_a_duplicate_restores_it(self, tmp_path, monkeypatch):
-        p = self._run(tmp_path, monkeypatch, subject=_threads(THREADS[0])[0], dup=True)
+    def test_a_duplicate_restores_it(self, fresh_db, monkeypatch):
+        p = self._run(fresh_db, monkeypatch, subject=_threads(THREADS[0])[0], dup=True)
         assert p["followup_sent_date"] == PRIOR_SENT
 
-    def test_a_failed_send_restores_it(self, tmp_path, monkeypatch):
-        p = self._run(tmp_path, monkeypatch, subject=_threads(THREADS[0])[0], sent=False)
+    def test_a_failed_send_restores_it(self, fresh_db, monkeypatch):
+        p = self._run(fresh_db, monkeypatch, subject=_threads(THREADS[0])[0], sent=False)
         assert p["followup_sent_date"] == PRIOR_SENT
 
-    def test_a_real_send_advances_it_and_records_the_subject(self, tmp_path, monkeypatch):
-        p = self._run(tmp_path, monkeypatch, subject=_threads(THREADS[0])[0])
+    def test_a_real_send_advances_it_and_records_the_subject(self, fresh_db, monkeypatch):
+        p = self._run(fresh_db, monkeypatch, subject=_threads(THREADS[0])[0])
         assert p["followup_sent_date"] == FROZEN.date().isoformat()
         assert p["followup_last_thread"] == THREADS[0]
 

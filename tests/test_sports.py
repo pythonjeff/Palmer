@@ -503,20 +503,14 @@ class TestPollingIsTwoSpeed:
 
 
 class TestStoredState:
-    def _fresh(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(db, "_DB_PATH", tmp_path / "g.db")
-        db.init_db()
-
-    def test_a_sent_alert_counts_and_a_silent_update_does_not(self, tmp_path, monkeypatch):
-        self._fresh(tmp_path, monkeypatch)
+    def test_a_sent_alert_counts_and_a_silent_update_does_not(self, fresh_db):
         db.record_game_alert("+1", "9", 7, 0, "home", "in", sent=True)
         db.record_game_alert("+1", "9", 14, 0, "home", "in", sent=False)
         row = db.get_game_alert("+1", "9")
         assert row["alert_count"] == 1
         assert row["home_score"] == 14
 
-    def test_state_is_per_user(self, tmp_path, monkeypatch):
-        self._fresh(tmp_path, monkeypatch)
+    def test_state_is_per_user(self, fresh_db):
         db.record_game_alert("+1", "9", 7, 0, "home", "in", sent=True)
         assert db.get_game_alert("+2", "9") is None
 

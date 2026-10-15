@@ -53,6 +53,9 @@ def _restore_urls(text: str, found: list[str]) -> str:
         text = text.replace(f"\x00{i}\x00", safe)
     return text
 
+_LABEL_BULLET = r'[A-Z][A-Z &]{1,14}:'
+
+
 def _sms_clean(text: str) -> str:
     """Normalize Unicode to ASCII and strip markdown so messages render cleanly as SMS.
     Does not enforce a length limit — sms_util.send_sms handles chunking long text into
@@ -82,7 +85,10 @@ def _sms_clean(text: str) -> str:
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text, flags=re.DOTALL)
     text = re.sub(r'__(.+?)__', r'\1', text, flags=re.DOTALL)
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^\s*[-*]\s+', '', text, flags=re.MULTILINE)
+    # A bullet is markdown to strip, except the morning text's "- LABEL: ..."
+    # lines: an ALL-CAPS label is how that message is structured, and the dash is
+    # its only bullet that survives plain ASCII.
+    text = re.sub(r'^\s*[-*]\s+(?!%s)' % _LABEL_BULLET, '', text, flags=re.MULTILINE)
     text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
     return _restore_urls(text, _urls).strip()
 

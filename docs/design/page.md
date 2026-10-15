@@ -63,6 +63,10 @@ Messages pre-filled with "Arrange my page: " (`quote()`, never `quote_plus()` �
 sms: URIs have no form encoding). The page has no auth and accepts exactly one
 POST — the one-shot setup form above — and nothing else.
 
+## The link preview is the only "button" SMS has
+
+A labeled "Learn More" button inside the bubble (the way brands like TaylorMade send links) is a rich-link element from a registered business channel — Apple Messages for Business or an RCS rich card — and both are ruled out for Palmer (bot-only products are barred from the first, the second needs weeks of carrier approval). On plain SMS the whole affordance is the Open Graph card, so `page.render` spends its effort there: `og:title` is "Jeff's morning" (the bare name read as a contact, not a briefing) or the temperature when no name is on file; `og:description` leads with the weather, then commute, then the top headline; `og:site_name` is Palmer; and `/icon.png` (`cards.render_icon`, no token — same mark for everyone) is the favicon and apple-touch-icon. The fallback when a preview does not draw is the raw URL, so keep `APP_URL` on a short custom domain; the token stays 22 characters because it is the page's only protection and a one-shot write key for setup.
+
 ## The preview image must change URL, or nobody ever refetches it
 
 `og:image` points at `/h/{token}.png?v={fingerprint}`. The query stamp is the

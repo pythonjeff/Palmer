@@ -182,11 +182,6 @@ class TestPriceWatchRebaseline:
 PHONE = "+15550001111"
 
 
-def _fresh(tmp_path, monkeypatch):
-    monkeypatch.setattr(db, "_DB_PATH", tmp_path / "test_phantom.db")
-    db.init_db()
-
-
 class TestTheKindColumn:
     def test_a_kind_round_trips(self, fresh_db):
         db.save_message(PHONE, "assistant", "morning line", kind="morning")
@@ -209,8 +204,7 @@ class TestPriceAlertsReachHistory:
     """run_price_watches imports its db helpers inside the function, so they are
     patched at their source rather than on the shopping module."""
 
-    def _run(self, tmp_path, monkeypatch, sent: bool):
-        _fresh(tmp_path, monkeypatch)
+    def _run(self, fresh_db, sent: bool):
         from palmer import shopping
         db.save_price_watch(PHONE, "Nike Pegasus 40", None)
         w = dict(db.get_user_price_watches(PHONE)[0])
@@ -229,18 +223,18 @@ class TestPriceAlertsReachHistory:
             shopping.run_price_watches()
         return [m for m in db.get_history(PHONE) if m["role"] == "assistant"]
 
-    def test_a_sent_alert_is_recorded(self, tmp_path, monkeypatch):
-        rows = self._run(tmp_path, monkeypatch, sent=True)
+    def test_a_sent_alert_is_recorded(self, fresh_db):
+        rows = self._run(fresh_db, sent=True)
         assert any("pegasus" in m["content"].lower() for m in rows), rows
 
-    def test_a_failed_price_alert_is_not_recorded(self, tmp_path, monkeypatch):
-        assert self._run(tmp_path, monkeypatch, sent=False) == []
+    def test_a_failed_price_alert_is_not_recorded(self, fresh_db):
+        assert self._run(fresh_db, sent=False) == []
 
-    def test_the_alert_is_visible_to_the_next_duplicate_check(self, tmp_path, monkeypatch):
+    def test_the_alert_is_visible_to_the_next_duplicate_check(self, fresh_db):
         """The point of recording it: _is_duplicate_subject reads assistant
         messages, so before this the sender could never see its own repeats."""
         from datetime import datetime, timedelta, timezone
-        self._run(tmp_path, monkeypatch, sent=True)
+        self._run(fresh_db, sent=True)
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         assert db.get_recent_assistant_messages(PHONE, cutoff)
 
