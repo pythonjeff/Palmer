@@ -204,6 +204,18 @@ class TestLiveTextsAreOptIn:
         assert "without unfollowing" in setter["description"]
         assert setter["input_schema"]["required"] == ["mode"]
 
+    def test_follow_dicts_in_sports_teams_do_not_crash_the_prompt(self):
+        """A production profile held team dicts in sports_teams; the offer block
+        joined them as strings and every turn for that user raised."""
+        from palmer import agent
+        base = {"intro_sent": True, "name": "Jeff", "city": "Kirkwood, MO",
+                "sports_teams": [{"league": "mlb", "abbrev": "STL", "name": "St. Louis Cardinals"},
+                                 {"league": "nfl", "abbrev": "CHI", "name": "Chicago Bears"}]}
+        with patch.object(agent, "get_profile", return_value=dict(base)), \
+             patch.object(agent, "get_history", return_value=[]):
+            system = agent._build_system("+1")
+        assert "St. Louis Cardinals, Chicago Bears" in system
+
     def test_the_offer_block_fires_once_for_a_named_team(self):
         from palmer import agent
         from palmer import userprofile

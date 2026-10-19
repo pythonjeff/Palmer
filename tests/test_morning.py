@@ -296,6 +296,19 @@ class TestRequiredContent:
         body = self._required_block(payload)
         assert "newly open" not in body
 
+    def test_markets_are_required_when_there_is_a_price_row(self):
+        body = self._required_block(dict(PAYLOAD, prices=[{"label": "S&P 500", "pct_24h": -0.4},
+                                                          {"label": "Dow", "pct_24h": -0.2}]))
+        assert "the markets" in body and "S&P 500 and the Dow" in body
+
+    def test_markets_are_not_required_without_prices(self):
+        body = self._required_block({k: v for k, v in PAYLOAD.items() if k != "prices"})
+        assert "the markets" not in body
+
+    def test_markets_are_not_required_when_the_user_hid_them(self):
+        payload = dict(PAYLOAD, page_prefs={"section_order": [], "hidden_sections": ["markets"]})
+        assert "the markets" not in self._required_block(payload)
+
     def test_no_structured_data_falls_back_to_a_plain_greeting_instruction(self):
         body = self._required_block({})
         assert "plain greeting is correct" in body

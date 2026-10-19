@@ -41,6 +41,9 @@ CURATED = {"rows": [
 ]}
 
 
+N_QUERIES = len(opening._local_queries("X", date(2026, 10, 14)))
+
+
 def _seed_caches(local_rows, screen_rows, tz="America/Los_Angeles", coords=(34.0, -118.5)):
     """Pre-populate all three caches so a snapshot makes no outbound call.
 
@@ -118,8 +121,8 @@ class TestTheCostModel:
             cl.messages.create.return_value = _resp(CURATED)
             opening.opening_snapshot(LA)
             opening.opening_snapshot(LA2)
-        assert tav.call_count == 2, ("one snapshot runs two local queries; the "
-                                     "second user must add none")
+        assert tav.call_count == N_QUERIES, ("one snapshot runs the local queries; "
+                                             "the second user must add none")
 
     def test_a_different_metro_does_not_reuse_the_first(self):
         opening._clear_caches()
@@ -130,7 +133,7 @@ class TestTheCostModel:
             cl.messages.create.return_value = _resp(CURATED)
             opening.opening_snapshot(LA)
             opening.opening_snapshot(STL)
-        assert tav.call_count == 4, "St. Louis is not Los Angeles"
+        assert tav.call_count == 2 * N_QUERIES, "St. Louis is not Los Angeles"
 
     def test_culver_city_and_woodland_hills_land_in_one_bucket(self):
         """35 miles apart, one metro. The bucket is what makes that true without
@@ -392,7 +395,7 @@ class TestExpiredRowsDropOut:
              patch.object(opening, "client") as cl:
             cl.messages.create.return_value = _resp({"rows": [
                 {"title": "Bad Date", "subtitle": "", "when": "someday",
-                 "url": "https://t.com/1", "kind": "event", "date": "not-a-date"}]})
+                 "url": "https://www.ticketmaster.com/1", "kind": "event", "date": "not-a-date"}]})
             rows = opening.opening_snapshot(LA)
         assert rows and rows[0]["date"] is None
 
@@ -585,14 +588,14 @@ class TestPerUserKinds:
         with patch.object(opening, "_http_get_json", return_value={}), \
              patch("palmer.weather._geocode", side_effect=lambda c: COORDS[c]), \
              patch("palmer.datafeeds._search_raw",
-                   return_value=[{"title": "gig", "url": "https://t.com/1"}]) as tav, \
+                   return_value=[{"title": "gig", "url": "https://www.ticketmaster.com/1"}]) as tav, \
              patch.object(opening, "client") as cl:
             cl.messages.create.return_value = _resp(
-                {"rows": [{"title": "Muse", "url": "https://t.com/1", "kind": "event"}]})
+                {"rows": [{"title": "Muse", "url": "https://www.ticketmaster.com/1", "kind": "event"}]})
             a = opening.opening_snapshot({"city": "Culver City"})
             b = opening.opening_snapshot({"city": "Woodland Hills, California",
                                           "morning_prefs": {"opening_kinds": ["screen"]}})
-        assert tav.call_count == 2, "two searches for the metro, not four for two users"
+        assert tav.call_count == N_QUERIES, "one set of searches for the metro, not two for two users"
         assert [r["kind"] for r in a] == ["event"]
         assert b == [], "different taste, same cache, correctly filtered to nothing"
 
@@ -1137,3 +1140,84 @@ class TestAnAmbiguousTitleIsAskedAboutNotGuessed:
                                                   .split("elif b.name")[0]
         assert "ambiguous_shows" in block
         assert "Do NOT pick one yourself" in block
+
+
+class TestNearbyVariety:
+    """St. Louis returned only concerts: the press half was trusted_only and
+    came back empty, Ticketmaster was Music and Arts, and its relevance sort
+    clumped. These pin the three fixes."""
+
+    def test_local_press_is_not_limited_to_the_allowlist(self):
+        """stltoday, stlpr, stlmag and fox2now are the real St. Louis newsrooms
+        and none is on the allowlist, so trusted_only returned nothing."""
+        with patch("palmer.datafeeds._search_raw", return_value=[]) as tav:
+            opening._local_candidates("St. Louis", date(2026, 10, 14))
+        for call in tav.call_args_list:
+            assert call.kwargs["trusted_only"] is False
+            assert call.kwargs["min_score"] >= 0.6, "an untrusted source earns its place on score"
+
+    def test_the_queries_cover_food_festivals_and_family(self):
+        qs = opening._local_queries("St. Louis", date(2026, 10, 14))
+        assert any("restaurant" in q for q in qs)
+        assert any("festivals" in q and "October 2026" in q for q in qs)
+        assert any("family" in q for q in qs)
+
+    def test_a_url_found_by_two_queries_is_one_candidate(self):
+        hit = {"title": "Weekend roundup", "url": "https://fox2now.com/a", "content": "x" * 900, "score": 0.8}
+        with patch("palmer.datafeeds._search_raw", return_value=[hit]):
+            out = opening._local_candidates("St. Louis", date(2026, 10, 14))
+        assert len(out) == 1
+        assert len(out[0]["blurb"]) == 700, "long enough to lift events out of a roundup"
+
+    def test_ticketmaster_includes_the_family_and_festival_segment(self):
+        with patch.object(opening, "TICKETMASTER_API_KEY", "k"), \
+             patch.object(opening, "_http_get_json", return_value={}) as http:
+            opening._events(38.58, -90.40)
+        assert "segmentName=Miscellaneous" in http.call_args.args[0]
+        assert "Sports" not in http.call_args.args[0]
+
+    def test_curate_keeps_a_valid_topic_and_defaults_the_rest(self):
+        tm = "https://www.ticketmaster.com/"
+        rows = [{"title": "A", "kind": "event", "topic": "comedy", "url": tm + "a"},
+                {"title": "B", "kind": "event", "topic": "nonsense", "url": tm + "b"},
+                {"title": "C", "kind": "local"}]
+        with patch.object(opening, "client") as cl:
+            cl.messages.create.return_value = _resp({"rows": rows})
+            out = opening._curate("St. Louis", [{"title": "x"}])
+        assert [r["topic"] for r in out] == ["comedy", "other", "other"]
+
+    def test_spread_takes_one_of_each_topic_before_a_second(self):
+        rows = [{"title": t, "topic": k} for t, k in
+                [("m1", "music"), ("m2", "music"), ("m3", "music"), ("c1", "comedy"), ("f1", "food")]]
+        assert [r["title"] for r in opening._spread(rows)][:3] == ["m1", "c1", "f1"]
+        assert len(opening._spread(rows)) == 5, "nothing is dropped, only reordered"
+
+    def test_untagged_rows_are_never_held_back(self):
+        rows = [{"title": "a"}, {"title": "b"}, {"title": "c", "topic": "other"}]
+        assert [r["title"] for r in opening._spread(rows)] == ["a", "b", "c"]
+
+    def test_a_clumped_pool_comes_out_varied(self):
+        """Three concerts ranked ahead of everything else used to be the whole
+        section."""
+        today = _seed_caches([
+            {"kind": "event", "topic": "music", "title": "Gig 1", "date": None},
+            {"kind": "event", "topic": "music", "title": "Gig 2", "date": None},
+            {"kind": "event", "topic": "music", "title": "Gig 3", "date": None},
+            {"kind": "event", "topic": "comedy", "title": "Standup", "date": None},
+            {"kind": "local", "topic": "food", "title": "New Diner", "date": None},
+        ], [], tz="America/Chicago", coords=opening._bucket(38.58, -90.40))
+        with patch("palmer.weather._geocode", side_effect=lambda c: COORDS[c]):
+            rows = opening.opening_snapshot(dict(STL, morning_prefs={"opening_kinds": ["local", "event"]}))
+        assert {r["topic"] for r in rows[:3]} == {"music", "comedy", "food"}, today
+
+    def test_the_two_halves_of_the_pool_do_not_eat_each_other(self):
+        """Ticketmaster is ~8.6k characters on its own; one shared cut clipped
+        the press half to a sliver and the section came out all concerts."""
+        events = [{"title": f"Gig {i}", "url": "https://t.com/" + "x" * 90, "source": "ticketmaster.com",
+                   "blurb": "Rock Enterprise Center 2026-10-20"} for i in range(60)]
+        press = [{"title": f"Roundup {i}", "url": f"https://fox2now.com/{i}", "source": "fox2now.com",
+                  "blurb": "y" * 700} for i in range(12)]
+        kept = opening._fit(events + press)
+        assert sum(1 for c in kept if c["source"] == "fox2now.com") >= 8, "press keeps its own share"
+        assert sum(1 for c in kept if c["source"] == "ticketmaster.com") >= 20
+        assert all(isinstance(c, dict) and c["title"] for c in kept), "whole items only"

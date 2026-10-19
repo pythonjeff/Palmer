@@ -67,6 +67,9 @@ MAX_ROWS = MAX_LOCAL + MAX_SCREENS
 # dropping one. A user says "I want movie openings too" or "stop the concerts";
 # they never say "kind=screen".
 ALL_KINDS = ("local", "event", "screen")
+# What a row is ABOUT, as opposed to its kind. Kind decides which user control
+# trims it; topic is what keeps one category from filling the section.
+TOPICS = ("music", "comedy", "theatre", "food", "festival", "family", "film", "other")
 KIND_WORDS = {
     "restaurants": "local", "places": "local", "food": "local", "bars": "local",
     "events": "event", "concerts": "event", "festivals": "event", "shows": "event",
@@ -77,8 +80,17 @@ KIND_WORDS = {
 # — a user who only wants restaurants should not come up empty because the
 # three cached rows happened to all be concerts. Costs nothing extra: same one
 # Haiku call, a few more output tokens.
-CURATE_POOL = 6
-# Radius for the events pull. 25 miles is a metro, not a neighbourhood, which
+CURATE_POOL = 10
+# Ticketmaster and local press are curated in SEPARATE calls, five rows each.
+# In one mixed call the model took the first good candidates it met, and with
+# thirty-odd structured concerts ahead of the press, "pick the best ten" came
+# back as ten concerts however the prompt asked for spread. Separate calls make
+# the split a fact of the pipeline instead of a request.
+EVENT_ROWS = 5
+PRESS_ROWS = 5
+# At most this many rows of one topic survive curation, enforced in code — the
+# prompt says the same thing and the model breaks it.
+MAX_PER_TOPIC = 2# Radius for the events pull. 25 miles is a metro, not a neighbourhood, which
 # is deliberate: nobody picks a concert by how close it is to their street.
 EVENT_RADIUS_MI = 25
 
@@ -173,27 +185,58 @@ def _metro(city: str) -> str:
     return metro
 
 
-def _local_candidates(metro: str) -> list[dict]:
-    """New-opening coverage from local press.
+# The floor an untrusted local outlet has to clear. Same bar and same reason as
+# home.UNTRUSTED_MIN_SCORE: a source that is not on the allowlist earns its place
+# on match strength, because it is not earning it on provenance.
+LOCAL_MIN_SCORE = 0.60
 
-    There is no structured API for "restaurants that opened this month", but
-    it is a well-established local-media beat — Eater, Time Out, LAist and the
-    city dailies all run it as a standing column. Those outlets are tier 2 in
-    trusted_sources.json specifically so this search can pass trusted_only and
-    still return something; before they were added it returned nothing at all.
+
+def _local_queries(metro: str, today: date) -> list[str]:
+    """Four questions, one per thing people actually go out for. Each is worded
+    the way the answer is headlined: St. Louis returns real results for
+    "festivals fairs October 2026", "festival this weekend" and "family events
+    ... this weekend", and returned nothing useful for "things to do ... this
+    weekend", whose top hits were other cities' Axios newsletters."""
+    return [f"new restaurant openings {metro}",
+            f"{metro} festivals fairs events {today.strftime('%B %Y')}",
+            f"{metro} festival this weekend",
+            f"family events {metro} this weekend"]
+
+
+def _local_candidates(metro: str, today: date | None = None) -> list[dict]:
+    """Local-press coverage of what is new and what is on.
+
+    There is no structured API for "restaurants that opened this month" or "the
+    fall fair this weekend", but both are standing local-media beats — the
+    openings column, the weekend roundup. The roundups are the only place a
+    smaller metro's fairs and family events are written down at all, so the
+    blurb is long enough (700 chars) for the curator to lift individual events
+    out of one.
+
+    Not trusted_only. This used to be, and for St. Louis that returned nothing:
+    stltoday, stlpr, stlmag, fox2now and ksdk are the real newsrooms and none is
+    on the allowlist, so the whole non-Ticketmaster half of the section was
+    silently empty and every row was a concert. _search_raw already sorts by
+    tier, so trusted sources still come first; the higher floor is what stands
+    in for provenance on the rest.
     """
     from palmer.datafeeds import _search_raw
     from palmer.sources import canonical_domain
-    out = []
-    for query in (f"new restaurant openings {metro}",
-                  f"festivals and events happening in {metro} this week"):
+    out, seen = [], set()
+    for query in _local_queries(metro, today or date.today()):
         try:
-            for r in _search_raw(query, days=14, max_age_hours=24 * 14,
-                                 min_score=0.4, trusted_only=True)[:4]:
+            # 21 days, not 14: measured on St. Louis, the narrower window made
+            # the same query swing between zero and eight hits, and a weekend
+            # roundup is published days before the weekend it covers.
+            for r in _search_raw(query, days=21, max_age_hours=24 * 21,
+                                 min_score=LOCAL_MIN_SCORE, trusted_only=False)[:4]:
+                if r.get("url") in seen:
+                    continue
+                seen.add(r.get("url"))
                 out.append({"title": (r.get("title") or "")[:140],
                             "url": r.get("url"),
                             "source": canonical_domain(r.get("url", "")),
-                            "blurb": (r.get("content") or "")[:300]})
+                            "blurb": (r.get("content") or "")[:700]})
         except Exception as e:
             print(f"opening: local search failed for {query!r}: {type(e).__name__}: {e}")
     return out
@@ -223,12 +266,16 @@ def _events(lat: float, lon: float, start_days: int = 0, end_days: int = 7,
            f"&startDateTime={start.strftime('%Y-%m-%dT%H:%M:%SZ')}"
            f"&endDateTime={end.strftime('%Y-%m-%dT%H:%M:%SZ')}"
            f"&size={size}&sort=relevance,desc"
-           # Music and Arts only. Unfiltered, a metro's next seven days are
+           # Music, Arts and Miscellaneous only. Unfiltered, a metro's next seven days are
            # mostly regular-season ball games — eight Cardinals fixtures crowded
            # out every concert in St. Louis — and a Tuesday home game is not
            # something opening. Filtering here rather than in the prompt keeps
            # the candidate list short and the curation call cheap.
-           f"&segmentName=Music&segmentName=Arts%20%26%20Theatre")
+           # Miscellaneous is where Ticketmaster files fairs, festivals and the
+           # family shows (a marching-band championship, a kids' touring act).
+           # Sports stays out: it is regular-season fixtures, which belong to
+           # people who follow the team and not to the section's default.
+           f"&segmentName=Music&segmentName=Arts%20%26%20Theatre&segmentName=Miscellaneous")
     data = _http_get_json(url, timeout=10)
     out = []
     for ev in ((data or {}).get("_embedded") or {}).get("events") or []:
@@ -333,13 +380,17 @@ Their area: {city} — venues anywhere in this metro count as near them, includi
 CANDIDATES (JSON):
 {candidates}
 
-Return JSON: {{"rows": [{{"title": "...", "subtitle": "...", "when": "...", "url": "...", "kind": "local|event|screen", "date": "..."}}]}}
+Return JSON: {{"rows": [{{"title": "...", "subtitle": "...", "when": "...", "url": "...", "kind": "local|event", "topic": "music|comedy|theatre|food|festival|family|film|other", "date": "..."}}]}}
 
 Pick up to {max_rows}, best first. If that many clear the bar, return that many — under-filling is as wrong as padding, and a metro with three good things happening should show three.
+
+Spread matters as much as quality. This is a whole metro's list and the people reading it want different things — one wants a concert, another a fair to take the kids to, another a new place for dinner. Take at most two rows of any one topic, even when a topic is full of good candidates, so the list covers what is on rather than the single loudest category. Set `topic` honestly: a concert is music, a standup is comedy, a play or symphony is theatre, a restaurant or bar opening is food, a fair, fest or market is festival, and something built for kids or a family outing is family.
 
 Order matters: something happening in the next few days outranks something weeks away, which outranks a dated event months out; any dated event outranks an article about a place. A named act at a named venue this week is one of the strongest rows this section can have.
 
 A dated EVENT more than about three weeks from {today} only earns a row if it is genuinely major — a well-known touring artist, a marquee festival, something someone would want advance notice of to plan around or buy tickets before it sells out. Allow at most one such row per pass; a handful of distant tour dates must never crowd out what is actually happening near {today}.
+
+Weekend roundups ("things to do this weekend", "ready set weekend") are not rows themselves, but the specific events inside them are. Lift out each event that has a name, a place and a day — a fall festival, a pumpkin patch, a street fair, a parade — and make it its own row, with the roundup's url and the event's date. Resolve "Saturday" against {today}. Skip an event the article only gestures at.
 
 What earns a row:
 - A specific place that actually opened recently, named. A chef, a neighbourhood, a thing that distinguishes it.
@@ -366,14 +417,42 @@ Writing the row:
 - subtitle: at most 8 words on why it is worth knowing. Concrete, not promotional. Never "a must-visit" or "don't miss". For an EVENT this is usually just the venue name, nothing else — the day already goes in `when`, so do not repeat "Friday" or a date here too. For a PLACE, say what makes it distinct (a chef, a neighborhood, a dish) rather than restating the venue name from the title.
 - when: short and human — a day name for something dated within the next couple weeks ("Friday"), a short date for anything further out ("Oct 12") so it reads as advance notice rather than this week's plans, or "opened this week", "in theaters", "streaming now" for undated rows. Pick ONE form, not both — "Friday" on its own is enough; do not also add the date ("Friday, August 29").
 - url: copy verbatim from the candidate. Never invent one.
-- date: for an EVENT with a known date, copy it verbatim in YYYY-MM-DD form from the candidate data. Empty string for a PLACE, a screen, or anything undated.
+- date: for an EVENT with a known date, copy it verbatim in YYYY-MM-DD form from the candidate data; for one lifted out of an article, resolve it against {today} and give it in YYYY-MM-DD, using the LAST day of a multi-day event so it expires when it actually ends. An event whose last day is already before {today} is over — drop it. Empty string for a PLACE, a screen, or anything undated.
 - Plain ASCII. No emoji, no markdown, no exclamation marks.
 - subtitle and when must never say the same thing twice between them — if you catch yourself writing the same day, date, or venue in both fields, cut it from subtitle.
 
 If nothing clears the bar, return {{"rows": []}}. An empty section is correct and normal; a padded one is not."""
 
 
-def _curate(city: str, candidates: list[dict], today: date | None = None) -> list[dict]:
+# The curation prompt takes a bounded amount of candidate text, and the two
+# halves of the pool must not eat each other's share. Ticketmaster alone is
+# ~8.6k characters for a busy metro; with one shared 12k cut the press half —
+# the restaurants, fairs and family events — was clipped to a sliver, mid-item,
+# and the curated section came out all concerts.
+EVENT_BUDGET = 7000
+PRESS_BUDGET = 9000
+
+
+def _fit(candidates: list[dict]) -> list[dict]:
+    """Whole candidates only, each source family held to its own budget, in the
+    order given. Dropping an item beats cutting one: a half-written JSON object
+    is a candidate the model has to guess at."""
+    import json
+    used = {"events": 0, "press": 0}
+    cap = {"events": EVENT_BUDGET, "press": PRESS_BUDGET}
+    out = []
+    for c in candidates:
+        fam = "events" if c.get("source") == "ticketmaster.com" else "press"
+        n = len(json.dumps(c)) + 2
+        if used[fam] + n > cap[fam]:
+            continue
+        used[fam] += n
+        out.append(c)
+    return out
+
+
+def _curate(city: str, candidates: list[dict], today: date | None = None,
+            max_rows: int = CURATE_POOL) -> list[dict]:
     """The taste gate. One Haiku call, on the write path only.
 
     Everything upstream of this is a firehose: local press runs listicles and
@@ -397,7 +476,7 @@ def _curate(city: str, candidates: list[dict], today: date | None = None) -> lis
     try:
         resp = client.messages.create(
             model=HAIKU_MODEL,
-            max_tokens=900,
+            max_tokens=1500,
             messages=[{"role": "user", "content": _CURATE_PROMPT.format(
                 # The READER's date, not the dyno's. CLAUDE.md documents that
                 # stating today is load-bearing here — without it the model
@@ -406,7 +485,7 @@ def _curate(city: str, candidates: list[dict], today: date | None = None) -> lis
                 # on tomorrow, so a UTC date tells the curator to drop tonight's
                 # show as "already past".
                 today=(today or date.today()).strftime("%A, %B %d, %Y"), city=city,
-                candidates=json.dumps(candidates)[:9000], max_rows=CURATE_POOL)}],
+                candidates=json.dumps(_fit(candidates)), max_rows=max_rows)}],
         )
         parsed = _parse_json(resp.content[0].text) or {}
     except Exception as e:
@@ -414,7 +493,7 @@ def _curate(city: str, candidates: list[dict], today: date | None = None) -> lis
         return []
 
     rows = []
-    for r in (parsed.get("rows") or [])[:CURATE_POOL]:
+    for r in (parsed.get("rows") or [])[:max_rows]:
         title = (r.get("title") or "").strip()
         if not title:
             continue
@@ -424,16 +503,28 @@ def _curate(city: str, candidates: list[dict], today: date | None = None) -> lis
         # kind == "screen" is what puts TMDB's attribution on the page, so the
         # page would have credited TMDB for data TMDB never supplied.
         kind = r.get("kind") if r.get("kind") in ("local", "event") else "local"
+        topic = r.get("topic") if r.get("topic") in TOPICS else "other"
+        url = r.get("url") or None
+        date_s = _valid_iso_date(r.get("date"))
+        # An event lifted out of a press roundup has no structured date behind
+        # it, only the model's reading of prose. Undated, it can never expire,
+        # and "Oct 9-11" was served on the 14th. Ticketmaster rows carry a real
+        # date upstream, so only the press-sourced ones are held to this.
+        if kind == "event" and not date_s and "ticketmaster" not in _source_of(url or ""):
+            continue
+        if sum(1 for x in rows if x["topic"] == topic and topic != "other") >= MAX_PER_TOPIC:
+            continue
         rows.append({
             "kind": kind,
+            "topic": topic,
             "title": title[:80],
             "subtitle": (r.get("subtitle") or "").strip()[:90],
             "when": (r.get("when") or "").strip()[:32],
-            "url": r.get("url") or None,
-            "source": _source_of(r.get("url") or ""),
+            "url": url,
+            "source": _source_of(url or ""),
             # Kept only to expire the row once its date passes — see
             # opening_snapshot. Not rendered; "when" is what the page shows.
-            "date": _valid_iso_date(r.get("date")),
+            "date": date_s,
         })
     return rows
 
@@ -451,6 +542,32 @@ def _is_far(row: dict, today: date) -> bool:
         return (date.fromisoformat(d) - today).days > FAR_HORIZON_DAYS
     except (TypeError, ValueError):
         return False
+
+
+def _interleave(a: list[dict], b: list[dict]) -> list[dict]:
+    """Alternate two ranked lists, each keeping its own order, so slicing the
+    front of the result takes from both."""
+    out = []
+    for i in range(max(len(a), len(b))):
+        out += [x for x in (a[i:i + 1] + b[i:i + 1])]
+    return out
+
+
+def _spread(rows: list[dict]) -> list[dict]:
+    """Best-first order, but one row of each topic before a second of any.
+
+    The curated pool is ranked, and ranked pools clump: Ticketmaster's relevance
+    sort put three concerts ahead of everything else for St. Louis, so a section
+    with three slots was three concerts. A row with no topic (cached before the
+    field existed, or tagged "other") counts as its own topic so it is never
+    held back by its neighbours."""
+    seen, first, rest = set(), [], []
+    for i, r in enumerate(rows):
+        t = r.get("topic")
+        key = t if t and t != "other" else ("unique", i)
+        (rest if key in seen else first).append(r)
+        seen.add(key)
+    return first + rest
 
 
 def _rotate(rows: list, today: date, take: int) -> list:
@@ -565,7 +682,7 @@ def opening_snapshot(profile: dict) -> list[dict]:
         # "their city: Kirkwood, MO", it correctly dropped every venue in
         # St. Louis as somewhere else, which is all of them.
         metro = _metro(city)
-        candidates = _local_candidates(metro)
+        candidates = _local_candidates(metro, today)
         with _cache_lock:
             _candidate_cache[ckey] = candidates
 
@@ -579,14 +696,19 @@ def opening_snapshot(profile: dict) -> list[dict]:
         near = _events(lat, lon)
         far = _events(lat, lon, start_days=7, end_days=LONG_LEAD_DAYS,
                       size=LONG_LEAD_SIZE)
-        pool = list(candidates)
+        # Structured events only. Press is curated in its own call below, so
+        # neither family can crowd the other out of the prompt or the result.
+        pool = []
         for ev in near + far:
             pool.append({"title": ev["title"], "url": ev.get("url"),
                          "source": "ticketmaster.com",
                          "blurb": " ".join(str(x) for x in
                                            (ev.get("genre"), ev.get("venue"), ev.get("date"))
                                            if x)})
-        hit = _curate(metro or _metro(city), pool, today=today)
+        metro = metro or _metro(city)
+        hit = _interleave(
+            _curate(metro, pool, today=today, max_rows=EVENT_ROWS) if pool else [],
+            _curate(metro, list(candidates), today=today, max_rows=PRESS_ROWS))
         with _cache_lock:
             _local_cache[dkey] = hit
 
@@ -645,8 +767,8 @@ def opening_snapshot(profile: dict) -> list[dict]:
     # the next seven days outranks everything beyond them, so with a busy metro
     # the long-lead pull — Kacey Musgraves in twelve days, Zac Brown in eleven —
     # never won a slot and the section read as this weekend, forever.
-    soon = [r for r in mine if not _is_far(r, today)]
-    later = [r for r in mine if _is_far(r, today)]
+    soon = _spread([r for r in mine if not _is_far(r, today)])
+    later = _spread([r for r in mine if _is_far(r, today)])
     picked_local = soon[:max(local_allowance - 1, 0)] if later else soon[:local_allowance]
     if later and len(picked_local) < local_allowance:
         picked_local = picked_local + _rotate(later, today, local_allowance - len(picked_local))
